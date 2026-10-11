@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="src/MeetTape/MeetTape.csproj" />
+  <Project Path="tests/MeetTape.Tests/MeetTape.Tests.csproj" />
+</Solution>

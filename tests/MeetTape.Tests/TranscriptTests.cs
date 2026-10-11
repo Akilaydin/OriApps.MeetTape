@@ -1,0 +1,314 @@
+using System.Security.Cryptography;
+
+namespace MeetTape.Tests;
+
+public sealed class TranscriptTests : IDisposable
+{
+    private readonly JobTests fixture = new();
+
+    [Fact]
+    public async Task GlobalOrderingTechnicalTextLabelsAndBoundaryReconciliationAreDeterministic()
+    {
+        string directory = Prepare([
+            "[00:00.8] Me: MP3 track 42 не потерял начало?",
+            "[00:00.05] Me: MP3 track 42 не потерял начало? Дополнительный аргумент: bitrate 96 килобит в секунду.",
+            "[00:00.25] Them: USB-C 3.2 — кабель, не адаптер.\n[00:00] Invented Name: Версия FLAC 1.4."
+        ]);
+        var data = SessionStore.Read(directory);
+        byte[] meHash = Hash(Path.Combine(directory, "me.mp3"));
+        var builder = new TranscriptAssembler();
+        string first = await builder.BuildAsync(directory, data, default);
+        string output = File.ReadAllText(Path.Combine(directory, "transcription.md"));
+        Assert.Equal(1, output.Split("MP3 track 42").Length - 1);
+        Assert.Contains("Дополнительный аргумент: bitrate 96 килобит в секунду.", output);
+        Assert.Contains("USB-C 3.2 — кабель, не адаптер.", output);
+        Assert.Contains("**Unknown:** Версия FLAC 1.4.", output);
+        Assert.True(output.IndexOf("**Unknown:**", StringComparison.Ordinal) < output.IndexOf("**Them:**", StringComparison.Ordinal));
+        Assert.Equal(first, await builder.BuildAsync(directory, data, default));
+        Assert.Equal(meHash, Hash(Path.Combine(directory, "me.mp3")));
+        Assert.Equal(output, File.ReadAllText(Path.Combine(directory, "transcription.md")));
+    }
+
+    [Fact]
+    public async Task SameSourceBoundaryDuplicateIsRemovedButOtherSpeakerAndLaterRepetitionRemain()
+    {
+        string directory = Prepare([
+            "[00:00.8] Me: Это одинаковая длинная реплика.",
+            "[00:00.05] Me: Это одинаковая длинная реплика.\n[00:00.1] Them: Это одинаковая длинная реплика.",
+            "[00:00.25] Me: Это одинаковая длинная реплика."
+        ]);
+        await new TranscriptAssembler().BuildAsync(directory, SessionStore.Read(directory), default);
+        string output = File.ReadAllText(Path.Combine(directory, "transcription.md"));
+        Assert.Equal(3, output.Split("Это одинаковая длинная реплика.").Length - 1);
+        Assert.Equal(1, output.Split("**Them:**").Length - 1);
+    }
+
+    [Fact]
+    public async Task IdenticalUtterancesSeparatedByLongChunksArePreserved()
+    {
+        string directory = Prepare([
+            "[00:00.8] Me: Это одинаковая длинная реплика.",
+            "[00:00.05] Me: Это одинаковая длинная реплика."
+        ], seconds: 120, totalSeconds: 240);
+        var assembler = new TranscriptAssembler();
+        var data = SessionStore.Read(directory);
+        string hash = await assembler.BuildAsync(directory, data, default);
+        string output = File.ReadAllText(Path.Combine(directory, "transcription.md"));
+        Assert.Equal(2, output.Split("Это одинаковая длинная реплика.").Length - 1);
+        Assert.Contains("[00:00] **Me:** Это одинаковая длинная реплика.", output);
+        Assert.Contains("[01:58] **Me:** Это одинаковая длинная реплика.", output);
+        Assert.Equal(hash, await assembler.BuildAsync(directory, data, default));
+        Assert.Equal(output, File.ReadAllText(Path.Combine(directory, "transcription.md")));
+    }
+
+    [Fact]
+    public async Task LongChunkBoundaryDuplicateIsRemovedWithoutLosingOtherSourceOrLaterRepetition()
+    {
+        string directory = Prepare([
+            "[01:59.2] Me: MP3 track 42 не потерял начало?",
+            "[00:01.2] Me: MP3 track 42 не потерял начало?\n[00:01.3] Them: MP3 track 42 не потерял начало?",
+            "[00:01.2] Me: MP3 track 42 не потерял начало?"
+        ], seconds: 120, totalSeconds: 360);
+        await new TranscriptAssembler().BuildAsync(directory, SessionStore.Read(directory), default);
+        string output = File.ReadAllText(Path.Combine(directory, "transcription.md"));
+        Assert.Equal(3, output.Split("MP3 track 42 не потерял начало?").Length - 1);
+        Assert.Contains("[01:59] **Me:** MP3 track 42 не потерял начало?", output);
+        Assert.Contains("[01:59] **Them:** MP3 track 42 не потерял начало?", output);
+        Assert.Contains("[03:59] **Me:** MP3 track 42 не потерял начало?", output);
+    }
+
+    [Fact]
+    public async Task BoundarySuffixStartingBeforeOverlapIsRemovedButContinuationRemains()
+    {
+        string directory = Prepare([
+            "[01:57.5] Me: Мы проверили прогноз погоды и расписание поездов.",
+            "[00:00.1] Me: прогноз погоды и расписание поездов, теперь выбираем маршрут."
+        ], seconds: 120, totalSeconds: 240);
+        await new TranscriptAssembler().BuildAsync(directory, SessionStore.Read(directory), default);
+        string output = File.ReadAllText(Path.Combine(directory, "transcription.md"));
+        Assert.Equal(1, output.Split("прогноз погоды и расписание поездов").Length - 1);
+        Assert.Contains("[01:57] **Me:** Мы проверили прогноз погоды и расписание поездов.", output);
+        Assert.Contains("[01:58] **Me:** теперь выбираем маршрут.", output);
+    }
+
+    [Fact]
+    public async Task LongUtteranceStartingThreeSecondsBeforeOverlapReconcilesItsBoundarySuffix()
+    {
+        string directory = Prepare([
+            "[01:55] Me: Сначала проверили билеты и расписание поездов, затем выбрали маршрут и собрали вещи.",
+            "[00:00.1] Me: затем выбрали маршрут и собрали вещи."
+        ], seconds: 120, totalSeconds: 240);
+        await new TranscriptAssembler().BuildAsync(directory, SessionStore.Read(directory), default);
+        string output = File.ReadAllText(Path.Combine(directory, "transcription.md"));
+        Assert.Equal(1, output.Split("затем выбрали маршрут и собрали вещи.").Length - 1);
+        Assert.Contains("[01:55] **Me:** Сначала проверили билеты и расписание поездов, затем выбрали маршрут и собрали вещи.", output);
+    }
+
+    [Theory]
+    [InlineData("01:56")]
+    [InlineData("01:58.05")]
+    public async Task InterveningSameSourceUtterancePreventsOldSuffixFromRemovingRealRepetition(string nextTime)
+    {
+        string directory = Prepare([
+            $"[01:55] Me: Сначала проверили билеты и расписание поездов, затем выбрали маршрут и собрали вещи.\n[{nextTime}] Me: После этого обсудили отдельную проблему.",
+            "[00:00.1] Me: затем выбрали маршрут и собрали вещи."
+        ], seconds: 120, totalSeconds: 240);
+        await new TranscriptAssembler().BuildAsync(directory, SessionStore.Read(directory), default);
+        string output = File.ReadAllText(Path.Combine(directory, "transcription.md"));
+        Assert.Equal(2, output.Split("затем выбрали маршрут и собрали вещи.").Length - 1);
+        Assert.Contains("[01:58] **Me:** затем выбрали маршрут и собрали вещи.", output);
+        Assert.Contains("**Me:** После этого обсудили отдельную проблему.", output);
+    }
+
+    [Fact]
+    public async Task InterveningOtherSourceDoesNotEndOldSpeakerBoundarySuffix()
+    {
+        string directory = Prepare([
+            "[01:55] Me: Сначала проверили билеты и расписание поездов, затем выбрали маршрут и собрали вещи.\n[01:56] Them: Нужно проверить расписание позже.",
+            "[00:00.1] Me: затем выбрали маршрут и собрали вещи."
+        ], seconds: 120, totalSeconds: 240);
+        await new TranscriptAssembler().BuildAsync(directory, SessionStore.Read(directory), default);
+        string output = File.ReadAllText(Path.Combine(directory, "transcription.md"));
+        Assert.Equal(1, output.Split("затем выбрали маршрут и собрали вещи.").Length - 1);
+        Assert.Contains("**Them:** Нужно проверить расписание позже.", output);
+    }
+
+    [Fact]
+    public async Task SameTimestampPriorUtterancesStillDeduplicateExactBoundaryCopy()
+    {
+        string directory = Prepare([
+            "[01:59] Me: Выходим гулять после проверки погоды.\n[01:59] Me: Обсудим перенос прогулки на завтра.",
+            "[00:01] Me: Выходим гулять после проверки погоды."
+        ], seconds: 120, totalSeconds: 240);
+        var data = SessionStore.Read(directory);
+        var assembler = new TranscriptAssembler();
+        string hash = await assembler.BuildAsync(directory, data, default);
+        string output = File.ReadAllText(Path.Combine(directory, "transcription.md"));
+        Assert.Equal(1, output.Split("**Me:** Выходим гулять после проверки погоды.").Length - 1);
+        Assert.Contains("**Me:** Обсудим перенос прогулки на завтра.", output);
+        Assert.Equal(hash, await assembler.BuildAsync(directory, data, default));
+    }
+
+    [Fact]
+    public async Task FullStatementRepeatedThreeSecondsAfterPriorStartIsPreserved()
+    {
+        string directory = Prepare([
+            "[01:55] Me: Мы согласовали время начала прогулки.",
+            "[00:00.1] Me: Мы согласовали время начала прогулки."
+        ], seconds: 120, totalSeconds: 240);
+        await new TranscriptAssembler().BuildAsync(directory, SessionStore.Read(directory), default);
+        string output = File.ReadAllText(Path.Combine(directory, "transcription.md"));
+        Assert.Equal(2, output.Split("Мы согласовали время начала прогулки.").Length - 1);
+    }
+
+    [Fact]
+    public async Task DistantUtteranceWithMatchingSuffixIsNotReconciled()
+    {
+        string directory = Prepare([
+            "[01:52] Me: Сначала проверили билеты и расписание поездов, затем выбрали маршрут и собрали вещи.",
+            "[00:00.1] Me: затем выбрали маршрут и собрали вещи."
+        ], seconds: 120, totalSeconds: 240);
+        await new TranscriptAssembler().BuildAsync(directory, SessionStore.Read(directory), default);
+        string output = File.ReadAllText(Path.Combine(directory, "transcription.md"));
+        Assert.Equal(2, output.Split("затем выбрали маршрут и собрали вещи.").Length - 1);
+    }
+
+    [Fact]
+    public async Task SameSourceRepetitionThreeSecondsApartInsideOverlapIsPreserved()
+    {
+        string directory = Prepare([
+            "[01:58.1] Me: Подтверждаем готовность к прогулке.",
+            "[00:03.5] Me: Подтверждаем готовность к прогулке."
+        ], seconds: 120, totalSeconds: 240);
+        await new TranscriptAssembler().BuildAsync(directory, SessionStore.Read(directory), default);
+        string output = File.ReadAllText(Path.Combine(directory, "transcription.md"));
+        Assert.Equal(2, output.Split("Подтверждаем готовность к прогулке.").Length - 1);
+        Assert.Contains("[01:58] **Me:** Подтверждаем готовность к прогулке.", output);
+        Assert.Contains("[02:01] **Me:** Подтверждаем готовность к прогулке.", output);
+    }
+
+    [Fact]
+    public async Task OnePriorUtteranceCannotRemoveBothBoundaryCopyAndLaterRepetition()
+    {
+        string directory = Prepare([
+            "[01:59.0] Me: Мы согласовали повторный просмотр фильма.\n[01:59.1] Them: Подтверждаем прогулку после проверки погоды.",
+            "[00:01.0] Me: Мы согласовали повторный просмотр фильма.\n[00:01.1] Them: Подтверждаем прогулку после проверки погоды.\n[00:01.7] Me: Мы согласовали повторный просмотр фильма."
+        ], seconds: 120, totalSeconds: 240);
+        var data = SessionStore.Read(directory);
+        var assembler = new TranscriptAssembler();
+        string hash = await assembler.BuildAsync(directory, data, default);
+        string output = File.ReadAllText(Path.Combine(directory, "transcription.md"));
+        Assert.Equal(2, output.Split("**Me:** Мы согласовали повторный просмотр фильма.").Length - 1);
+        Assert.Equal(1, output.Split("**Them:** Подтверждаем прогулку после проверки погоды.").Length - 1);
+        Assert.Equal(hash, await assembler.BuildAsync(directory, data, default));
+    }
+
+    [Fact]
+    public async Task NearestPriorBoundaryCopyDoesNotConsumeGenuineLaterRepetition()
+    {
+        string directory = Prepare([
+            "[01:58.5] Me: Мы согласовали повторный просмотр фильма.\n[01:59.4] Me: Мы согласовали повторный просмотр фильма.",
+            "[00:01.4] Me: Мы согласовали повторный просмотр фильма.\n[00:02.2] Me: Мы согласовали повторный просмотр фильма."
+        ], seconds: 120, totalSeconds: 240);
+        var data = SessionStore.Read(directory);
+        var assembler = new TranscriptAssembler();
+        string hash = await assembler.BuildAsync(directory, data, default);
+        string output = File.ReadAllText(Path.Combine(directory, "transcription.md"));
+        Assert.Equal(3, output.Split("**Me:** Мы согласовали повторный просмотр фильма.").Length - 1);
+        Assert.Contains("[02:00] **Me:** Мы согласовали повторный просмотр фильма.", output);
+        Assert.Equal(hash, await assembler.BuildAsync(directory, data, default));
+    }
+
+    [Fact]
+    public async Task PartialSuffixReconciliationCannotConsumeSamePriorUtteranceTwice()
+    {
+        string directory = Prepare([
+            "[01:59.0] Me: Сначала проверили прогноз погоды и расписание поездов до озера.",
+            "[00:01.0] Me: прогноз погоды и расписание поездов до озера, затем выбрали маршрут.\n[00:01.7] Me: прогноз погоды и расписание поездов до озера, потом проверили билеты."
+        ], seconds: 120, totalSeconds: 240);
+        await new TranscriptAssembler().BuildAsync(directory, SessionStore.Read(directory), default);
+        string output = File.ReadAllText(Path.Combine(directory, "transcription.md"));
+        Assert.Equal(2, output.Split("прогноз погоды и расписание поездов до озера").Length - 1);
+        Assert.Contains("**Me:** затем выбрали маршрут.", output);
+        Assert.Contains("**Me:** прогноз погоды и расписание поездов до озера, потом проверили билеты.", output);
+    }
+
+    [Fact]
+    public async Task TrimOffsetRetainsOriginalRecordingOriginAndHourFormat()
+    {
+        string directory = fixture.Session(120);
+        var data = SessionStore.Read(directory);
+        var chunks = AudioChunker.Plan(3600L * 48000, 3 * 48000, 120, data.Audio!.RelativeDirectory);
+        data = data with { DurationSeconds = 3603, Trim = new(3600, 3603, true) { RelativeDirectory = "processed/trim_test" },
+            Audio = data.Audio with { Chunks = chunks }, Stages = new(data.Stages) { ["transcribe"] = new(true, StageState.Completed, 1, 1) } };
+        SessionStore.Save(directory, data);
+        Save(directory, data, chunks[0], "[00:01] Me: Original origin.");
+        await new TranscriptAssembler().BuildAsync(directory, data, default);
+        Assert.Contains("[01:00:01] **Me:**", File.ReadAllText(Path.Combine(directory, "transcription.md")));
+    }
+
+    [Theory]
+    [InlineData("no timestamps")]
+    [InlineData("[NO_SPEECH] trailing text")]
+    [InlineData("[NO_SPEECH]\n[00:00] Me: Contradictory speech.")]
+    [InlineData("```markdown\n``` ")]
+    [InlineData("[00:60] Me: invalid seconds")]
+    [InlineData("[20:00] Me: outside chunk")]
+    public async Task MalformedTimedTextNeverPublishesAFullTranscript(string invalid)
+    {
+        string directory = Prepare([invalid], 120);
+        await Assert.ThrowsAsync<InvalidDataException>(() => new TranscriptAssembler().BuildAsync(directory, SessionStore.Read(directory), default));
+        Assert.False(File.Exists(Path.Combine(directory, "transcription.md")));
+        Assert.Empty(Directory.GetFiles(directory, ".transcription-*.tmp"));
+    }
+
+    [Fact]
+    public async Task MissingChunkOrPartialStageNeverPublishesFullOutput()
+    {
+        string directory = fixture.Session();
+        var data = SessionStore.Read(directory);
+        await Assert.ThrowsAsync<InvalidDataException>(() => new TranscriptAssembler().BuildAsync(directory, data, default));
+        data = data with { Stages = new(data.Stages) { ["transcribe"] = new(true, StageState.Completed, 3, 3) } };
+        SessionStore.Save(directory, data);
+        Save(directory, data, data.Audio!.Chunks[0], "[00:00] Me: Only one chunk.");
+        await Assert.ThrowsAsync<FileNotFoundException>(() => new TranscriptAssembler().BuildAsync(directory, data, default));
+        Assert.False(File.Exists(Path.Combine(directory, "transcription.md")));
+    }
+
+    [Fact]
+    public async Task ExistingEditedOutputIsNotOverwrittenAndCancellationLeavesNoPartialOutput()
+    {
+        string directory = Prepare(["[00:00] Me: test"], 120);
+        string target = Path.Combine(directory, "transcription.md");
+        File.WriteAllText(target, "user notes");
+        await Assert.ThrowsAsync<InvalidDataException>(() => new TranscriptAssembler().BuildAsync(directory, SessionStore.Read(directory), default));
+        Assert.Equal("user notes", File.ReadAllText(target));
+        string second = Prepare(["[00:00] Me: test"], 120);
+        using var canceled = new CancellationTokenSource();
+        canceled.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => new TranscriptAssembler().BuildAsync(second, SessionStore.Read(second), canceled.Token));
+        Assert.False(File.Exists(Path.Combine(second, "transcription.md")));
+    }
+
+    internal string Prepare(string[] text, int seconds = 1, int totalSeconds = 3)
+    {
+        string directory = fixture.Session(seconds);
+        var data = SessionStore.Read(directory);
+        if (totalSeconds != 3)
+        {
+            var chunks = AudioChunker.Plan(0, totalSeconds * 48000L, seconds, data.Audio!.RelativeDirectory);
+            foreach (var chunk in chunks) File.WriteAllBytes(Path.Combine(directory, chunk.RelativePath), [1, 2, (byte)chunk.Index]);
+            data = data with { DurationSeconds = totalSeconds, Audio = data.Audio with { Chunks = chunks } };
+        }
+        Assert.Equal(text.Length, data.Audio!.Chunks.Count);
+        data = data with { Stages = new(data.Stages) { ["transcribe"] = new(true, StageState.Completed, text.Length, text.Length) } };
+        SessionStore.Save(directory, data);
+        for (int i = 0; i < text.Length; i++) Save(directory, data, data.Audio!.Chunks[i], text[i]);
+        return directory;
+    }
+
+    private static void Save(string directory, SessionData data, AudioChunk chunk, string text) => ChunkStore.Save(directory,
+        new(data.Id, chunk, Convert.ToHexString(Hash(Path.Combine(directory, chunk.RelativePath))), "test-model", "test-prompt-hash", text));
+    private static byte[] Hash(string path) => SHA256.HashData(File.ReadAllBytes(path));
+    public void Dispose() => fixture.Dispose();
+}

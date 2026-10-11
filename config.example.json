@@ -1,0 +1,26 @@
+{
+  "meetingsRoot": "Meetings",
+  "capture": {
+    "microphoneDeviceId": null,
+    "playbackDeviceId": null,
+    "ffmpegPath": "ffmpeg"
+  },
+  "stages": {
+    "trim": true,
+    "transcribe": true,
+    "summary": false
+  },
+  "chunkSeconds": 120,
+  "transcription": {
+    "endpoint": "https://api.example.invalid/v1/chat/completions",
+    "model": "your-audio-model",
+    "apiKeyEnvironmentVariable": "MEETTAPE_API_KEY",
+    "promptFile": "prompts/transcription.md"
+  },
+  "summary": {
+    "endpoint": "https://api.example.invalid/v1/chat/completions",
+    "model": "your-summary-model",
+    "apiKeyEnvironmentVariable": "MEETTAPE_API_KEY",
+    "promptFile": "prompts/summary.md"
+  }
+}

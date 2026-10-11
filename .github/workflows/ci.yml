@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+      - release
+
+permissions:
+  contents: read
+
+jobs:
+  non-hardware-tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Install FFmpeg for audio tests
+        shell: pwsh
+        run: |
+          choco install ffmpeg --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'FFmpeg installation failed.' }
+          ffmpeg -hide_banner -version
+          if ($LASTEXITCODE -ne 0) { throw 'FFmpeg is not available on PATH.' }
+          ffprobe -hide_banner -version
+          if ($LASTEXITCODE -ne 0) { throw 'FFprobe is not available on PATH.' }
+
+      - name: Run non-hardware Release tests
+        shell: pwsh
+        run: |
+          dotnet test tests/MeetTape.Tests/MeetTape.Tests.csproj --configuration Release --filter 'Category!=Hardware&Category!=LongRunning'
+          if ($LASTEXITCODE -ne 0) { throw 'Tests failed.' }
+
+  installer-tests:
+    runs-on: windows-latest
+    env:
+      DOTNET_GENERATE_ASPNET_CERTIFICATE: 'false'
+      DOTNET_ADD_GLOBAL_TOOLS_TO_PATH: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Run isolated installer and updater tests
+        shell: pwsh
+        run: |
+          $env:TEMP = Join-Path $env:GITHUB_WORKSPACE 'dist/test-temp'
+          $env:TMP = $env:TEMP
+          New-Item -ItemType Directory -Path $env:TEMP -Force | Out-Null
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/Test-Bootstrap.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'CMD bootstrap tests failed.' }
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/Test-InstallScripts.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Installer tests failed.' }

@@ -1,0 +1,137 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - release
+
+permissions:
+  contents: write
+
+# Keep all queued releases (up to the GitHub Actions queue limit) and prevent
+# two runs from publishing releases at the same time.
+concurrency:
+  group: meettape-release
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Determine release version
+        shell: pwsh
+        run: |
+          # Run number increases on each push; a re-run keeps the same version.
+          $version = "0.0.$env:GITHUB_RUN_NUMBER"
+          "MEETTAPE_VERSION=$version" >> $env:GITHUB_ENV
+          "MEETTAPE_TAG=v$version" >> $env:GITHUB_ENV
+
+      - name: Install FFmpeg for audio tests
+        shell: pwsh
+        run: |
+          choco install ffmpeg --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'FFmpeg installation failed.' }
+          ffmpeg -hide_banner -version
+          if ($LASTEXITCODE -ne 0) { throw 'FFmpeg is not available on PATH.' }
+          ffprobe -hide_banner -version
+          if ($LASTEXITCODE -ne 0) { throw 'FFprobe is not available on PATH.' }
+
+      - name: Run non-hardware tests
+        shell: pwsh
+        run: |
+          dotnet test tests/MeetTape.Tests/MeetTape.Tests.csproj --configuration Release --filter 'Category!=Hardware&Category!=LongRunning'
+          if ($LASTEXITCODE -ne 0) { throw 'Tests failed.' }
+
+      - name: Test installer and updater
+        shell: pwsh
+        run: |
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/Test-Bootstrap.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'CMD bootstrap tests failed.' }
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/Test-InstallScripts.ps1
+
+      - name: Skip superseded releases
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Concurrency prevents overlap; FIFO queue entry order can differ from push order.
+          # A late older run must not publish after a newer version already exists.
+          $tags = @(gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --paginate --jq '.[] | select(.draft == false) | .tag_name')
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot check previously published release versions.' }
+          $currentVersion = [version]$env:MEETTAPE_VERSION
+          foreach ($tag in $tags) {
+            if ($tag -match '^v(\d+\.\d+\.\d+)$' -and [version]$Matches[1] -gt $currentVersion) {
+              "SKIP_RELEASE=true" >> $env:GITHUB_ENV
+              Write-Output "Skipping superseded $env:MEETTAPE_TAG; a newer release already exists."
+              break
+            }
+          }
+
+      - name: Publish Windows x64 portable executable
+        if: env.SKIP_RELEASE != 'true'
+        shell: pwsh
+        run: |
+          dotnet publish src/MeetTape/MeetTape.csproj --configuration Release --runtime win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -p:Version=$env:MEETTAPE_VERSION --output dist
+          if ($LASTEXITCODE -ne 0) { throw 'Publish failed.' }
+          $assets = Get-Content src/MeetTape/obj/project.assets.json -Raw | ConvertFrom-Json -AsHashtable
+          $runtime = @($assets.project.frameworks.Values | ForEach-Object { $_.downloadDependencies } | Where-Object { $_.name -eq 'Microsoft.NETCore.App.Runtime.win-x64' })
+          if ($runtime.Count -ne 1 -or $runtime[0].version -cne '[10.0.5, 10.0.5]') {
+            throw 'Self-contained .NET runtime differs from the version in THIRD-PARTY-NOTICES.txt; update and review notices before release.'
+          }
+          if (-not (Test-Path -LiteralPath dist/MeetTape.exe)) { throw 'Release executable was not produced.' }
+          & ./dist/MeetTape.exe --help
+          if ($LASTEXITCODE -ne 0) { throw 'Release executable smoke test failed.' }
+          Copy-Item -LiteralPath install.cmd, install.ps1, update.ps1, tools/InstallerPath.ps1, LICENSE, THIRD-PARTY-NOTICES.txt -Destination dist
+          foreach ($script in @('install.ps1', 'update.ps1', 'InstallerPath.ps1')) {
+            $parseErrors = $null
+            $null = [Management.Automation.Language.Parser]::ParseFile((Join-Path (Resolve-Path dist) $script), [ref]$null, [ref]$parseErrors)
+            if ($parseErrors) { throw "Invalid release script: $script" }
+          }
+
+      - name: Publish GitHub Release
+        if: env.SKIP_RELEASE != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:MEETTAPE_TAG
+          $names = @('MeetTape.exe', 'install.cmd', 'install.ps1', 'update.ps1', 'InstallerPath.ps1', 'LICENSE', 'THIRD-PARTY-NOTICES.txt')
+          $releaseFiles = @($names | ForEach-Object { "dist/$_" })
+          $remoteTag = @(git ls-remote origin "refs/tags/$tag")
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to check existing release tag.' }
+          if ($remoteTag.Count -gt 0 -and ($remoteTag[0] -split '\s+')[0] -ne $env:GITHUB_SHA) {
+            throw 'Release tag already points to another commit; refusing to replace a published version.'
+          }
+
+          gh release view $tag --json tagName --jq '.tagName' 2>$null | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag @releaseFiles --target $env:GITHUB_SHA --title "MeetTape $env:MEETTAPE_VERSION" --generate-notes
+            if ($LASTEXITCODE -ne 0) { throw 'GitHub Release creation failed.' }
+          } else {
+            $releaseJson = gh release view $tag --json assets,isDraft
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect existing Release assets.' }
+            $existingRelease = $releaseJson | ConvertFrom-Json
+            $assets = @($existingRelease.assets | ForEach-Object { $_.name })
+            foreach ($name in $names) {
+              if ($assets -notcontains $name) {
+                gh release upload $tag "dist/$name"
+                if ($LASTEXITCODE -ne 0) { throw "Cannot restore the missing Release asset: $name." }
+              }
+            }
+            if ($existingRelease.isDraft) {
+              gh release edit $tag --draft=false
+              if ($LASTEXITCODE -ne 0) { throw 'Cannot publish the recovered draft Release.' }
+            }
+          }
+
+          # Published assets are authoritative on retries. Never overwrite their hashes.
+          foreach ($name in $names) {
+            gh release download $tag --pattern $name --dir dist --clobber
+            if ($LASTEXITCODE -ne 0) { throw "Cannot verify the published Release asset: $name." }
+          }
