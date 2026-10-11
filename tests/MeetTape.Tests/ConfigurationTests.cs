@@ -201,15 +201,15 @@ public sealed class ConfigurationTests : IDisposable
     }
 
     [Fact]
-    public void CliInitWithExplicitPathIsIdempotent()
+    public void CliConfigureWithExplicitPathRetainsExistingSettingsOnEnter()
     {
         string path = Path.Combine(directory, "initialized", "config.json");
-        var first = Run(["--config", path, "init"]);
+        var first = Run(["--config", path, "configure"], new string('\n', 17));
         Assert.Equal(0, first.Code);
-        Assert.Contains("Created", first.Output);
-        var second = Run(["--config", path, "init"]);
+        Assert.Contains("Created configuration", first.Output);
+        var second = Run(["--config", path, "configure"], new string('\n', 17));
         Assert.Equal(0, second.Code);
-        Assert.Contains("Nothing overwritten", second.Output);
+        Assert.Contains("Configuration unchanged", second.Output);
         Assert.Empty(second.Error);
     }
 

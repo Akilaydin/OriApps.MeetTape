@@ -8,7 +8,7 @@ Copyright (C) 2026 OriApps. Licensed under GPL-3.0-only.
 
 ## Workflow
 
-1. With MeetTape on PATH, run `meettape init`, edit `%APPDATA%\MeetTape\config.json` (or the printed custom path) and set the configured API-key environment variable. Re-running `init` does not overwrite your files; restart MeetTape after edits.
+1. With MeetTape on PATH, run `meettape configure`. The interactive wizard creates or edits `%APPDATA%\MeetTape\config.json`, configures the API and accepts an API key for your Windows user environment without echoing it in an interactive console. Enter keeps each current value; existing prompts are not overwritten. Restart MeetTape after changing settings and open a new terminal after changing the key.
 2. Open `meettape`; use `start` → `stop`, enter a title and choose trimming.
 3. Transcription runs in the background. With `stages.summary` enabled, request `summary <session-id>` after transcription completes.
 
