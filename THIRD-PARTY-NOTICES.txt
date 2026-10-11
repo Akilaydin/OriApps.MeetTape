@@ -45,9 +45,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
-The .NET 10.0.5 runtime third-party notices (upstream release v10.0.5) follow.
+The .NET 10.0.12 runtime third-party notices (upstream release v10.0.12) follow.
 Notices must be reviewed when upgrading the .NET runtime.
-Upstream source: https://github.com/dotnet/runtime/blob/v10.0.5/THIRD-PARTY-NOTICES.TXT
+Upstream source: https://github.com/dotnet/runtime/blob/v10.0.12/THIRD-PARTY-NOTICES.TXT
 
 .NET Runtime uses third-party libraries or other resources that may be
 distributed under licenses different than the .NET Runtime software.

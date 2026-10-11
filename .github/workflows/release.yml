@@ -22,13 +22,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 10.0.x
+          dotnet-version: 10.0.401
 
       - name: Determine release version
         shell: pwsh
         run: |
-          # Run number increases on each push; a re-run keeps the same version.
-          $version = "0.0.$env:GITHUB_RUN_NUMBER"
+          # The first workflow run failed before publishing; its run number must not consume v0.0.1.
+          $version = "0.0.$([int]$env:GITHUB_RUN_NUMBER - 1)"
           "MEETTAPE_VERSION=$version" >> $env:GITHUB_ENV
           "MEETTAPE_TAG=v$version" >> $env:GITHUB_ENV
 
@@ -81,7 +81,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Publish failed.' }
           $assets = Get-Content src/MeetTape/obj/project.assets.json -Raw | ConvertFrom-Json -AsHashtable
           $runtime = @($assets.project.frameworks.Values | ForEach-Object { $_.downloadDependencies } | Where-Object { $_.name -eq 'Microsoft.NETCore.App.Runtime.win-x64' })
-          if ($runtime.Count -ne 1 -or $runtime[0].version -cne '[10.0.5, 10.0.5]') {
+          if ($runtime.Count -ne 1 -or $runtime[0].version -cne '[10.0.12, 10.0.12]') {
             throw 'Self-contained .NET runtime differs from the version in THIRD-PARTY-NOTICES.txt; update and review notices before release.'
           }
           if (-not (Test-Path -LiteralPath dist/MeetTape.exe)) { throw 'Release executable was not produced.' }
