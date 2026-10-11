@@ -352,7 +352,7 @@ try {
     } elseif ([IO.File]::Exists($launcher)) {
         Write-Output 'Legacy launcher preserved because -SkipPath was specified; run without -SkipPath to migrate it.'
     }
-    Write-Output 'For first-time configuration run: meettape init'
+    Write-Output 'To configure MeetTape run: meettape configure'
 } finally {
     if ($ownsClient -and $HttpClient) { $HttpClient.Dispose() }
     $lock.Dispose()

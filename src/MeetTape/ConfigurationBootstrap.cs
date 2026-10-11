@@ -73,7 +73,7 @@ public static class ConfigurationBootstrap
             }
             catch (IOException) when (File.Exists(path))
             {
-                // Another init created the destination; preserve its contents.
+                // Another configuration run created the destination; preserve its contents.
             }
         }
         finally
