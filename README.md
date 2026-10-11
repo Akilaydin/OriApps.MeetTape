@@ -12,6 +12,8 @@ Copyright (C) 2026 OriApps. Licensed under GPL-3.0-only.
 2. Open `meettape`; use `start` → `stop`, enter a title and choose trimming.
 3. Transcription runs in the background. With `stages.summary` enabled, request `summary <session-id>` after transcription completes.
 
+On interactive startup, MeetTape shows its current version, the latest public GitHub Release (when reachable), and the `update` command if a newer release is available. Network failures do not block recording.
+
 The editable transcription prompt targets Russian (`ru`) by default. Use `help` for commands and `devices` inside MeetTape to list audio device IDs.
 
 ## Installation
