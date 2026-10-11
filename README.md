@@ -18,7 +18,7 @@ The editable transcription prompt targets Russian (`ru`) by default. Use `help` 
 
 Download `install.cmd` from [GitHub Releases](https://github.com/Akilaydin/OriApps.MeetTape/releases) and run it. It installs MeetTape and FFmpeg for the current user and adds `meettape` to PATH. Open a new terminal afterward; use `meettape update` for later updates.
 
-To uninstall, close MeetTape, delete `%LOCALAPPDATA%\Programs\MeetTape` and remove `%LOCALAPPDATA%\Programs\MeetTape\app` from your user `PATH`. Optionally delete `%APPDATA%\MeetTape` (config/prompts), `%LOCALAPPDATA%\MeetTape\Meetings` (default recordings/transcripts, or your custom meetings folder) and any API-key environment variable created solely for MeetTape.
+To uninstall, close MeetTape, delete `%LOCALAPPDATA%\Programs\MeetTape` and remove `%LOCALAPPDATA%\Programs\MeetTape\app` from your user `PATH`. To remove user data too, first check `meetingsRoot` in `%APPDATA%\MeetTape\config.json` and back up recordings (a relative path may place them inside the config directory). Then delete `%APPDATA%\MeetTape`, the resolved meetings folder (default `%LOCALAPPDATA%\MeetTape\Meetings`) and any API-key environment variable used only for MeetTape.
 
 ## Output
 
