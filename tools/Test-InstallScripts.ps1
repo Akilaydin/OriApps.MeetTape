@@ -222,7 +222,10 @@ public sealed class StalledDownload : Stream {
     $legacyLauncher = Join-Path $install 'meettape.cmd'
     [IO.File]::WriteAllText($legacyLauncher, 'custom launcher')
 
-    & (Join-Path $repository 'install.ps1') -InstallDirectory $install -SkipPath -HttpClient $client @ffmpegArgs | Out-Null
+    $installOutput = & (Join-Path $repository 'install.ps1') -InstallDirectory $install -SkipPath -HttpClient $client @ffmpegArgs | Out-String
+    if ($installOutput -notmatch 'meettape configure' -or $installOutput -match 'meettape init') {
+        throw 'Installer must recommend the supported configuration command.'
+    }
     $binary = Join-Path $install 'app\MeetTape.exe'
     $marker = Join-Path $install 'installed-version.txt'
     if (-not (Test-Path -LiteralPath $binary) -or (Get-Content -LiteralPath $marker -Raw).Trim() -ne 'v1.2.3') {
