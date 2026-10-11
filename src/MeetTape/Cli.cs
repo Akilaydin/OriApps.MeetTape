@@ -14,9 +14,15 @@ public static class Cli
 
     public static int Run(string[] args, TextReader input, TextWriter output, TextWriter error,
         Func<CaptureSettings, CaptureCoordinator> createCapture, Func<TextWriter, TextWriter, int>? launchUpdate,
-        Func<IReadOnlyList<AudioDevice>> listDevices, Action<TextWriter>? writeStartupNotice = null)
+        Func<IReadOnlyList<AudioDevice>> listDevices)
         => RunCore(args, input, output, error, configuration => createCapture(configuration.Settings.Capture),
-            launchUpdate ?? UpdateLauncher.Run, listDevices, writeStartupNotice ?? StartupReleaseNotice.Write);
+            launchUpdate ?? UpdateLauncher.Run, listDevices, StartupReleaseNotice.Write);
+
+    internal static int Run(string[] args, TextReader input, TextWriter output, TextWriter error,
+        Func<CaptureSettings, CaptureCoordinator> createCapture, Func<TextWriter, TextWriter, int>? launchUpdate,
+        Func<IReadOnlyList<AudioDevice>> listDevices, Action<TextWriter> writeStartupNotice)
+        => RunCore(args, input, output, error, configuration => createCapture(configuration.Settings.Capture),
+            launchUpdate ?? UpdateLauncher.Run, listDevices, writeStartupNotice);
 
     private static int RunCore(string[] args, TextReader input, TextWriter output, TextWriter error,
         Func<LoadedConfiguration, CaptureCoordinator> createCapture, Func<TextWriter, TextWriter, int> launchUpdate,

@@ -106,6 +106,13 @@ public sealed class StartupReleaseNoticeTests
     }
 
     [Fact]
+    public void ExistingSevenArgumentCliRunOverloadRemainsAvailable()
+    {
+        Assert.Contains(typeof(Cli).GetMethods(), method => method.IsPublic && method.Name == nameof(Cli.Run)
+            && method.GetParameters().Length == 7);
+    }
+
+    [Fact]
     public void CliDisplaysNoticeOnlyBeforeInteractivePrompt()
     {
         string root = Path.Combine(Path.GetTempPath(), "MeetTape-Startup-" + Guid.NewGuid().ToString("N"));
