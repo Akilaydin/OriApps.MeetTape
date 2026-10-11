@@ -9,7 +9,7 @@ public sealed class CliHelpTests
 
         Assert.Equal(0, result.Code);
         Assert.Empty(result.Error);
-        Assert.Contains("meettape init", result.Output);
+        Assert.Contains("meettape configure", result.Output);
         Assert.Contains("meettape>", result.Output);
         Assert.Contains("start", result.Output);
         Assert.Contains("stop", result.Output);
@@ -24,7 +24,7 @@ public sealed class CliHelpTests
     [InlineData("stop", "Interactive shell: stop")]
     [InlineData("sessions", "PowerShell: meettape sessions")]
     [InlineData("status", "PowerShell: meettape status")]
-    [InlineData("init", "PowerShell: meettape init")]
+    [InlineData("configure", "PowerShell: meettape configure")]
     [InlineData("devices", "PowerShell: meettape devices")]
     [InlineData("check-config", "PowerShell: meettape check-config")]
     [InlineData("update", "PowerShell: meettape update")]
@@ -180,34 +180,41 @@ public sealed class CliHelpTests
     }
 
     [Fact]
-    public void RepeatedInitExplainsHowToEditWithoutReplacingExistingFiles()
+    public void RepeatedConfigurePreservesFilesWhenEnterKeepsEveryValue()
     {
-        string root = Path.Combine(Path.GetTempPath(), "MeetTape-Init-" + Guid.NewGuid().ToString("N"));
+        string root = Path.Combine(Path.GetTempPath(), "MeetTape-Configure-" + Guid.NewGuid().ToString("N"));
         try
         {
             string path = Path.Combine(root, "config.json");
             using var output = new StringWriter();
             using var error = new StringWriter();
-            int first = Cli.Run(["init", "--config", path], new StringReader(""), output, error,
+            int first = Cli.Run(["configure", "--config", path], new StringReader(new string('\n', 17)), output, error,
                 _ => throw new InvalidOperationException("Unexpected hardware use."));
             string original = File.ReadAllText(path);
             string promptsDirectory = Path.Combine(root, "prompts");
             string transcriptionPrompt = File.ReadAllText(Path.Combine(promptsDirectory, "transcription.md"));
 
             output.GetStringBuilder().Clear();
-            int second = Cli.Run(["init", "--config", path], new StringReader(""), output, error,
+            int second = Cli.Run(["configure", "--config", path], new StringReader(new string('\n', 17)), output, error,
                 _ => throw new InvalidOperationException("Unexpected hardware use."));
 
             Assert.Equal(0, first);
             Assert.Equal(0, second);
             Assert.Contains(Path.GetFullPath(path), output.ToString());
-            Assert.Contains("edit this file to change settings", output.ToString());
+            Assert.Contains("Configuration unchanged", output.ToString());
             Assert.Contains("Restart MeetTape", output.ToString());
             Assert.Equal(original, File.ReadAllText(path));
             Assert.Equal(transcriptionPrompt, File.ReadAllText(Path.Combine(promptsDirectory, "transcription.md")));
             Assert.Empty(error.ToString());
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public void InitIsNoLongerAPublicCommand()
+    {
+        Assert.Equal(2, Run("init").Code);
+        Assert.Equal(2, Run("init", "--help").Code);
     }
 
     [Fact]

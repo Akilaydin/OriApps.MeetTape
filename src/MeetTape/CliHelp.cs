@@ -4,13 +4,14 @@ internal static class CliHelp
 {
     private static readonly Dictionary<string, string> Topics = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["init"] = """
-            init — Create a configuration and editable prompts without overwriting existing files.
-            PowerShell: meettape init [--config <path>]
-            Default file: %APPDATA%\MeetTape\config.json (path is printed by init).
-            Edit that file and its prompts to change settings, then restart MeetTape.
-            Set the configured API key environment variable before transcription.
-            Re-running init preserves all existing files; it does not reset settings.
+        ["configure"] = """
+            configure — Create or interactively edit settings and Windows user API credentials.
+            PowerShell: meettape configure [--config <path>]
+            Default file: %APPDATA%\MeetTape\config.json (path is printed).
+            Press Enter to keep each value; API key input is hidden in interactive consoles.
+            New keys are stored in Windows user environment variables, never in config.json.
+            Existing prompts and keys are preserved unless you explicitly change them.
+            Restart MeetTape after changing settings; reopen other terminals after changing API keys.
             """,
         ["start"] = """
             start — Begin recording your microphone (Me) and system playback (Them).
@@ -184,7 +185,7 @@ internal static class CliHelp
 
     internal static void WriteOverview(TextWriter output) => CliColors.WriteHelp(output, """
         MeetTape — record meetings from an interactive terminal.
-        First time: meettape init       Create config; edit it and set your API key.
+        Setup:       meettape configure  Create or edit settings and API key.
         PowerShell:  meettape            Open the interactive shell.
                      meettape update     Update from the public GitHub Release
 
@@ -219,7 +220,7 @@ internal static class CliHelp
                   assemble <id>     Rebuild transcript from saved checkpoints
 
                 Audio devices: meettape devices (PowerShell) or devices (inside shell)
-                Configuration: meettape init, meettape check-config (PowerShell)
+                Configuration: meettape configure, meettape check-config (PowerShell)
                 Update: meettape update (PowerShell) or update (inside shell)
                 Details: help <command> (in shell), meettape <command> --help (PowerShell)
                 """);

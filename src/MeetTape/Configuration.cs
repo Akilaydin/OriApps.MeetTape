@@ -59,13 +59,16 @@ public static class ConfigurationLoader
 
     public static LoadedConfiguration Load(string path) => Load(path, validatePrompts: true);
 
-    internal static LoadedConfiguration Load(string path, bool validatePrompts)
+    internal static LoadedConfiguration Load(string path, bool validatePrompts) =>
+        Parse(File.ReadAllText(Path.GetFullPath(path)), path, validatePrompts);
+
+    internal static LoadedConfiguration Parse(string json, string path, bool validatePrompts)
     {
         string fullPath = Path.GetFullPath(path);
         Configuration settings;
         try
         {
-            settings = JsonSerializer.Deserialize<Configuration>(File.ReadAllText(fullPath), Options)
+            settings = JsonSerializer.Deserialize<Configuration>(json, Options)
                 ?? throw new InvalidDataException("Configuration must be a JSON object.");
         }
         catch (JsonException)

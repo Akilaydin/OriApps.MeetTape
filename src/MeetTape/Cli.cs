@@ -43,7 +43,7 @@ public static class Cli
         if (CliHelp.TryWriteCommandLine(positional, output, error) is { } helpResult)
             return helpResult;
 
-        string? command = positional.Count == 1 && (positional[0] is "init" or "check-config" or "status" or "devices" or "sessions" or "update")
+        string? command = positional.Count == 1 && (positional[0] is "configure" or "check-config" or "status" or "devices" or "sessions" or "update")
             ? positional[0] : null;
         if (positional.Count > 0 && command is null)
         {
@@ -58,17 +58,10 @@ public static class Cli
         try
         {
             if (command == "update") return launchUpdate(output, error);
-            if (command == "init")
+            if (command == "configure")
             {
                 string path = explicitConfigPath ?? ConfigurationBootstrap.UserConfigurationPath;
-                bool created = ConfigurationBootstrap.Initialize(path, ConfigurationBootstrap.UserMeetingsRoot);
-                if (created)
-                    CliColors.WriteLine(output, "Created", ConsoleColor.Green,
-                        $" {Path.GetFullPath(path)}. Edit this file and its prompts; set your API key environment variable before transcription.");
-                else
-                    output.WriteLine($"Configuration already exists: {Path.GetFullPath(path)}. Nothing overwritten; edit this file to change settings.");
-                output.WriteLine("Restart MeetTape after editing configuration or prompts.");
-                return 0;
+                return ConfigurationWizard.Run(path, input, output, error);
             }
             if (command == "devices")
             {
@@ -79,7 +72,7 @@ public static class Cli
                 Environment.CurrentDirectory, ConfigurationBootstrap.UserConfigurationPath, AppContext.BaseDirectory);
             if (!File.Exists(configPath))
             {
-                CliColors.WriteLine(error, "Configuration not found. Run 'meettape init', then edit your user config, or pass --config <path>.", ConsoleColor.Red);
+                CliColors.WriteLine(error, "Configuration not found. Run 'meettape configure', or pass --config <path>.", ConsoleColor.Red);
                 return 2;
             }
             var config = ConfigurationLoader.Load(configPath, validatePrompts: command is not ("sessions" or "status"));
