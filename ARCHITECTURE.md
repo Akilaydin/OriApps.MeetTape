@@ -4,6 +4,8 @@
 
 One `net10.0-windows` executable in `src/MeetTape` and one test project. `Program` enters `Cli`, which owns `Mp3Recorder`, `PostRecordingWorkflow` and `ProcessingJobs`. State is stored in session folders; background work lives in the interactive process.
 
+For interactive startup only, `StartupReleaseNotice` reads the assembly informational version and queries the public GitHub `releases/latest` endpoint with `HttpClient`. A bounded two-second wait and failure fallback keep GitHub availability outside the recording critical path. Local source builds use version `0.0.0` and skip release comparison; release CI sets the published version explicitly.
+
 ## Capture
 
 ```text

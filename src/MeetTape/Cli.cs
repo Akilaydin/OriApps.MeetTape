@@ -3,23 +3,30 @@ namespace MeetTape;
 public static class Cli
 {
     public static int Run(string[] args, TextReader input, TextWriter output, TextWriter error) =>
-        RunCore(args, input, output, error, configuration => new Mp3Recorder(configuration).Capture, UpdateLauncher.Run, AudioDevices.List);
+        RunCore(args, input, output, error, configuration => new Mp3Recorder(configuration).Capture,
+            UpdateLauncher.Run, AudioDevices.List, StartupReleaseNotice.Write);
 
     public static int Run(string[] args, TextReader input, TextWriter output, TextWriter error,
         Func<CaptureSettings, CaptureCoordinator> createCapture,
         Func<TextWriter, TextWriter, int>? launchUpdate = null)
         => RunCore(args, input, output, error, configuration => createCapture(configuration.Settings.Capture),
-            launchUpdate ?? UpdateLauncher.Run, AudioDevices.List);
+            launchUpdate ?? UpdateLauncher.Run, AudioDevices.List, StartupReleaseNotice.Write);
 
     public static int Run(string[] args, TextReader input, TextWriter output, TextWriter error,
         Func<CaptureSettings, CaptureCoordinator> createCapture, Func<TextWriter, TextWriter, int>? launchUpdate,
         Func<IReadOnlyList<AudioDevice>> listDevices)
         => RunCore(args, input, output, error, configuration => createCapture(configuration.Settings.Capture),
-            launchUpdate ?? UpdateLauncher.Run, listDevices);
+            launchUpdate ?? UpdateLauncher.Run, listDevices, StartupReleaseNotice.Write);
+
+    internal static int Run(string[] args, TextReader input, TextWriter output, TextWriter error,
+        Func<CaptureSettings, CaptureCoordinator> createCapture, Func<TextWriter, TextWriter, int>? launchUpdate,
+        Func<IReadOnlyList<AudioDevice>> listDevices, Action<TextWriter> writeStartupNotice)
+        => RunCore(args, input, output, error, configuration => createCapture(configuration.Settings.Capture),
+            launchUpdate ?? UpdateLauncher.Run, listDevices, writeStartupNotice);
 
     private static int RunCore(string[] args, TextReader input, TextWriter output, TextWriter error,
         Func<LoadedConfiguration, CaptureCoordinator> createCapture, Func<TextWriter, TextWriter, int> launchUpdate,
-        Func<IReadOnlyList<AudioDevice>> listDevices)
+        Func<IReadOnlyList<AudioDevice>> listDevices, Action<TextWriter> writeStartupNotice)
     {
         output = CliColorWriter.Wrap(output);
         error = CliColorWriter.Wrap(error, stderr: true);
@@ -102,6 +109,7 @@ public static class Cli
                 return 0;
             }
 
+            writeStartupNotice(output);
             using var preparation = new PostRecordingWorkflow(config.Settings.Capture.FfmpegPath, output);
             using var jobs = new ProcessingJobs(config, output, () => capture.Status.IsActive);
             jobs.Start();
