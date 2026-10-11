@@ -195,6 +195,29 @@ public sealed class ConfigurationWizardTests : IDisposable
     }
 
     [Fact]
+    public async Task ConcurrentConfigureProcessesDoNotLoseSettings()
+    {
+        ConfigureDefaults();
+        using var barrier = new Barrier(2);
+        (int Code, string Output, string Error) Configure(string folder) =>
+            Run(Answers(new Dictionary<int, string> { [0] = folder }),
+                readSecret: _ =>
+                {
+                    Assert.True(barrier.SignalAndWait(TimeSpan.FromSeconds(10)));
+                    return "";
+                });
+
+        var first = Task.Run(() => Configure("FirstFolder"));
+        var second = Task.Run(() => Configure("SecondFolder"));
+        var outcomes = await Task.WhenAll(first, second).WaitAsync(TimeSpan.FromSeconds(20));
+
+        Assert.Equal(new[] { 0, 2 }, outcomes.Select(result => result.Code).Order());
+        Assert.Contains(outcomes, result => result.Error.Contains("changed during editing", StringComparison.Ordinal));
+        string savedFolder = ConfigurationLoader.Load(ConfigPath).Settings.MeetingsRoot;
+        Assert.Contains(savedFolder, new[] { "FirstFolder", "SecondFolder" });
+    }
+
+    [Fact]
     public void InvalidNumericAndBooleanInputsAreRePrompted()
     {
         ConfigureDefaults();

@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -108,29 +109,49 @@ internal static class ConfigurationWizard
             error.WriteLine("Cannot read an enabled prompt file. Check prompt paths and permissions; nothing saved.");
             return 2;
         }
-        if (changed || keysToSave.Count > 0)
+        // Serialize the final compare, replacement and environment update across
+        // configure processes; a comparison alone permits concurrent lost updates.
+        string lockName = "Local\\MeetTape.Configure." + Convert.ToHexString(
+            SHA256.HashData(Encoding.UTF8.GetBytes(path.ToUpperInvariant())));
+        using var mutex = new Mutex(false, lockName);
+        bool acquired;
+        try { acquired = mutex.WaitOne(TimeSpan.FromSeconds(10)); }
+        catch (AbandonedMutexException) { acquired = true; }
+        if (!acquired)
         {
-            if (!string.Equals(originalText, File.ReadAllText(path), StringComparison.Ordinal))
-            {
-                error.WriteLine("Configuration changed during editing. Nothing saved; run configure again.");
-                return 2;
-            }
-            if (changed) SaveAtomically(path, updatedText);
+            error.WriteLine("Configuration is being saved by another process. Try again.");
+            return 2;
         }
-
-        foreach (var (variable, key) in keysToSave)
+        try
         {
-            try
+            if (changed || keysToSave.Count > 0)
             {
-                setKey(variable, key, EnvironmentVariableTarget.User);
-                setKey(variable, key, EnvironmentVariableTarget.Process);
+                if (!string.Equals(originalText, File.ReadAllText(path), StringComparison.Ordinal))
+                {
+                    error.WriteLine("Configuration changed during editing. Nothing saved; run configure again.");
+                    return 2;
+                }
+                if (changed) SaveAtomically(path, updatedText);
             }
-            catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException
-                or System.Security.SecurityException or NotSupportedException)
+
+            foreach (var (variable, key) in keysToSave)
             {
-                error.WriteLine("Cannot save API key in the Windows user environment. Configuration settings may have been saved.");
-                return 2;
+                try
+                {
+                    setKey(variable, key, EnvironmentVariableTarget.User);
+                    setKey(variable, key, EnvironmentVariableTarget.Process);
+                }
+                catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException
+                    or System.Security.SecurityException or NotSupportedException)
+                {
+                    error.WriteLine("Cannot save API key in the Windows user environment. Configuration settings may have been saved.");
+                    return 2;
+                }
             }
+        }
+        finally
+        {
+            mutex.ReleaseMutex();
         }
 
         output.WriteLine(changed ? $"Configuration saved: {path}" : $"Configuration unchanged: {path}");
