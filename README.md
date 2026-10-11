@@ -18,7 +18,7 @@ The editable transcription prompt targets Russian (`ru`) by default. Use `help` 
 
 Download `install.cmd` from [GitHub Releases](https://github.com/Akilaydin/OriApps.MeetTape/releases) and run it. It installs MeetTape and FFmpeg for the current user and adds `meettape` to PATH. Open a new terminal afterward; use `meettape update` for later updates.
 
-To uninstall, close MeetTape. Before deleting `%LOCALAPPDATA%\Programs\MeetTape`, keep any user-owned files (especially `app\ffmpeg.exe` if `ffmpeg-version.txt` is absent). Delete that folder and remove `%LOCALAPPDATA%\Programs\MeetTape\app` from your user `PATH`. Optionally remove the active config and its prompts (default `%APPDATA%\MeetTape`, an explicit `--config` path, or a working-directory `config.json`), MeetTape session folders under `meetingsRoot` (default `%LOCALAPPDATA%\MeetTape\Meetings`), and any MeetTape-only API-key environment variable. Check `meetingsRoot` and back up recordings first: relative paths can be inside the config folder; never delete a shared parent directory.
+To uninstall, close MeetTape. Back up user-owned files in `%LOCALAPPDATA%\Programs\MeetTape` (especially `app\ffmpeg.exe` if `ffmpeg-version.txt` is absent), then delete that folder and remove `%LOCALAPPDATA%\Programs\MeetTape\app` from your user `PATH`. For optional data cleanup, inspect the active config (default `%APPDATA%\MeetTape\config.json`, custom `--config`, or working-directory `config.json`) and its prompt and `meetingsRoot` paths. Back up recordings and delete only MeetTape-specific config/prompt files and session folders (default `%LOCALAPPDATA%\MeetTape\Meetings`), plus any dedicated API-key environment variable. Never delete shared directories or prompt files.
 
 ## Output
 
