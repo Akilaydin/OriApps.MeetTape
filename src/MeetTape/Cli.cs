@@ -85,6 +85,7 @@ public static class Cli
             var config = ConfigurationLoader.Load(configPath, validatePrompts: command is not ("sessions" or "status"));
             using var capture = createCapture(config);
             capture.Failed += message => CliColors.WriteLine(output, message, ConsoleColor.Red);
+            capture.Warning += message => CliColors.WriteLine(output, message, ConsoleColor.Yellow);
             if (command == "check-config")
             {
                 if (config.Settings.Stages.Transcribe)
@@ -298,7 +299,12 @@ public static class Cli
         if (status.Discontinuities > 0)
             CliColors.WriteLine(output, $"WASAPI marked {status.Discontinuities} discontinuities (including possible startup flags); timeline gaps were preserved as silence.", ConsoleColor.Yellow);
         if (status.ClockAdjustments > 0)
-            CliColors.WriteLine(output, $"WASAPI timestamps required {status.ClockAdjustments} bounded packet timing adjustments; packet audio was retained.", ConsoleColor.Yellow);
+            CliColors.WriteLine(output, "WASAPI timing corrections: ", ConsoleColor.Yellow,
+                $"Me {status.MeTiming.Corrections} (unreliable timestamps {status.MeTiming.InvalidTimestamps}, " +
+                $"largest shift {status.MeTiming.LargestShiftFrames * 1000d / PcmTimeline.SampleRate:F3} ms); " +
+                $"Them {status.ThemTiming.Corrections} (unreliable timestamps {status.ThemTiming.InvalidTimestamps}, " +
+                $"largest shift {status.ThemTiming.LargestShiftFrames * 1000d / PcmTimeline.SampleRate:F3} ms). " +
+                (status.IsActive ? "Recording continues." : "Recording retained."));
     }
 
     private static void WriteDevices(TextWriter output, IReadOnlyList<AudioDevice> devices)

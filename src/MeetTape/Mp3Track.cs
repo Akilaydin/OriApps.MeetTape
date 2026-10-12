@@ -17,10 +17,14 @@ public sealed class Mp3Track
     public int ClockAdjustments { get; private set; }
 
     public Mp3Track(string executable, string outputPath, long origin100ns, Action<RecordingException> failed)
+        : this(executable, outputPath, origin100ns, failed, null) { }
+
+    internal Mp3Track(string executable, string outputPath, long origin100ns, Action<RecordingException> failed,
+        Action<AudioTimingIssue>? onTimingIssue)
     {
         this.origin100ns = origin100ns;
         var encoder = new FfmpegEncoder(executable, outputPath);
-        worker = Task.Run(() => RunAsync(encoder, failed));
+        worker = Task.Run(() => RunAsync(encoder, failed, onTimingIssue));
     }
 
     public void Enqueue(AudioPacket packet)
@@ -46,10 +50,11 @@ public sealed class Mp3Track
             throw failure;
     }
 
-    private async Task RunAsync(FfmpegEncoder encoder, Action<RecordingException> failed)
+    private async Task RunAsync(FfmpegEncoder encoder, Action<RecordingException> failed, Action<AudioTimingIssue>? onTimingIssue)
     {
         AudioPacket? pending = null;
         var timeline = new PcmTimeline(encoder.Input, origin100ns);
+        timeline.TimingIssue = onTimingIssue;
         using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(20));
         bool completionAttempted = false;
         try
@@ -72,12 +77,12 @@ public sealed class Mp3Track
                 }
                 long horizon = ended < 0 ? Math.Max(0, timeline.FrameAt(To100ns(Stopwatch.GetTimestamp())) - PcmTimeline.SampleRate / 2) : limit;
                 if (pending is not null && (ended >= 0 ||
-                    timeline.FrameAt(pending.Position100ns + (long)(pending.Frames * 10_000_000d / pending.SampleRate)) <= horizon))
+                    timeline.PacketEndFrame(pending) <= horizon))
                 {
                     try { await timeline.AppendAsync(pending, null, limit, timeout.Token); }
                     finally { pending.Dispose(); pending = null; }
                 }
-                await timeline.SilenceUntilAsync(Math.Min(horizon, pending is null ? horizon : timeline.FrameAt(pending.Position100ns)), timeout.Token);
+                await timeline.SilenceUntilAsync(Math.Min(horizon, pending is null ? horizon : timeline.PacketStartFrame(pending)), timeout.Token);
                 if (ended >= 0 && !packets.Reader.TryPeek(out _))
                     break;
                 await timer.WaitForNextTickAsync();

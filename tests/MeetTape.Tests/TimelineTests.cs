@@ -131,16 +131,22 @@ public sealed class TimelineTests
     }
 
     [Fact]
-    public async Task LargeOverlapStillStopsInsteadOfHidingLateSpeech()
+    public async Task LargeOverlapPreservesSpeechAndReportsCorrection()
     {
         using var stream = new MemoryStream();
         var timeline = new PcmTimeline(stream, Origin);
+        var warnings = new List<AudioTimingIssue>();
+        timeline.TimingIssue = warnings.Add;
         await timeline.SilenceUntilAsync(9600);
         using var packet = Packet(48000, 480, Origin + 1_000_000, 0);
-        var error = await Assert.ThrowsAsync<RecordingException>(async () => await timeline.AppendAsync(packet, null, 12000));
-        Assert.Contains("Recent WASAPI packet metadata", error.Message);
-        Assert.Contains("device=0", error.Message);
-        Assert.Contains("committed=9600", error.Message);
+        Array.Fill(packet.Samples, 0.5f, 0, packet.Frames);
+        await timeline.AppendAsync(packet, null, 12000);
+        Assert.Equal(10080, timeline.FramesWritten);
+        Assert.All(Samples(stream)[9600..10080], sample => Assert.Equal(0.5f, sample));
+        var warning = Assert.Single(warnings);
+        Assert.Equal(AudioTimingIssueKind.Overlap, warning.Kind);
+        Assert.Equal(4800, warning.ShiftFrames);
+        Assert.Contains("device=0", warning.Detail);
     }
 
     [Fact]
@@ -210,13 +216,71 @@ public sealed class TimelineTests
     }
 
     [Fact]
-    public async Task LateAudioFailsInsteadOfSilentlyDroppingSpeech()
+    public async Task LateAudioContinuesAtCommittedFrame()
     {
         using var stream = new MemoryStream();
         var timeline = new PcmTimeline(stream, Origin);
         await timeline.SilenceUntilAsync(4800);
         using var packet = Packet(48000, 480, Origin, 0);
-        await Assert.ThrowsAsync<RecordingException>(async () => await timeline.AppendAsync(packet, null, 9600));
+        await timeline.AppendAsync(packet, null, 9600);
+        Assert.Equal(5280, timeline.FramesWritten);
+        Assert.Equal(1, timeline.ClockAdjustments);
+    }
+
+    [Theory]
+    [InlineData(-15_000_000L)]
+    [InlineData(400_000_000L)]
+    public async Task UntrustworthyQpcUsesArrivalTimeAndContinues(long positionOffset)
+    {
+        using var stream = new MemoryStream();
+        var timeline = new PcmTimeline(stream, Origin);
+        var warnings = new List<AudioTimingIssue>();
+        timeline.TimingIssue = warnings.Add;
+        using var packet = Packet(48000, 480, Origin + positionOffset, 0, received: Origin + 20_000_000);
+        await timeline.AppendAsync(packet, null, 200000);
+        Assert.Equal(96000, timeline.FramesWritten);
+        Assert.Equal(1, timeline.ClockAdjustments);
+        Assert.Equal(AudioTimingIssueKind.InvalidTimestamp, Assert.Single(warnings).Kind);
+        Assert.Equal(1, Samples(stream)[95520..96000].Min());
+    }
+
+    [Fact]
+    public async Task TimestampErrorFlagUsesArrivalTimeWithoutStopping()
+    {
+        using var stream = new MemoryStream();
+        var timeline = new PcmTimeline(stream, Origin);
+        var warnings = new List<AudioTimingIssue>();
+        timeline.TimingIssue = warnings.Add;
+        using var packet = Packet(48000, 480, 0, 480, AudioClientBufferFlags.TimestampError,
+            received: Origin + 10_000_000);
+        await timeline.AppendAsync(packet, null, 96000);
+        Assert.Equal(48000, timeline.FramesWritten);
+        Assert.Equal(AudioTimingIssueKind.InvalidTimestamp, Assert.Single(warnings).Kind);
+    }
+
+    [Fact]
+    public async Task RepeatedDeviceClockResetsDoNotAccumulateAnUnboundedPacketQueue()
+    {
+        var timeline = new PcmTimeline(Stream.Null, Origin);
+        const int packets = 2500;
+        for (int i = 0; i < packets; i++)
+        {
+            int deviceFrame = i % 25 * 480;
+            using var packet = Packet(48000, 480, Origin + deviceFrame * 10_000_000L / 48000, deviceFrame);
+            await timeline.AppendAsync(packet, null, long.MaxValue);
+        }
+        Assert.Equal(packets * 480L, timeline.FramesWritten);
+        Assert.True(timeline.ClockAdjustments > 0);
+    }
+
+    [Fact]
+    public async Task BrokenOutputStreamStillFailsInsteadOfDiscardingAudio()
+    {
+        var stream = new MemoryStream();
+        var timeline = new PcmTimeline(stream, Origin);
+        stream.Dispose();
+        using var packet = Packet(48000, 480, Origin, 0);
+        await Assert.ThrowsAsync<ObjectDisposedException>(async () => await timeline.AppendAsync(packet, null, 48000));
     }
 
     [Fact]
@@ -245,20 +309,22 @@ public sealed class TimelineTests
     }
 
     [Fact]
-    public void InvalidTimestampAndOversizedPacketsFail()
+    public void TimestampErrorIsPassedToTimelineButInvalidPcmStillFails()
     {
         var format = WaveFormat.CreateIeeeFloatWaveFormat(48000, 1);
-        Assert.Throws<RecordingException>(() => AudioPacket.Copy(new WasapiPacketEventArgs(new byte[4], 4, 0, Origin,
-            AudioClientBufferFlags.TimestampError), format));
+        using var packet = AudioPacket.Copy(new WasapiPacketEventArgs(new byte[4], 4, 0, Origin,
+            AudioClientBufferFlags.TimestampError), format, Origin + 1_000_000);
+        Assert.True(packet.Flags.HasFlag(AudioClientBufferFlags.TimestampError));
         byte[] large = new byte[48000 * sizeof(float)];
         Assert.Throws<RecordingException>(() => AudioPacket.Copy(new WasapiPacketEventArgs(large, large.Length, 0, Origin, 0), format));
     }
 
-    private static AudioPacket Packet(int rate, int count, long position, long devicePosition, AudioClientBufferFlags flags = 0)
+    private static AudioPacket Packet(int rate, int count, long position, long devicePosition,
+        AudioClientBufferFlags flags = 0, long received = 0)
     {
         float[] samples = ArrayPool<float>.Shared.Rent(count);
         Array.Fill(samples, 1f, 0, count);
-        return new(samples, count, rate, position, devicePosition, flags);
+        return new(samples, count, rate, position, devicePosition, flags) { Received100ns = received };
     }
 
     private static float[] Samples(MemoryStream stream)

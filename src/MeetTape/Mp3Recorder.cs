@@ -46,9 +46,11 @@ public sealed class Mp3Recorder
             lease = created.Lease;
             Capture.RecordingDirectory = directory;
             me = new(configuration.Settings.Capture.FfmpegPath, Path.Combine(directory, "me.mp3"), Mp3Track.To100ns(origin),
-                error => Capture.Abort(CaptureChannel.Me, error));
+                error => Capture.Abort(CaptureChannel.Me, error),
+                issue => Capture.ReportTiming(CaptureChannel.Me, issue));
             them = new(configuration.Settings.Capture.FfmpegPath, Path.Combine(directory, "them.mp3"), Mp3Track.To100ns(origin),
-                error => Capture.Abort(CaptureChannel.Them, error));
+                error => Capture.Abort(CaptureChannel.Them, error),
+                issue => Capture.ReportTiming(CaptureChannel.Them, issue));
         }
         catch (Exception ex)
         {
@@ -72,7 +74,8 @@ public sealed class Mp3Recorder
                 RecordingState = error is null ? RecordingState.Recorded : RecordingState.Failed,
                 JobState = error is null ? JobState.NotStarted : JobState.Paused,
                 Trim = session.Trim with { EndSeconds = status.Duration.TotalSeconds },
-                Discontinuities = status.Discontinuities, ClockAdjustments = status.ClockAdjustments, Error = error
+                Discontinuities = status.Discontinuities, ClockAdjustments = status.ClockAdjustments,
+                MeTiming = status.MeTiming, ThemTiming = status.ThemTiming, Error = error
             };
             SessionStore.ProtectOriginals(status.RecordingDirectory);
             SessionStore.Save(status.RecordingDirectory, session);
