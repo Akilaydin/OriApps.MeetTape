@@ -44,7 +44,11 @@ public sealed class DesktopInstanceTests
         var terminated = new Thread(() => previous.WaitOne());
         terminated.Start();
         Assert.True(terminated.Join(TimeSpan.FromSeconds(5)));
-        using var replacement = new DesktopInstance(name);
-        Assert.True(replacement.IsPrimary);
+        // Managed thread completion can precede Windows releasing its owned mutex.
+        Assert.True(SpinWait.SpinUntil(() =>
+        {
+            using var replacement = new DesktopInstance(name);
+            return replacement.IsPrimary;
+        }, TimeSpan.FromSeconds(5)));
     }
 }
