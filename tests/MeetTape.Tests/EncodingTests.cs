@@ -172,11 +172,14 @@ public sealed class EncodingTests : IDisposable
         float[] me = await DecodeAsync(Path.Combine(folder, "me.mp3"));
         float[] received = await DecodeAsync(Path.Combine(folder, "them.mp3"));
         Assert.Equal(me.Length, received.Length);
-        Assert.Equal(status.AudioFrames, received.LongLength);
+        // FFmpeg can round encoder delay/padding by a few decoded samples; require sub-millisecond accuracy.
+        const long maxMp3RoundingFrames = PcmTimeline.SampleRate / 1000;
+        Assert.InRange(Math.Abs(status.AudioFrames - received.LongLength), 0, maxMp3RoundingFrames);
         Assert.True(received[^480..].Any(sample => sample > 0.2f), "The recovered tail must contain real audio, not padded silence.");
         var session = SessionStore.Read(folder);
         Assert.Equal(RecordingState.Recorded, session.RecordingState);
-        Assert.Equal(received.Length / (double)PcmTimeline.SampleRate, session.DurationSeconds!.Value, 6);
+        Assert.InRange(Math.Abs(received.Length / (double)PcmTimeline.SampleRate - session.DurationSeconds!.Value),
+            0, maxMp3RoundingFrames / (double)PcmTimeline.SampleRate);
         Assert.Equal(session.DurationSeconds, session.Trim.EndSeconds);
         Assert.True(session.DurationSeconds > status.Duration.TotalSeconds);
         var stages = new Dictionary<string, StageProgress>(session.Stages)
