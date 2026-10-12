@@ -16,7 +16,20 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private bool updating;
     private bool shutdownStarted;
     private SessionRow? selected;
+    private SessionRow[] allSessions = [];
+    private string searchText = "";
     public ObservableCollection<SessionRow> Sessions { get; } = [];
+    public string SearchText
+    {
+        get => searchText;
+        set
+        {
+            if (searchText == value) return;
+            searchText = value ?? "";
+            UpdateSessionList();
+            Changed();
+        }
+    }
     public SessionRow? SelectedSession { get => selected; set { selected = value; Changed(); } }
     public string CaptureText => snapshot.Capture.IsActive ? "Recording — " + snapshot.Capture.Duration.ToString(@"hh\:mm\:ss") :
         snapshot.Capture.Error is not null ? "Recording stopped with errors" : controller is null ? "Open Settings to configure MeetTape" : "Ready";
@@ -209,15 +222,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
             snapshot = updated;
             foreach (var meeting in updated.Sessions)
                 if (meeting.Data is { JobState: JobState.Completed, Error: null } completed) ClearProcessingIssues(completed.Id);
-            var rows = updated.Sessions.OrderByDescending(s => s.Data?.StartedAtUtc).Select(SessionRow.From).ToArray();
-            if (!Sessions.SequenceEqual(rows))
-            {
-                Guid? id = selected?.Id;
-                string? directory = selected?.Directory;
-                Sessions.Clear();
-                foreach (var row in rows) Sessions.Add(row);
-                selected = Sessions.FirstOrDefault(s => id is not null ? s.Id == id : s.Directory == directory);
-            }
+            allSessions = updated.Sessions.OrderByDescending(s => s.Data?.StartedAtUtc).Select(SessionRow.From).ToArray();
+            UpdateSessionList();
             if (snapshot.AwaitingTitleDirectory is { } awaiting && NamingDirectory is null)
                 BeginNaming(awaiting, null);
             if (snapshot.Capture.Error is { } error) ErrorText = error;
@@ -225,6 +231,32 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
         catch (Exception) { SetError("Cannot refresh sessions; check meeting folder and metadata permissions."); }
         finally { refreshing = false; }
+    }
+
+    private static bool SameMeeting(SessionRow a, SessionRow b) => a.Id is { } id && b.Id is not null ? id == b.Id :
+        string.Equals(a.Directory, b.Directory, StringComparison.OrdinalIgnoreCase);
+
+    private void UpdateSessionList()
+    {
+        var previousSelection = selected;
+        string query = searchText.Trim();
+        var rows = allSessions.Where(s => s.Title.Contains(query, StringComparison.CurrentCultureIgnoreCase)
+            || s.Date.Contains(query, StringComparison.CurrentCultureIgnoreCase)).ToArray();
+        for (int i = Sessions.Count - 1; i >= 0; i--)
+            if (!rows.Any(row => SameMeeting(row, Sessions[i]))) Sessions.RemoveAt(i);
+        for (int i = 0; i < rows.Length; i++)
+        {
+            int existing = -1;
+            for (int j = i; j < Sessions.Count; j++)
+                if (SameMeeting(Sessions[j], rows[i])) { existing = j; break; }
+            if (existing < 0) Sessions.Insert(i, rows[i]);
+            else
+            {
+                if (existing != i) Sessions.Move(existing, i);
+                if (Sessions[i] != rows[i]) Sessions[i] = rows[i];
+            }
+        }
+        selected = previousSelection is null ? null : Sessions.FirstOrDefault(s => SameMeeting(s, previousSelection));
     }
 
     internal void RefreshCapture(CaptureStatus capture)

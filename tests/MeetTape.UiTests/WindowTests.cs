@@ -8,6 +8,8 @@ using Avalonia.Input.Platform;
 using Avalonia.Media.Imaging;
 using Avalonia.Styling;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
+using System.Collections.Specialized;
 
 [assembly: AvaloniaTestApplication(typeof(MeetTape.UiTests.TestApp))]
 
@@ -21,6 +23,102 @@ public static class TestApp
 
 public sealed class WindowTests
 {
+    [AvaloniaFact]
+    public async Task SearchUsesTitlesAndDisplayedDatesAndClearsMissingSelectionWithoutReadingDocuments()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var session = fake.Snapshot.Sessions[0];
+        var first = session with { Data = session.Data! with { Title = "Roadmap review", StartedAtUtc = DateTimeOffset.UtcNow } };
+        var second = session with { Directory = Path.Combine(fixture.Root, "second"), Data = session.Data! with
+            { Id = Guid.NewGuid(), Title = "Standup", StartedAtUtc = first.Data!.StartedAtUtc.AddHours(-1) } };
+        var unnamed = session with { Directory = Path.Combine(fixture.Root, "unnamed"), Data = session.Data! with
+            { Id = Guid.NewGuid(), Title = null, StartedAtUtc = first.Data!.StartedAtUtc.AddDays(-1) } };
+        fake.Snapshot = fake.Snapshot with { Sessions = [unnamed, first, second] };
+        var model = new MainViewModel(fake);
+        await model.RefreshAsync();
+        Assert.Equal(new[] { first.Data!.Id, second.Data!.Id, unnamed.Data!.Id }, model.Sessions.Select(s => s.Id!.Value));
+        model.SelectedSession = model.Sessions[0];
+        model.SearchText = "  STAND  ";
+        Assert.Equal(second.Data!.Id, Assert.Single(model.Sessions).Id);
+        Assert.Null(model.SelectedSession);
+        Assert.False(model.CanOpen); Assert.False(model.CanPrepare); Assert.False(model.CanResume);
+        await model.ResumeAsync(); Assert.Equal(0, fake.Resumes);
+        model.SearchText = "UNNAMED";
+        Assert.Equal(unnamed.Data!.Id, Assert.Single(model.Sessions).Id);
+        model.SearchText = "";
+        string displayedDate = model.Sessions[1].Date;
+        model.SearchText = displayedDate;
+        Assert.Equal(second.Data!.Id, Assert.Single(model.Sessions).Id);
+        model.SearchText = "";
+        model.SelectedSession = model.Sessions[1];
+        fake.Snapshot = fake.Snapshot with { Sessions = [first, unnamed] };
+        await model.RefreshAsync();
+        Assert.Null(model.SelectedSession);
+        Assert.False(model.CanOpen); Assert.False(model.CanSummary);
+        var newest = first with { Directory = Path.Combine(fixture.Root, "new"), Data = first.Data! with
+            { Id = Guid.NewGuid(), Title = "New meeting", StartedAtUtc = first.Data!.StartedAtUtc.AddMinutes(1) } };
+        fake.Snapshot = fake.Snapshot with { Sessions = [first, newest, unnamed] };
+        await model.RefreshAsync();
+        Assert.Equal(newest.Data!.Id, model.Sessions[0].Id);
+        model.SearchText = "New meeting";
+        fake.Snapshot = fake.Snapshot with { Sessions = [first, unnamed] };
+        await model.RefreshAsync();
+        Assert.Empty(model.Sessions);
+        Assert.Equal(0, fake.Starts); Assert.Equal(0, fake.Summaries);
+        model.Detach();
+    }
+
+    [AvaloniaFact]
+    public async Task OtherMeetingProgressRefreshKeepsSelectedRowAndScrollPositionWithoutCollectionReset()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var basis = fake.Snapshot.Sessions[0];
+        var meetings = Enumerable.Range(0, 40).Select(i => basis with
+        {
+            Directory = Path.Combine(fixture.Root, "meeting-" + i),
+            Data = Published(basis.Data!) with { Id = Guid.NewGuid(), Title = "Meeting " + i,
+                StartedAtUtc = basis.Data!.StartedAtUtc.AddMinutes(-i) }
+        }).ToArray();
+        fake.Snapshot = fake.Snapshot with { Sessions = meetings };
+        var model = new MainViewModel(fake);
+        var changes = new List<NotifyCollectionChangedAction>();
+        model.Sessions.CollectionChanged += (_, e) => changes.Add(e.Action);
+        var window = new MainWindow { DataContext = model };
+        window.Show(); await model.RefreshAsync();
+        var list = window.FindControl<ListBox>("SessionList")!;
+        list.SelectedIndex = 20;
+        list.ScrollIntoView(20); window.UpdateLayout(); Dispatcher.UIThread.RunJobs();
+        var viewer = list.GetVisualDescendants().OfType<ScrollViewer>().Single();
+        Assert.True(viewer.Offset.Y > 0);
+        var offset = viewer.Offset;
+        var selected = model.SelectedSession;
+        var unchanged = model.Sessions[21];
+        changes.Clear();
+        var data = meetings[0].Data!;
+        meetings[0] = meetings[0] with { Data = data with { JobState = JobState.Running,
+            Stages = new(data.Stages) { ["transcribe"] = new(true, StageState.Running, 3, 8) } } };
+        fake.Snapshot = fake.Snapshot with { Sessions = meetings };
+        await model.RefreshAsync(); window.UpdateLayout(); Dispatcher.UIThread.RunJobs();
+        Assert.Same(selected, model.SelectedSession);
+        Assert.Same(selected, list.SelectedItem);
+        Assert.Same(unchanged, model.Sessions[21]);
+        Assert.Equal(offset, viewer.Offset);
+        Assert.Equal(new[] { NotifyCollectionChangedAction.Replace }, changes);
+        Assert.Equal("Chunks: 3/8", model.Sessions[0].Progress);
+        Assert.True(model.CanOpen);
+        window.FindControl<TextBox>("MeetingSearch")!.Text = "Meeting 20";
+        Assert.Single(model.Sessions);
+        Assert.Same(selected, model.SelectedSession);
+        window.FindControl<TextBox>("MeetingSearch")!.Text = "not present";
+        Assert.Empty(model.Sessions);
+        Assert.Null(list.SelectedItem); Assert.False(model.CanOpen);
+        window.FindControl<TextBox>("MeetingSearch")!.Text = "";
+        Assert.Equal(40, model.Sessions.Count);
+        Close(window, model);
+    }
+
     [AvaloniaTheory]
     [InlineData("empty", "No active jobs")]
     [InlineData("queued", "Processing queued")]
