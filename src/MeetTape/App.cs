@@ -20,6 +20,7 @@ public sealed class App : Application
     private TrayIcon? tray;
     private NativeMenuItem? record;
     private NativeMenuItem? status;
+    private NativeMenuItem? processingStatus;
     private bool allowShutdown;
     private bool openingSettings;
     private bool initialized;
@@ -42,17 +43,18 @@ public sealed class App : Application
             Instance?.Listen(() => Dispatcher.UIThread.Post(() => { if (!allowShutdown) ShowWindow(); }));
             var menu = new NativeMenu();
             status = new NativeMenuItem(model.CaptureText) { IsEnabled = false };
+            processingStatus = new NativeMenuItem(model.ProcessingText) { IsEnabled = false };
             var open = new NativeMenuItem("Open MeetTape");
             open.Click += (_, _) => ShowWindow();
             record = new NativeMenuItem("Start recording") { IsEnabled = false };
             record.Click += async (_, _) => { await model.ToggleAsync(); if (model.IsNaming) ShowWindow(); };
             var exit = new NativeMenuItem("Exit");
             exit.Click += async (_, _) => await ExitAsync();
-            menu.Items.Add(status); menu.Items.Add(open); menu.Items.Add(record); menu.Items.Add(exit);
+            menu.Items.Add(status); menu.Items.Add(processingStatus); menu.Items.Add(open); menu.Items.Add(record); menu.Items.Add(exit);
             using var iconStream = AssetLoader.Open(new Uri("avares://MeetTape/Assets/MeetTape.png"));
             var icon = new WindowIcon(iconStream);
             window.Icon = icon;
-            tray = new TrayIcon { Icon = icon, ToolTipText = "MeetTape", Menu = menu };
+            tray = new TrayIcon { Icon = icon, ToolTipText = model.TrayText, Menu = menu };
             tray.Clicked += (_, _) => ShowWindow();
             TrayIcon.SetIcons(this, [tray]);
             model.PropertyChanged += ModelChanged;
@@ -70,9 +72,9 @@ public sealed class App : Application
     private void ModelChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
         if (status is not null) status.Header = model.CaptureText;
+        if (processingStatus is not null) processingStatus.Header = model.ProcessingText;
         if (record is not null) { record.Header = model.RecordLabel; record.IsEnabled = model.CanRecord; }
-        if (tray is not null) tray.ToolTipText = "MeetTape — " +
-            (model.HasError || model.HasProcessingErrors ? "Error: open window" : model.HasWarnings || model.HasProcessingIssues ? "Warning: open window — " : "") + model.CaptureText;
+        if (tray is not null) tray.ToolTipText = model.TrayText;
     }
 
     private async Task InitializeAsync()
@@ -93,7 +95,8 @@ public sealed class App : Application
                     window!.FindControl<Expander>("DiagnosticsExpander")!.IsExpanded = true;
                     var details = window!.FindControl<TextBox>("DiagnosticDetails")!;
                     details.SelectAll();
-                    if (details.SelectedText != model.DiagnosticText)
+                    if (details.SelectedText != model.DiagnosticText || !Equals(status!.Header, model.CaptureText)
+                        || !Equals(processingStatus!.Header, model.ProcessingText) || tray!.ToolTipText != model.TrayText)
                     { timer.Stop(); desktop!.Shutdown(1); return; }
                 }
                 if (tick == 5) { timer.Stop(); await ExitAsync(); }

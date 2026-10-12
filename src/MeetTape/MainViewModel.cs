@@ -21,6 +21,45 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string CaptureText => snapshot.Capture.IsActive ? "Recording — " + snapshot.Capture.Duration.ToString(@"hh\:mm\:ss") :
         snapshot.Capture.Error is not null ? "Recording stopped with errors" : controller is null ? "Open Settings to configure MeetTape" : "Ready";
     public string RecordLabel => snapshot.Capture.IsActive ? "Stop" : "Start recording";
+    public string ProcessingText
+    {
+        get
+        {
+            if (IsRecording) return HasProcessingErrors || snapshot.Sessions.Any(s => s.Data is { RecordingState: RecordingState.Recorded, JobState: JobState.Paused })
+                ? "Processing deferred; jobs paused" : "Processing deferred during recording";
+            if (snapshot.AwaitingTitleDirectory is not null) return "Processing deferred: finish naming";
+            var meetings = snapshot.Sessions.Select(s => s.Data).OfType<SessionData>()
+                .Where(s => s.RecordingState == RecordingState.Recorded).ToArray();
+            var jobs = meetings.Where(ProcessingJobs.Eligible).ToArray();
+            int paused = meetings.Count(s => s.JobState == JobState.Paused);
+            if (HasProcessingErrors && paused == 0) paused = 1;
+            if (jobs.Length > 0 && paused > 0) return $"Processing: {jobs.Length} jobs; {paused} paused";
+            if (paused > 0) return "Processing paused: open MeetTape";
+            if (snapshot.Preparing) return "Preparing audio";
+            if (jobs.Length > 0)
+            {
+                bool retrying = jobs.All(s => s.Retry is { } retry && retry.NextAttemptUtc > DateTimeOffset.UtcNow);
+                if (retrying) return jobs.Length == 1 ? "Processing: retry scheduled" : $"Processing: {jobs.Length} jobs waiting to retry";
+                if (jobs.Length > 1) return $"Processing: {jobs.Length} jobs";
+                var job = jobs[0];
+                if (job.Stages.TryGetValue("transcribe", out var transcription) && transcription.Status != StageState.Completed
+                    && transcription.TotalChunks is > 0)
+                    return $"Processing: {transcription.CompletedChunks}/{transcription.TotalChunks} chunks";
+                return job.Stages.FirstOrDefault(s => s.Value.Status == StageState.Running).Key switch
+                {
+                    "prepare" => "Preparing audio",
+                    "assemble" => "Assembling transcript",
+                    "summary" => "Processing: Summary",
+                    _ => "Processing queued"
+                };
+            }
+            if (meetings.Any(s => s.Stages.TryGetValue("trim", out var trim) && trim.Enabled && trim.Status != StageState.Completed))
+                return "Waiting for trim choice";
+            return meetings.Any(s => s.JobState == JobState.Completed) ? "Processing complete" : "No active jobs";
+        }
+    }
+    public string TrayText => $"MeetTape — {CaptureText} · {ProcessingText}" +
+        (HasError || HasProcessingErrors ? " · Error: open MeetTape" : HasWarnings ? " · Warning: open MeetTape" : "");
     public bool CanRecord => controller is not null && !busy && !updating && !shutdownStarted && NamingDirectory is null && snapshot.AwaitingTitleDirectory is null;
     public bool CanProcess => controller is not null && !busy && !updating && !shutdownStarted && !snapshot.Capture.IsActive && selected is not null && NamingDirectory is null;
     public bool CanPrepare => CanProcess && selected!.NeedsPreparation;
@@ -124,7 +163,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         if (notice.SessionId is not null)
         {
-            if (notice.Kind == NoticeKind.Information) return;
+            if (notice.Kind == NoticeKind.Information)
+            {
+                ClearProcessingIssues(notice.SessionId.Value);
+                Changed();
+                return;
+            }
             if (processingIssues.Contains(notice)) return;
             if (processingIssues.Count == 8) processingIssues.Dequeue();
             processingIssues.Enqueue(notice);
@@ -140,6 +184,16 @@ public sealed class MainViewModel : INotifyPropertyChanged
         Changed();
     });
 
+    private void ClearProcessingIssues(Guid id)
+    {
+        int count = processingIssues.Count;
+        for (int i = 0; i < count; i++)
+        {
+            var issue = processingIssues.Dequeue();
+            if (issue.SessionId != id) processingIssues.Enqueue(issue);
+        }
+    }
+
     public async Task RefreshAsync()
     {
         if (controller is null || refreshing) return;
@@ -153,6 +207,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 TrimEnd = suggestion.EndSeconds.ToString("F3", CultureInfo.InvariantCulture);
             }
             snapshot = updated;
+            foreach (var meeting in updated.Sessions)
+                if (meeting.Data is { JobState: JobState.Completed, Error: null } completed) ClearProcessingIssues(completed.Id);
             var rows = updated.Sessions.OrderByDescending(s => s.Data?.StartedAtUtc).Select(SessionRow.From).ToArray();
             if (!Sessions.SequenceEqual(rows))
             {
