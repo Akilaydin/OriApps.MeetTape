@@ -47,29 +47,145 @@ public sealed class EncodingTests : IDisposable
     public async Task TrackWithoutCallbacksStillCreatesFullLengthSilentMp3()
     {
         string path = Path.Combine(directory, "them.mp3");
-        var track = new Mp3Track("ffmpeg", path, 1_000_000, error => throw new Exception(error.Message));
-        await track.CompleteAsync(21_000_000);
+        long origin = Mp3Track.To100ns(Stopwatch.GetTimestamp());
+        var track = new Mp3Track("ffmpeg", path, origin, error => throw new Exception(error.Message));
+        await track.CompleteAsync(origin + 20_000_000);
         float[] decoded = await DecodeAsync(path);
         Assert.Equal(96000, decoded.Length);
         Assert.All(decoded, sample => Assert.InRange(Math.Abs(sample), 0, 0.001));
     }
 
     [Fact]
-    public async Task CaptureFailureFlushesAlreadyEncodedAudioBeforeClosingFfmpeg()
+    public async Task LateAudioKeepsMp3EncodingAndReportsRecovery()
     {
-        string path = Path.Combine(directory, "partial.mp3");
+        string path = Path.Combine(directory, "recovered.mp3");
         var failure = new TaskCompletionSource<RecordingException>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var track = new Mp3Track("ffmpeg", path, 0, error => failure.TrySetResult(error));
+        var warnings = new System.Collections.Concurrent.ConcurrentQueue<AudioTimingIssue>();
+        long origin = Mp3Track.To100ns(Stopwatch.GetTimestamp());
+        var track = new Mp3Track("ffmpeg", path, origin, error => failure.TrySetResult(error), warnings.Enqueue);
         for (int i = 0; i < 10; i++)
-            track.Enqueue(Tone(48000, 480, i * 100_000L));
-        track.Enqueue(Tone(48000, 480, 0)); // One whole packet arrives behind 100 ms of committed audio.
-        track.Enqueue(Tone(48000, 480, 1_100_000));
+            track.Enqueue(Tone(48000, 480, origin + i * 100_000L));
+        track.Enqueue(Tone(48000, 480, origin)); // One whole packet arrives behind 100 ms of committed audio.
+        track.Enqueue(Tone(48000, 480, origin + 1_100_000));
 
-        var error = await failure.Task.WaitAsync(TimeSpan.FromSeconds(10));
-        Assert.Contains("Audio arrived after its timeline was committed", error.Message);
-        await Assert.ThrowsAsync<RecordingException>(() => track.CompleteAsync(10_000_000));
+        await track.CompleteAsync(origin + 10_000_000);
+        Assert.False(failure.Task.IsCompleted);
+        Assert.Contains(warnings, warning => warning.Kind == AudioTimingIssueKind.Overlap);
         float[] decoded = await DecodeAsync(path);
-        Assert.Equal(4800, decoded.Length); // All 100 ms of accepted audio must survive FFmpeg's final flush.
+        Assert.Equal(48000, decoded.Length);
+    }
+
+    [Fact]
+    public async Task TimingWarningIsVisibleDuringCaptureAndSavedInSession()
+    {
+        string example = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../config.example.json"));
+        var loaded = ConfigurationLoader.Load(example);
+        var config = loaded with { Settings = loaded.Settings with { MeetingsRoot = directory } };
+        SyntheticSource? them = null;
+        using var capture = new Mp3Recorder(config, () =>
+        {
+            them = new SyntheticSource();
+            return new CaptureSources(new SyntheticSource(), them);
+        }).Capture;
+        var warnings = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        capture.Warning += warnings.Enqueue;
+        capture.Start();
+        long qpc = Mp3Track.To100ns(Stopwatch.GetTimestamp());
+        them!.Emit(qpc, devicePosition: 0);
+        them.Emit(qpc, devicePosition: 0);
+        them.Emit(qpc, devicePosition: 0);
+        Assert.True(SpinWait.SpinUntil(() => capture.Status.ThemTiming.Corrections > 0,
+            TimeSpan.FromSeconds(5)), "Audio timing warning was not reported during capture.");
+        Assert.True(capture.Status.IsActive);
+        Assert.Null(capture.Status.Error);
+        Assert.Single(warnings);
+        Assert.Contains("Recording continues", warnings.Single());
+        capture.Stop();
+        var session = SessionStore.Read(capture.RecordingDirectory!);
+        Assert.Equal(RecordingState.Recorded, session.RecordingState);
+        Assert.Equal(capture.Status.ThemTiming.Corrections, session.ThemTiming.Corrections);
+        Assert.Equal(session.ThemTiming.Corrections, session.ClockAdjustments);
+        Assert.NotNull(session.ThemTiming.LastIssue);
+        float[] me = await DecodeAsync(Path.Combine(capture.RecordingDirectory!, "me.mp3"));
+        float[] other = await DecodeAsync(Path.Combine(capture.RecordingDirectory!, "them.mp3"));
+        Assert.Equal(me.Length, other.Length);
+    }
+
+    [Fact]
+    public async Task TimestampErrorFromWasapiStillProducesCompleteRecordedSession()
+    {
+        string example = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../config.example.json"));
+        var loaded = ConfigurationLoader.Load(example);
+        var config = loaded with { Settings = loaded.Settings with { MeetingsRoot = directory } };
+        SyntheticSource? them = null;
+        using var capture = new Mp3Recorder(config, () =>
+        {
+            them = new SyntheticSource();
+            return new CaptureSources(new SyntheticSource(), them);
+        }).Capture;
+        var warnings = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        capture.Warning += warnings.Enqueue;
+        capture.Start();
+        them!.Emit(qpc: 0, flags: NAudio.CoreAudioApi.AudioClientBufferFlags.TimestampError);
+        them.Emit();
+        Assert.True(SpinWait.SpinUntil(() => capture.Status.ThemTiming.InvalidTimestamps == 1,
+            TimeSpan.FromSeconds(5)), "TimestampError did not reach the recording timeline.");
+        Assert.True(capture.Status.IsActive);
+        Assert.Contains(warnings, warning => warning.Contains("invalid WASAPI timestamp"));
+        capture.Stop();
+        var saved = SessionStore.Read(capture.RecordingDirectory!);
+        Assert.Equal(RecordingState.Recorded, saved.RecordingState);
+        Assert.Null(saved.Error);
+        Assert.Equal(1, saved.ThemTiming.InvalidTimestamps);
+        Assert.True(saved.ClockAdjustments >= 1);
+        Assert.Equal(saved.ThemTiming.Corrections, saved.ClockAdjustments);
+        Assert.Equal((await DecodeAsync(Path.Combine(capture.RecordingDirectory!, "me.mp3"))).Length,
+            (await DecodeAsync(Path.Combine(capture.RecordingDirectory!, "them.mp3"))).Length);
+    }
+
+    [Fact]
+    public async Task BackloggedPacketsExtendBothTracksAndPersistFullTranscribableDuration()
+    {
+        string example = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../config.example.json"));
+        var loaded = ConfigurationLoader.Load(example);
+        var config = loaded with { Settings = loaded.Settings with { MeetingsRoot = directory } };
+        SyntheticSource? them = null;
+        using var capture = new Mp3Recorder(config, () =>
+        {
+            them = new SyntheticSource();
+            return new CaptureSources(new SyntheticSource(), them);
+        }).Capture;
+
+        capture.Start();
+        long repeatedQpc = Mp3Track.To100ns(Stopwatch.GetTimestamp());
+        // Amplify the synthetic backlog without sleeping, so even under parallel CI load
+        // the recovered media is measurably longer than the wall-clock capture.
+        for (int i = 0; i < 48; i++)
+            them!.Emit(qpc: repeatedQpc, frames: 4800, amplitude: 0.5f);
+        capture.Stop();
+
+        var status = capture.Status;
+        Assert.Null(status.Error);
+        Assert.True(status.AudioFrames > Math.Round(status.Duration.TotalSeconds * PcmTimeline.SampleRate),
+            "The test must create a backlog longer than the wall-clock capture.");
+        string folder = capture.RecordingDirectory!;
+        float[] me = await DecodeAsync(Path.Combine(folder, "me.mp3"));
+        float[] received = await DecodeAsync(Path.Combine(folder, "them.mp3"));
+        Assert.Equal(me.Length, received.Length);
+        Assert.Equal(status.AudioFrames, received.LongLength);
+        Assert.True(received[^480..].Any(sample => sample > 0.2f), "The recovered tail must contain real audio, not padded silence.");
+        var session = SessionStore.Read(folder);
+        Assert.Equal(RecordingState.Recorded, session.RecordingState);
+        Assert.Equal(received.Length / (double)PcmTimeline.SampleRate, session.DurationSeconds!.Value, 6);
+        Assert.Equal(session.DurationSeconds, session.Trim.EndSeconds);
+        Assert.True(session.DurationSeconds > status.Duration.TotalSeconds);
+        var stages = new Dictionary<string, StageProgress>(session.Stages)
+        {
+            ["trim"] = session.Stages["trim"] with { Status = StageState.Completed }
+        };
+        var ready = session with { Stages = stages, Trim = session.Trim with { Decision = "skip" } };
+        var prepared = await new AudioChunker("ffmpeg").PrepareAsync(folder, ready, CancellationToken.None);
+        Assert.Equal(status.AudioFrames, Assert.Single(prepared.Chunks).OwnEndFrame);
     }
 
     [Fact]
@@ -95,7 +211,9 @@ public sealed class EncodingTests : IDisposable
             await Task.Delay(30);
             capture.Stop();
             Assert.Null(capture.Status.Error);
-            Assert.Equal(RecordingState.Recorded, SessionStore.Read(capture.RecordingDirectory!).RecordingState);
+            var saved = SessionStore.Read(capture.RecordingDirectory!);
+            Assert.Equal(RecordingState.Recorded, saved.RecordingState);
+            Assert.Equal(capture.Status.Duration.TotalSeconds, saved.DurationSeconds);
             folders.Add(capture.RecordingDirectory!);
             float[] me = await DecodeAsync(Path.Combine(folders[i], "me.mp3"));
             float[] them = await DecodeAsync(Path.Combine(folders[i], "them.mp3"));
@@ -113,11 +231,15 @@ public sealed class EncodingTests : IDisposable
         public event EventHandler<StoppedEventArgs>? RecordingStopped;
         public void StartRecording() { }
         public void StopRecording() => RecordingStopped?.Invoke(this, new StoppedEventArgs());
-        public void Emit()
+        public void Emit(long? qpc = null, long devicePosition = 0,
+            NAudio.CoreAudioApi.AudioClientBufferFlags flags = 0, float amplitude = 0, int frames = 480)
         {
-            var bytes = new byte[480 * sizeof(float)];
-            DataAvailable?.Invoke(this, new WasapiPacketEventArgs(bytes, bytes.Length, 0,
-                Mp3Track.To100ns(Stopwatch.GetTimestamp()), 0));
+            var bytes = new byte[frames * sizeof(float)];
+            if (amplitude != 0)
+                for (int i = 0; i < bytes.Length; i += sizeof(float))
+                    BinaryPrimitives.WriteSingleLittleEndian(bytes.AsSpan(i), amplitude);
+            DataAvailable?.Invoke(this, new WasapiPacketEventArgs(bytes, bytes.Length, devicePosition,
+                qpc ?? Mp3Track.To100ns(Stopwatch.GetTimestamp()), flags));
         }
         public void Dispose() { }
     }

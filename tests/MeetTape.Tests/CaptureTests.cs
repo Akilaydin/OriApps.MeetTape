@@ -126,6 +126,84 @@ public sealed class CaptureTests
     }
 
     [Fact]
+    public void RepeatedTimingProblemsNotifyOnceUntilTheirImpactEscalates()
+    {
+        var me = new FakeSource();
+        var them = new FakeSource();
+        using var capture = new CaptureCoordinator(() => new(me, them));
+        var warnings = new List<string>();
+        capture.Warning += warnings.Add;
+        capture.Start();
+        capture.ReportTiming(CaptureChannel.Them, new(AudioTimingIssueKind.Overlap, 1, 480, "one frame"));
+        capture.ReportTiming(CaptureChannel.Them, new(AudioTimingIssueKind.Overlap, 2, 480, "two frames"));
+        Assert.Single(warnings);
+        capture.ReportTiming(CaptureChannel.Them, new(AudioTimingIssueKind.Overlap, 960, 480, "larger than packet"));
+        capture.ReportTiming(CaptureChannel.Them, new(AudioTimingIssueKind.Overlap, 970, 480, "still larger"));
+        Assert.Equal(2, warnings.Count);
+        capture.ReportTiming(CaptureChannel.Them, new(AudioTimingIssueKind.InvalidTimestamp, 0, 480, "QPC invalid"));
+        capture.ReportTiming(CaptureChannel.Them, new(AudioTimingIssueKind.Discontinuity, 0, 480, "WASAPI gap"));
+        Assert.Equal(4, warnings.Count);
+        Assert.All(warnings, warning => Assert.Contains("Recording continues", warning));
+        Assert.True(capture.Status.IsActive);
+        Assert.Equal(5, capture.Status.ClockAdjustments);
+        Assert.Equal(1, capture.Status.Discontinuities);
+        Assert.Equal(1, capture.Status.ThemTiming.InvalidTimestamps);
+        Assert.Equal(970, capture.Status.ThemTiming.LargestShiftFrames);
+        capture.Stop();
+        Assert.Null(capture.Status.Error);
+    }
+
+    [Fact]
+    public async Task CliShowsWarningDuringRecordingAndTimingCountersOnStatusAndStop()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "MeetTapeCliTiming-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var input = new QueuedReader();
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+        var me = new FakeSource();
+        var them = new FakeSource();
+        CaptureCoordinator? capture = null;
+        string example = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../config.example.json"));
+        string projectRoot = Path.GetDirectoryName(example)!;
+        string configPath = Path.Combine(root, "config.json");
+        var config = JsonNode.Parse(File.ReadAllText(example))!;
+        config["meetingsRoot"] = Path.Combine(root, "meetings");
+        config["transcription"]!["promptFile"] = Path.Combine(projectRoot, "prompts", "transcription.md");
+        config["summary"]!["promptFile"] = Path.Combine(projectRoot, "prompts", "summary.md");
+        File.WriteAllText(configPath, config.ToJsonString());
+        Task<int>? cli = null;
+        try
+        {
+            cli = Task.Run(() => Cli.Run(["--config", configPath], input, output, error,
+                _ => capture = new CaptureCoordinator(() => new(me, them), (channel, _, _, _) =>
+                    capture!.ReportTiming(channel, new(AudioTimingIssueKind.Overlap, 307, 480, "synthetic QPC regression"))),
+                (_, _) => 0, () => [], _ => { }));
+            input.Post("start");
+            Assert.True(SpinWait.SpinUntil(() => capture?.Status.IsActive == true, TimeSpan.FromSeconds(5)));
+            them.Emit();
+            Assert.Equal(1, capture!.Status.ClockAdjustments);
+            Assert.True(capture.Status.IsActive);
+            input.Post("status");
+            input.Post("stop");
+            input.Post("exit");
+            Assert.Equal(0, await cli.WaitAsync(TimeSpan.FromSeconds(10)));
+            string result = output.ToString();
+            Assert.Contains("Them: audio timing moved by 6.396 ms. Recording continues", result);
+            Assert.Contains("Capturing.", result);
+            Assert.Contains("WASAPI timing corrections: Me 0", result);
+            Assert.Contains("Them 1", result);
+            Assert.Contains("Recording retained", result);
+        }
+        finally
+        {
+            input.Post("exit");
+            if (cli is { IsCompleted: false }) await cli.WaitAsync(TimeSpan.FromSeconds(10));
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task AsynchronousCaptureFailureRestartsDeferredJobsWithoutRequiringStop()
     {
         string root = Path.Combine(Path.GetTempPath(), "MeetTapeAutoResume-" + Guid.NewGuid().ToString("N"));

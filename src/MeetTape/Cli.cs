@@ -86,6 +86,7 @@ public static class Cli
             var config = ConfigurationLoader.Load(configPath, validatePrompts: command is not ("sessions" or "status"));
             using var capture = createCapture(config);
             capture.Failed += message => CliColors.WriteLine(output, message, ConsoleColor.Red);
+            capture.Warning += message => CliColors.WriteLine(output, message, ConsoleColor.Yellow);
             if (command == "check-config")
             {
                 if (config.Settings.Stages.Transcribe)
@@ -301,7 +302,15 @@ public static class Cli
         if (status.Discontinuities > 0)
             CliColors.WriteLine(output, $"WASAPI marked {status.Discontinuities} discontinuities (including possible startup flags); timeline gaps were preserved as silence.", ConsoleColor.Yellow);
         if (status.ClockAdjustments > 0)
-            CliColors.WriteLine(output, $"WASAPI timestamps required {status.ClockAdjustments} bounded packet timing adjustments; packet audio was retained.", ConsoleColor.Yellow);
+            CliColors.WriteLine(output, "WASAPI timing corrections: ", ConsoleColor.Yellow,
+                $"Me {status.MeTiming.Corrections} (unreliable timestamps {status.MeTiming.InvalidTimestamps}, " +
+                $"largest shift {status.MeTiming.LargestShiftFrames * 1000d / PcmTimeline.SampleRate:F3} ms); " +
+                $"Them {status.ThemTiming.Corrections} (unreliable timestamps {status.ThemTiming.InvalidTimestamps}, " +
+                $"largest shift {status.ThemTiming.LargestShiftFrames * 1000d / PcmTimeline.SampleRate:F3} ms). " +
+                (status.IsActive ? "Recording continues." : "Recording retained."));
+        if (!status.IsActive && status.AudioFrames > Math.Round(status.Duration.TotalSeconds * PcmTimeline.SampleRate))
+            CliColors.WriteLine(output, "Recovered audio extends beyond the wall-clock stop time: ", ConsoleColor.Yellow,
+                $"{status.AudioFrames / (double)PcmTimeline.SampleRate:F3}s saved, {status.Duration.TotalSeconds:F3}s elapsed. Both tracks retained at the same length.");
     }
 
     private static void WriteDevices(TextWriter output, IReadOnlyList<AudioDevice> devices)

@@ -51,6 +51,8 @@ public sealed record SessionData
     public required Dictionary<string, StageProgress> Stages { get; init; }
     public int Discontinuities { get; init; }
     public int ClockAdjustments { get; init; }
+    public AudioTimingStats MeTiming { get; init; } = new();
+    public AudioTimingStats ThemTiming { get; init; } = new();
     public string? Error { get; init; }
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? AdditionalData { get; init; }

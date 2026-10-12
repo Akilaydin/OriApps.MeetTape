@@ -63,11 +63,13 @@ public sealed class CliColorsTests
         {
             writer.WriteLine("Job: chunk 6/6 saved/validated.");
             CliColors.WriteLine(writer, "Job: complete transcription.md saved.", ConsoleColor.Green);
+            CliColors.WriteLine(writer, "Them: audio timing moved by 6.396 ms. Recording continues.", ConsoleColor.Yellow);
         });
 
         string newline = Environment.NewLine;
         Assert.Equal($"meettape> {newline}Job: chunk 6/6 saved/validated.{newline}meettape> {newline}" +
-                     $"Job: complete transcription.md saved.{newline}meettape> ", text.ToString());
+                     $"Job: complete transcription.md saved.{newline}meettape> {newline}" +
+                     $"Them: audio timing moved by 6.396 ms. Recording continues.{newline}meettape> ", text.ToString());
         Assert.Equal(ConsoleColor.Gray, current);
 
         writer.EndInteractivePrompt();
