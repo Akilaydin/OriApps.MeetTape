@@ -201,6 +201,20 @@ public sealed class ConfigurationTests : IDisposable
     }
 
     [Fact]
+    public void VelopackDefaultsNeverSelectConfigurationInsideReplaceableCurrentDirectory()
+    {
+        string current = Path.Combine(directory, "OriApps.MeetTape", "current");
+        Directory.CreateDirectory(current);
+        File.WriteAllText(Path.Combine(current, "sq.version"), "fixture manifest");
+        File.WriteAllText(Path.Combine(current, "config.json"), "{}");
+        string userPath = Path.Combine(directory, "user", "config.json");
+        Assert.Equal(userPath, ConfigurationBootstrap.DefaultConfigurationPath(current, userPath, current));
+        ConfigurationBootstrap.Initialize(userPath, Path.Combine(directory, "Meetings"));
+        Assert.Equal(userPath, ConfigurationBootstrap.DefaultConfigurationPath(current, userPath, current));
+        Assert.Equal("{}", File.ReadAllText(Path.Combine(current, "config.json")));
+    }
+
+    [Fact]
     public void CliConfigureWithExplicitPathRetainsExistingSettingsOnEnter()
     {
         string path = Path.Combine(directory, "initialized", "config.json");

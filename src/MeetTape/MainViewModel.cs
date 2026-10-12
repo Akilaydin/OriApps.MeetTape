@@ -12,6 +12,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private DesktopSnapshot snapshot = new(new(false, TimeSpan.Zero, 0, 0, null), [], null, null, false, null);
     private bool refreshing;
     private bool busy;
+    private bool updating;
     private bool shutdownStarted;
     private SessionRow? selected;
     public ObservableCollection<SessionRow> Sessions { get; } = [];
@@ -19,14 +20,17 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string CaptureText => snapshot.Capture.IsActive ? "Recording — " + snapshot.Capture.Duration.ToString(@"hh\:mm\:ss") :
         snapshot.Capture.Error is not null ? "Recording stopped with errors" : controller is null ? "Open Settings to configure MeetTape" : "Ready";
     public string RecordLabel => snapshot.Capture.IsActive ? "Stop" : "Start recording";
-    public bool CanRecord => controller is not null && !busy && !shutdownStarted && NamingDirectory is null && snapshot.AwaitingTitleDirectory is null;
-    public bool CanProcess => controller is not null && !busy && !shutdownStarted && !snapshot.Capture.IsActive && selected is not null && NamingDirectory is null;
+    public bool CanRecord => controller is not null && !busy && !updating && !shutdownStarted && NamingDirectory is null && snapshot.AwaitingTitleDirectory is null;
+    public bool CanProcess => controller is not null && !busy && !updating && !shutdownStarted && !snapshot.Capture.IsActive && selected is not null && NamingDirectory is null;
     public bool CanPrepare => CanProcess && selected!.NeedsPreparation;
     public bool CanSummary => CanProcess && selected!.HasTranscript && !selected.HasSummary;
     public bool CanOpen => selected is not null;
     public bool CanOpenTranscript => selected?.HasTranscript == true;
     public bool CanOpenSummary => selected?.HasSummary == true;
-    public bool CanConfigure => !busy && !shutdownStarted;
+    public bool CanConfigure => !busy && !updating && !shutdownStarted;
+    public bool CanUpdate => CanConfigure && !snapshot.Capture.IsActive && NamingDirectory is null && snapshot.AwaitingTitleDirectory is null;
+    public bool IsUpdating => updating;
+    public int UpdateProgress { get; private set; }
     public bool IsBusy => busy;
     public bool IsRecording => snapshot.Capture.IsActive;
     public string WarningText => string.Join(Environment.NewLine, warnings);
@@ -36,7 +40,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public bool IsPreparing => snapshot.Preparing;
     public string ErrorText { get; private set; } = "";
     public string InfoText { get; private set; } = "Close hides the window. Use Exit to stop MeetTape.";
-    public string ReleaseText { get; set; } = "";
+    private string releaseText = "";
+    public string ReleaseText { get => releaseText; set { releaseText = value; Changed(); } }
     public string SelectedDiagnostic => selected?.Diagnostic ?? "";
     public string DevicesText
     {
@@ -64,11 +69,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string? NamingDirectory { get; private set; }
     public bool IsNaming => NamingDirectory is not null;
     public string MeetingTitle { get; set; } = "";
-    public bool CanName => IsNaming && !busy;
+    public bool CanName => IsNaming && !busy && !updating;
     public bool ShowTrim => snapshot.Suggestion is not null && snapshot.PreparationDirectory is { } directory
         && snapshot.Sessions.Any(s => s.Directory == directory && s.Data?.Stages.TryGetValue("trim", out var trim) == true
             && trim.Enabled && trim.Status != StageState.Completed);
-    public bool CanTrim => ShowTrim && !busy && !snapshot.Preparing && !snapshot.Capture.IsActive;
+    public bool CanTrim => ShowTrim && !busy && !updating && !snapshot.Preparing && !snapshot.Capture.IsActive;
     public string TrimText => snapshot.Suggestion is { } found ?
         FormattableString.Invariant($"Suggested interval: {found.StartSeconds:F3} – {found.EndSeconds:F3} seconds. Originals retained.") : "";
     public string TrimStart { get; set; } = "";
@@ -173,7 +178,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public async Task ExecuteAsync(Func<Task> action)
     {
-        if (busy || controller is null) return;
+        if (busy || updating || shutdownStarted || controller is null) return;
         busy = true; ErrorText = ""; Changed();
         try { await action(); }
         catch (Exception ex) { SetError(ex is InvalidOperationException or InvalidDataException ? ex.Message :
@@ -181,7 +186,44 @@ public sealed class MainViewModel : INotifyPropertyChanged
         finally { busy = false; await RefreshAsync(); Changed(); }
     }
 
-    public async Task<bool> ShutdownAsync()
+    public async Task<bool> UpdateAsync(IAppUpdates updates, Func<string, string, Task<bool>> confirm)
+    {
+        if (!CanUpdate) { SetError("Stop recording and finish the current operation before updating MeetTape."); return false; }
+        updating = true; UpdateProgress = 0; ErrorText = ""; Changed();
+        try
+        {
+            if (!updates.IsInstalled) { SetInfo("Updates require an installed MeetTape build. Download Setup from GitHub Releases."); return false; }
+            SetInfo("Checking for updates…");
+            var update = await updates.CheckAsync().WaitAsync(TimeSpan.FromSeconds(30));
+            if (update is null) { SetInfo("No update available."); return false; }
+            if (!await confirm(updates.CurrentVersion, update.TargetFullRelease.Version.ToString()))
+            { SetInfo("Update declined. Current version retained."); return false; }
+            SetInfo("Downloading update…");
+            await updates.DownloadAsync(update, value => Dispatcher.UIThread.Post(() =>
+            { UpdateProgress = value; Changed(); }));
+            // Read live state again after network/dialog awaits; never apply during capture.
+            if (controller is not null && (await controller.ReadAsync()).Capture.IsActive)
+            { SetError("Stop recording before applying the update. Downloaded update will not apply on startup."); return false; }
+            if (!await ShutdownCoreAsync()) return false;
+            updates.ApplyAndRestart(update);
+            return true;
+        }
+        catch (Exception)
+        {
+            SetError(shutdownStarted ? "Cannot apply update. Exit and reopen MeetTape; saved checkpoints retained. Downloaded updates never apply automatically." :
+                "Update failed. Check GitHub connectivity and disk space, then retry. Current version and saved data retained.");
+            return false;
+        }
+        finally { updating = false; Changed(); }
+    }
+
+    public Task<bool> ShutdownAsync()
+    {
+        if (updating) { SetError("Wait for the update operation before exiting."); return Task.FromResult(false); }
+        return ShutdownCoreAsync();
+    }
+
+    private async Task<bool> ShutdownCoreAsync()
     {
         if (busy) { SetError("Wait for the current operation before exiting."); return false; }
         shutdownStarted = true;

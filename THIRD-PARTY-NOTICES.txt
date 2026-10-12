@@ -1469,7 +1469,7 @@ You are solely responsible for determining the appropriateness of using and dist
 
 
 
-FFmpeg is not embedded in MeetTape.exe. The installer downloads the pinned FFmpeg 9.0 Windows build separately and preserves its packaged license beside ffmpeg.exe as ffmpeg-LICENSE.txt.
+FFmpeg 9.0 (GyanD essentials Windows build) is bundled beside MeetTape.exe in Velopack Setup/update packages, with its packaged license as ffmpeg-LICENSE.txt. Only the build downloads the archive; users never download FFmpeg during installation/update. Archive: https://github.com/GyanD/codexffmpeg/releases/download/9.0/ffmpeg-9.0-essentials_build.zip; pinned SHA-256: E6B54767A6065919048F1A098EB27211CA4E12B4348A05D88777A5855D0B6E71.
 
 Avalonia desktop runtime dependencies
 =====================================
@@ -4324,3 +4324,28 @@ mozzconf.h is distributed under the MPL 1.1/GPL 2.0/LGPL 2.1 tri-license.
 ################################################################################
 # END: zlib
 ################################################################################
+
+Velopack 1.2.161 SDK and native installer/updater (MIT)
+Source: https://github.com/velopack/velopack/tree/1.2.161
+vpk is a build-only dependency.
+
+Copyright © 2021 Caelan Sayler
+Copyright © 2024 Velopack Ltd.
+
+Permission is hereby granted,  free of charge,  to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to  use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.

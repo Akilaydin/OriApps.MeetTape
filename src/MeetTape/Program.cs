@@ -1,4 +1,5 @@
 using Avalonia;
+using Velopack;
 using System.Runtime.InteropServices;
 
 namespace MeetTape;
@@ -8,6 +9,8 @@ internal static class Program
     [STAThread]
     public static int Main(string[] args)
     {
+        VelopackApp.Build().SetAutoApplyOnStartup(false).Run();
+
         if (args is ["--ui-smoke"])
         {
             App.Smoke = true;
