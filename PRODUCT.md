@@ -50,6 +50,8 @@ Each recording has a unique folder and stable session ID under `meetingsRoot`:
 - `chunks/`: successful transcription checkpoints.
 - `transcription.md`: complete transcript; `summary.json` and `summary.md`: optional Summary checkpoint and document.
 
+Only the current session/checkpoint model is supported. Legacy recovery manifests and compatibility across previous versions are not provided; unsupported metadata is diagnosed while its original files remain untouched.
+
 Exiting MeetTape retains saved progress. Restart validates and reuses completed chunks without re-uploading them. Corrupt or mismatched checkpoints pause the job. Differing existing transcript/Summary documents are preserved and diagnosed.
 
 Timeouts, HTTP 408/429/5xx and temporary connection faults retry indefinitely with exponential backoff capped at five minutes, including capped Retry-After. Other HTTP errors, invalid responses and configuration/filesystem faults pause the affected job. Fix the cause, restart for changed settings, then use Resume. If saving a pause fails, the GUI reports it and blocks that session in the current process.
