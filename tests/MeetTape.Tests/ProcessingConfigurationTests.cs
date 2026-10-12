@@ -5,6 +5,58 @@ namespace MeetTape.Tests;
 
 public sealed class ProcessingConfigurationTests
 {
+    [Fact]
+    public async Task SettingsChangeRetainsRunningContractAndResumeKeepsSuccessfulChunks()
+    {
+        using var fixture = new JobTests();
+        string directory = fixture.Session();
+        var original = SessionStore.Read(directory);
+        var config = new LoadedConfiguration(new Configuration
+        {
+            MeetingsRoot = Path.GetDirectoryName(directory)!,
+            Transcription = original.Processing.Transcription, Summary = original.Processing.Summary
+        }, original.Processing.ConfigurationDirectory);
+        string prompt = Path.Combine(directory, "new-prompt.md");
+        File.WriteAllText(prompt, "New fixture instructions");
+        var updated = config with { Settings = config.Settings with
+        {
+            ChunkSeconds = 90, Stages = new() { Trim = false, Transcribe = false },
+            Transcription = config.Settings.Transcription with
+            {
+                Model = "new-model", Endpoint = "https://new.example.test/chat",
+                PromptFile = prompt, ApiKeyEnvironmentVariable = "NEW_FIXTURE_KEY"
+            }
+        } };
+        using var handler = new PendingHandler();
+        using var http = new HttpClient(handler);
+        var keySettings = new List<ApiSettings>();
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: settings =>
+        { keySettings.Add(settings); return "fixture-key"; });
+        Task running = jobs.ProcessSessionAsync(directory, default);
+        await handler.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        jobs.ApplyConfiguration(updated);
+        Assert.False(running.IsCompleted);
+        Assert.Equal(original.Processing, SessionStore.Read(directory).Processing);
+        handler.Release.SetResult();
+        await running.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(JobState.Paused, SessionStore.Read(directory).JobState);
+        Assert.Equal(2, handler.Calls);
+        Assert.All(keySettings, settings => Assert.Equal(config.Settings.Transcription, settings));
+        byte[] checkpoint = File.ReadAllBytes(ChunkStore.PathFor(directory, 1));
+        byte[] audio = File.ReadAllBytes(Path.Combine(directory, "me.mp3"));
+
+        jobs.Resume(directory);
+        await jobs.ProcessSessionAsync(directory, default);
+        var completed = SessionStore.Read(directory);
+        Assert.Equal(JobState.Completed, completed.JobState);
+        Assert.Equal(4, handler.Calls);
+        Assert.All(keySettings.Skip(2), settings => Assert.Equal(updated.Settings.Transcription, settings));
+        Assert.Equal(original.Processing.ChunkSeconds, completed.Processing.ChunkSeconds);
+        Assert.True(completed.Stages["transcribe"].Enabled);
+        Assert.Equal(checkpoint, File.ReadAllBytes(ChunkStore.PathFor(directory, 1)));
+        Assert.Equal(audio, File.ReadAllBytes(Path.Combine(directory, "me.mp3")));
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -60,6 +112,26 @@ public sealed class ProcessingConfigurationTests
             {
                 Content = new StringContent("{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"[00:00] Me: New words.\"}}]}")
             });
+        }
+    }
+
+    private sealed class PendingHandler : HttpMessageHandler
+    {
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int Calls;
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
+        {
+            int call = ++Calls;
+            if (call == 1)
+            {
+                Entered.SetResult();
+                await Release.Task.WaitAsync(token);
+            }
+            return new(call == 2 ? HttpStatusCode.Forbidden : HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"[00:00] Me: New words.\"}}]}")
+            };
         }
     }
 }

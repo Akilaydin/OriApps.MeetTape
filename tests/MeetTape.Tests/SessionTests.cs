@@ -5,6 +5,35 @@ namespace MeetTape.Tests;
 
 public sealed class SessionTests : IDisposable
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void UnavailableHistoricalRootDoesNotAbortDiscoveryOfCurrentRoot(bool permissions)
+    {
+        Directory.CreateDirectory(root);
+        using var fixture = new JobTests();
+        string session = fixture.Session();
+        string current = Path.GetDirectoryName(session)!;
+        string[] roots = [root, current];
+        IEnumerable<string> Enumerate(string path)
+        {
+            if (path == root)
+            {
+                yield return Path.Combine(root, "partial-enumeration");
+                if (permissions) throw new UnauthorizedAccessException("private storage details");
+                throw new IOException("private storage details");
+            }
+            foreach (string item in Directory.EnumerateDirectories(path)) yield return item;
+        }
+        var found = roots.SelectMany(path => SessionStore.Discover(path, null, enumerateDirectories: Enumerate)).ToArray();
+        Assert.Equal(2, found.Length);
+        Assert.Null(found[0].Data);
+        Assert.Contains("other folders remain available", found[0].Diagnostic);
+        Assert.DoesNotContain("private storage details", found[0].Diagnostic);
+        Assert.Equal(session, found[1].Directory);
+        Assert.True(ProcessingJobs.Eligible(found[1].Data!));
+    }
+
     private readonly string root = Path.Combine(Path.GetTempPath(), "MeetTapeSessions-" + Guid.NewGuid().ToString("N"));
     private readonly LoadedConfiguration configuration;
 

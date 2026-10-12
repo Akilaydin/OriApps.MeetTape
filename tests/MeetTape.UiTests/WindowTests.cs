@@ -861,6 +861,51 @@ public sealed class WindowTests
             throw new Exception("No API request expected");
     }
 
+    [AvaloniaTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SavedSettingsApplyImmediatelyWhileInvalidSettingsKeepRuntimeAndCapture(bool recording)
+    {
+        using var fixture = new Fixture();
+        var config = ConfigurationLoader.Load(fixture.ConfigPath);
+        var source = new CaptureSource();
+        using var capture = new CaptureCoordinator(() => new(source, new CaptureSource()));
+        using var http = new HttpClient(new NoRequests());
+        var controller = new DesktopController(config, capture, http);
+        int applies = 0;
+        var keys = new Dictionary<(string, EnvironmentVariableTarget), string>();
+        var settings = new SettingsViewModel(fixture.ConfigPath, [],
+            (name, value, target) => keys[(name, target)] = value, async updated =>
+            { applies++; await controller.ApplyConfigurationAsync(updated); });
+        try
+        {
+            if (recording) await controller.StartAsync();
+            string original = File.ReadAllText(fixture.ConfigPath);
+            settings.ChunkSeconds = "9999"; settings.Summary = true;
+            await settings.SaveAsync();
+            Assert.False(settings.Saved);
+            Assert.Equal(0, applies);
+            Assert.Equal(original, File.ReadAllText(fixture.ConfigPath));
+            Assert.False((await controller.ReadAsync()).SummaryEnabled);
+            Assert.Equal(recording, capture.Status.IsActive);
+            settings.ChunkSeconds = "90";
+            settings.NewTranscriptionKey = "fixture-new-secret";
+            await settings.SaveAsync();
+            Assert.True(settings.Saved);
+            Assert.Equal(1, applies);
+            Assert.True((await controller.ReadAsync()).SummaryEnabled);
+            Assert.Equal(recording, capture.Status.IsActive);
+            Assert.Equal("fixture-new-secret", ApiKeyProvider.Get(config.Settings.Transcription,
+                (name, target) => keys.GetValueOrDefault((name, target))));
+            Assert.DoesNotContain("fixture-new-secret", File.ReadAllText(fixture.ConfigPath));
+            Assert.DoesNotContain("fixture-new-secret", settings.Message);
+            Assert.Empty(settings.NewTranscriptionKey);
+            Assert.Contains("next recording", settings.Message);
+            Assert.DoesNotContain("restart", settings.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally { await controller.ShutdownAsync(); }
+    }
+
     [AvaloniaFact]
     public async Task SettingsRejectConcurrentChangesAndPreserveUserPrompt()
     {

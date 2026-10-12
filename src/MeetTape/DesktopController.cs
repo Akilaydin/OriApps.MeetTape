@@ -25,7 +25,8 @@ public interface IDesktopController
 // One gate owns all lifecycle transitions. Blocking capture/FFmpeg joins always run on a worker.
 public sealed class DesktopController : IDesktopController
 {
-    private readonly LoadedConfiguration config;
+    private volatile LoadedConfiguration config;
+    private readonly Mp3Recorder? recorder;
     private readonly CaptureCoordinator capture;
     private readonly PostRecordingWorkflow preparation;
     private readonly ProcessingJobs jobs;
@@ -37,10 +38,16 @@ public sealed class DesktopController : IDesktopController
     public event Action<OperationNotice>? Notice;
 
     public DesktopController(LoadedConfiguration config, CaptureCoordinator? capture = null,
-        HttpClient? http = null, Func<ApiSettings, string>? readKey = null)
+        HttpClient? http = null, Func<ApiSettings, string>? readKey = null,
+        Func<CaptureSettings, CaptureSources>? openSources = null)
     {
         this.config = config;
-        this.capture = capture ?? new Mp3Recorder(config).Capture;
+        if (capture is null)
+        {
+            recorder = new Mp3Recorder(config, openSources is null ? null : () => openSources(this.config.Settings.Capture));
+            this.capture = recorder.Capture;
+        }
+        else this.capture = capture;
         preparation = new(config.Settings.Capture.FfmpegPath);
         jobs = new(config, () => this.capture.Status.IsActive || Volatile.Read(ref awaitingTitle) is not null,
             http: http, readKey: readKey);
@@ -52,10 +59,17 @@ public sealed class DesktopController : IDesktopController
     }
 
     public Task InitializeAsync() => RunAsync(() => jobs.Start());
+    internal Task ApplyConfigurationAsync(LoadedConfiguration updated) => RunAsync(() =>
+    {
+        recorder?.ApplyConfiguration(updated);
+        preparation.ApplyFfmpeg(updated.Settings.Capture.FfmpegPath);
+        jobs.ApplyConfiguration(updated);
+        config = updated;
+    });
     internal Task<CaptureStatus> ReadCaptureAsync() => Task.Run(() => capture.Status);
 
     public Task<DesktopSnapshot> ReadAsync() => Task.Run(() => new DesktopSnapshot(capture.Status,
-        SessionStore.Discover(config.MeetingsRoot), preparation.SelectedDirectory, preparation.Suggestion,
+        jobs.MeetingsRoots.SelectMany(root => SessionStore.Discover(root)).ToArray(), preparation.SelectedDirectory, preparation.Suggestion,
         !preparation.Completion.IsCompleted, Volatile.Read(ref awaitingTitle)) { SummaryEnabled = config.Settings.Stages.Summary });
 
     public Task StartAsync() => RunAsync(() =>

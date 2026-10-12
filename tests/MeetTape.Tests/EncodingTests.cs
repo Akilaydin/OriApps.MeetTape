@@ -252,6 +252,72 @@ public sealed class EncodingTests : IDisposable
         finally { await controller.ShutdownAsync(); }
     }
 
+    [Fact]
+    public async Task SettingsApplyToNextRecordingWithoutReopeningActiveSourcesOrLosingOldRoot()
+    {
+        string example = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../config.example.json"));
+        var loaded = ConfigurationLoader.Load(example);
+        var config = loaded with { Settings = loaded.Settings with { MeetingsRoot = directory } };
+        var first = config with { Settings = config.Settings with
+        {
+            MeetingsRoot = Path.Combine(directory, "first"), ChunkSeconds = 60,
+            Capture = config.Settings.Capture with { MicrophoneDeviceId = "first-mic" }
+        } };
+        var next = first with { Settings = first.Settings with
+        {
+            MeetingsRoot = Path.Combine(directory, "next"), ChunkSeconds = 90,
+            Capture = first.Settings.Capture with { MicrophoneDeviceId = "next-mic", PlaybackDeviceId = "next-playback" },
+            Stages = new() { Trim = false, Transcribe = false },
+            Transcription = first.Settings.Transcription with { Model = "next-model" }
+        } };
+        var opened = new List<CaptureSettings>();
+        var sources = new List<(SyntheticSource Me, SyntheticSource Them)>();
+        var controller = new DesktopController(config, readKey: _ => throw new Exception("No API expected"), openSources: settings =>
+        {
+            opened.Add(settings);
+            var pair = (new SyntheticSource(), new SyntheticSource());
+            sources.Add(pair);
+            return new CaptureSources(pair.Item1, pair.Item2);
+        });
+        try
+        {
+            await controller.ApplyConfigurationAsync(first);
+            await controller.StartAsync();
+            string previous = (await controller.ReadAsync()).Capture.RecordingDirectory!;
+            var recordedContract = SessionStore.Read(previous).Processing;
+            sources[0].Me.Emit(amplitude: 0.2f); sources[0].Them.Emit(amplitude: 0.4f);
+            await controller.ApplyConfigurationAsync(next);
+            Assert.Single(opened);
+            Assert.True((await controller.ReadAsync()).Capture.IsActive);
+            Assert.Equal(recordedContract, SessionStore.Read(previous).Processing);
+            sources[0].Me.Emit(); sources[0].Them.Emit();
+            await controller.StopAsync();
+            Assert.Equal(RecordingState.Recorded, SessionStore.Read(previous).RecordingState);
+            byte[] originalMe = File.ReadAllBytes(Path.Combine(previous, "me.mp3"));
+            byte[] originalThem = File.ReadAllBytes(Path.Combine(previous, "them.mp3"));
+            await controller.PrepareAsync(previous, "First meeting");
+            previous = Assert.Single((await controller.ReadAsync()).Sessions).Directory;
+            await controller.StartAsync();
+            var snapshot = await controller.ReadAsync();
+            string current = snapshot.Capture.RecordingDirectory!;
+            Assert.StartsWith(next.MeetingsRoot + Path.DirectorySeparatorChar, current);
+            Assert.Equal(new[] { first.Settings.Capture, next.Settings.Capture }, opened);
+            var data = SessionStore.Read(current);
+            Assert.Equal(90, data.Processing.ChunkSeconds);
+            Assert.Equal("next-model", data.Processing.Transcription.Model);
+            Assert.False(data.Stages["transcribe"].Enabled);
+            Assert.Equal(2, snapshot.Sessions.Count);
+            Assert.Contains(snapshot.Sessions, session => session.Directory == previous);
+            sources[1].Me.Emit(); sources[1].Them.Emit();
+            await controller.StopAsync();
+            Assert.Equal(originalMe, File.ReadAllBytes(Path.Combine(previous, "me.mp3")));
+            Assert.Equal(originalThem, File.ReadAllBytes(Path.Combine(previous, "them.mp3")));
+            Assert.Equal((await DecodeAsync(Path.Combine(current, "me.mp3"))).Length,
+                (await DecodeAsync(Path.Combine(current, "them.mp3"))).Length);
+        }
+        finally { await controller.ShutdownAsync(); }
+    }
+
     private sealed class SyntheticSource : IWaveIn
     {
         public WaveFormat WaveFormat { get; set; } = WaveFormat.CreateIeeeFloatWaveFormat(48000, 1);
