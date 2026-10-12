@@ -9,8 +9,7 @@ namespace MeetTape;
 
 public sealed class App : Application
 {
-    internal static string? ConfigurationPath { get; set; }
-    internal static bool SettingsRequested { get; set; }
+    internal static string? StartupError { get; set; }
     internal static bool Smoke { get; set; }
     private IClassicDesktopStyleApplicationLifetime? desktop;
     private MainWindow? window;
@@ -78,6 +77,7 @@ public sealed class App : Application
     {
         if (initialized) return;
         initialized = true;
+        if (StartupError is not null) { model.SetError(StartupError); return; }
         if (Smoke)
         {
             int tick = 0;
@@ -90,7 +90,7 @@ public sealed class App : Application
             timer.Start();
             return;
         }
-        if (SettingsRequested || !File.Exists(ConfigPath)) await OpenSettingsAsync();
+        if (!File.Exists(ConfigPath)) await OpenSettingsAsync();
         try
         {
             var config = await Task.Run(() => ConfigurationLoader.Load(ConfigPath));
@@ -105,7 +105,7 @@ public sealed class App : Application
             timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
             timer.Tick += async (_, _) => await model.RefreshAsync();
             timer.Start();
-            updates = new AppUpdates(ConfigurationPath is null ? [] : ["--config", Path.GetFullPath(ConfigurationPath)]);
+            updates = new AppUpdates();
             model.ReleaseText = await StartupReleaseNotice.GetAsync(updates);
             model.SetInfo("Close hides the window. Use Exit to stop MeetTape.");
         }
@@ -113,12 +113,11 @@ public sealed class App : Application
             "Cannot load settings or prompts. Open Settings; check configuration paths and permissions."); }
     }
 
-    private string ConfigPath => ConfigurationPath ?? ConfigurationBootstrap.DefaultConfigurationPath(
-        Environment.CurrentDirectory, ConfigurationBootstrap.UserConfigurationPath, AppContext.BaseDirectory);
+    private static string ConfigPath => ConfigurationBootstrap.UserConfigurationPath;
 
     private async Task OpenSettingsAsync()
     {
-        if (Smoke || openingSettings || window is null) return;
+        if (Smoke || StartupError is not null || openingSettings || window is null) return;
         openingSettings = true;
         try
         {
@@ -149,8 +148,8 @@ public sealed class App : Application
 
     private async Task UpdateAsync()
     {
-        if (Smoke || window is null) return;
-        updates ??= new AppUpdates(ConfigurationPath is null ? [] : ["--config", Path.GetFullPath(ConfigurationPath)]);
+        if (Smoke || StartupError is not null || window is null) return;
+        updates ??= new AppUpdates();
         bool applied = await model.UpdateAsync(updates, async (current, available) =>
         {
             ShowWindow();

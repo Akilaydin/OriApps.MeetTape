@@ -40,11 +40,11 @@ try {
     }
 } finally { $archive.Dispose() }
 
-Copy-Item -LiteralPath (Join-Path $repository 'LICENSE'), (Join-Path $repository 'THIRD-PARTY-NOTICES.txt'), (Join-Path $PSScriptRoot 'meettape-cli.cmd') -Destination $publish
+Copy-Item -LiteralPath (Join-Path $repository 'LICENSE'), (Join-Path $repository 'THIRD-PARTY-NOTICES.txt') -Destination $publish
 & (Join-Path $publish 'ffmpeg.exe') -hide_banner -version | Select-Object -First 1
 if ($LASTEXITCODE -ne 0) { throw 'Bundled FFmpeg cannot start.' }
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-Desktop.ps1') -ExecutablePath (Join-Path $publish 'MeetTape.exe') -SkipNativeWindow
-if ($LASTEXITCODE -ne 0) { throw 'Published desktop/diagnostic checks failed.' }
+if ($LASTEXITCODE -ne 0) { throw 'Published GUI startup checks failed.' }
 
 # Full packages are the supported fallback. No previous Release is mutated or needed.
 & $VpkPath pack --packId OriApps.MeetTape --packVersion $Version --packDir $publish --mainExe MeetTape.exe --packTitle MeetTape --packAuthors OriApps --runtime win-x64 --channel win --shortcuts StartMenuRoot --delta None --noPortable --outputDir $output

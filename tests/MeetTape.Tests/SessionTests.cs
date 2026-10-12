@@ -162,7 +162,7 @@ public sealed class SessionTests : IDisposable
     }
 
     [Fact]
-    public void UnknownMetadataFieldsSurviveUpdateAndFutureSchemasAreRejected()
+    public void UnknownMetadataFieldsAndOtherSchemasAreRejectedWithoutChanges()
     {
         var created = SessionStore.Create(root, Data());
         created.Lease.Dispose();
@@ -170,8 +170,9 @@ public sealed class SessionTests : IDisposable
         var json = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
         json["customNote"] = "preserve";
         File.WriteAllText(path, json.ToJsonString());
-        SessionStore.Save(created.Directory, SessionStore.Read(created.Directory) with { Title = "new" });
-        Assert.Equal("preserve", JsonNode.Parse(File.ReadAllText(path))!["customNote"]!.GetValue<string>());
+        byte[] before = File.ReadAllBytes(path);
+        Assert.Throws<InvalidDataException>(() => SessionStore.Read(created.Directory));
+        Assert.Equal(before, File.ReadAllBytes(path));
         SessionStore.Save(created.Directory, Data() with { SchemaVersion = 2 });
         Assert.Throws<InvalidDataException>(() => SessionStore.Read(created.Directory));
     }

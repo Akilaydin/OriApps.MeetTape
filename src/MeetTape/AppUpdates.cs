@@ -17,18 +17,16 @@ public interface IAppUpdates
 public sealed class AppUpdates : IAppUpdates
 {
     private readonly UpdateManager manager;
-    private readonly string[] restartArgs;
     public bool IsInstalled => manager.IsInstalled && !manager.IsPortable;
     public string CurrentVersion => manager.CurrentVersion?.ToString() ??
         typeof(App).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+')[0] ?? "unknown";
 
-    public AppUpdates(string[]? restartArgs = null) : this(new UpdateManager(
-        new GithubSource("https://github.com/Akilaydin/OriApps.MeetTape", null, false)), restartArgs) { }
+    public AppUpdates() : this(new UpdateManager(
+        new GithubSource("https://github.com/Akilaydin/OriApps.MeetTape", null, false))) { }
 
-    public AppUpdates(UpdateManager manager, string[]? restartArgs = null)
+    public AppUpdates(UpdateManager manager)
     {
         this.manager = manager;
-        this.restartArgs = restartArgs ?? [];
     }
 
     public Task<UpdateInfo?> CheckAsync() => manager.CheckForUpdatesAsync();
@@ -44,7 +42,7 @@ public sealed class AppUpdates : IAppUpdates
     {
         RequireSingleInstance();
         // The controller has already joined capture/preparation/jobs. Let Avalonia close normally.
-        manager.WaitExitThenApplyUpdates(update.TargetFullRelease, restartArgs: restartArgs);
+        manager.WaitExitThenApplyUpdates(update.TargetFullRelease);
     }
 
     private static void RequireSingleInstance()

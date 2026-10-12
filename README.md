@@ -16,15 +16,13 @@ Copyright (C) 2026 OriApps. Licensed under GPL-3.0-only.
 
 The editable transcription prompt targets Russian (`ru`) by default. Enabled transcription uploads audio to your configured API; Summary uploads the completed transcript. The bounded startup GitHub version check does not block recording.
 
-`MeetTape.exe configure` opens Settings. For terminal automation, use `meettape-cli.cmd --help`, `meettape-cli.cmd sessions`, `devices`, `check-config`, or `help advanced` from the installed `current` directory (default `%LOCALAPPDATA%\OriApps.MeetTape\current`). The CMD wrapper waits for the WinExe and retains stdout/stderr and exit codes; direct PowerShell invocation of `MeetTape.exe` may return early. The installer does not change PATH. `--config <path>` works for the GUI and diagnostic commands. `configure --console` retains the optional diagnostic wizard. The interactive `meettape>` shell is removed.
-
 ## Installation
 
-Download **OriApps.MeetTape-win-Setup.exe** from [GitHub Releases](https://github.com/Akilaydin/OriApps.MeetTape/releases) and run it. Velopack installs for the current user without administrator rights, creates a Start menu shortcut and registers MeetTape in Windows Installed apps. FFmpeg 9.0 and its license are bundled; no separate download is required. Previous installations are not migrated or removed.
+Download **OriApps.MeetTape-win-Setup.exe** from [GitHub Releases](https://github.com/Akilaydin/OriApps.MeetTape/releases) and run it. Velopack installs for the current user without administrator rights, creates a Start menu shortcut and registers MeetTape in Windows Installed apps. FFmpeg 9.0 and its license are bundled; no separate download is required.
 
 For updates, stop recording and finish naming the meeting. Click **Update**, review the current/available versions, then explicitly confirm **Download and restart**. Declining or closing the dialog keeps the current version. Downloads never install automatically on the next launch. MeetTape joins preparation/processing and saves checkpoints before restarting. Use Exit in other MeetTape windows/trays first. Updates require an installed build; source/portable builds display instructions instead.
 
-To uninstall, use **Exit** in every MeetTape window/tray, then remove **MeetTape** from Windows **Settings → Apps → Installed apps**. User settings/prompts (`%APPDATA%\MeetTape`), recordings/checkpoints (default `%LOCALAPPDATA%\MeetTape\Meetings`) and named User environment API keys remain. Keep custom config, prompt and meeting paths outside `%LOCALAPPDATA%\OriApps.MeetTape`; its `current` directory is replaced by updates and its installation root is removed on uninstall.
+To uninstall, use **Exit** in every MeetTape window/tray, then remove **MeetTape** from Windows **Settings → Apps → Installed apps**. User settings/prompts (`%APPDATA%\MeetTape`), recordings/checkpoints (default `%LOCALAPPDATA%\MeetTape\Meetings`) and named User environment API keys remain. Keep prompt and meeting paths outside `%LOCALAPPDATA%\OriApps.MeetTape`; its `current` directory is replaced by updates and its installation root is removed on uninstall.
 
 ## Output
 

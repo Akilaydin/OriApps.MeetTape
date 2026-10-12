@@ -95,11 +95,9 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             AddKey(keys, SummaryKeyVariable.Trim(), NewSummaryKey);
             string updated = JsonNode.DeepEquals(json, JsonNode.Parse(original)) ? original :
                 json.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) + (original.EndsWith('\n') ? Environment.NewLine : "");
-            using var output = new StringWriter();
-            using var error = new StringWriter();
-            int result = await Task.Run(() => ConfigurationWizard.Save(ConfigurationPath, original, updated, keys, output, error, setKey));
-            Saved = result == 0;
-            Message = Saved ? "Saved. Restart MeetTape to apply settings. User prompts retained." : error.ToString().Trim();
+            string? error = await Task.Run(() => ConfigurationStore.Save(ConfigurationPath, original, updated, keys, setKey));
+            Saved = error is null;
+            Message = error ?? "Saved. Restart MeetTape to apply settings. User prompts retained.";
         }
         catch (InvalidDataException ex) { Message = ex.Message; }
         catch (Exception) { Message = "Cannot save settings. Check paths and permissions; secrets are not logged."; }

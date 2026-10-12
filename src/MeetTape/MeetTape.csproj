@@ -18,6 +18,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="MeetTape.Tests" />
+    <InternalsVisibleTo Include="MeetTape.UiTests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <AvaloniaResource Include="../../assets/MeetTape.png" Link="Assets/MeetTape.png" />
   </ItemGroup>
 

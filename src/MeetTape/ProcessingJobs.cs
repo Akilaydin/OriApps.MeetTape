@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
@@ -18,7 +17,6 @@ public sealed class ProcessingJobs : IDisposable
     private readonly Dictionary<string, (RetryProgress Retry, long ObservedAt, bool CapExpired)> observedRetries = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, (DateTime LastWriteTimeUtc, long Length)> completedSessions = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> blocked = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentQueue<string> recovered = new();
     private CancellationTokenSource? cancellation;
     private Task operation = Task.CompletedTask;
 
@@ -57,11 +55,6 @@ public sealed class ProcessingJobs : IDisposable
                 while (true)
                 {
                     token.ThrowIfCancellationRequested();
-                    while (recovered.TryDequeue(out var directory))
-                    {
-                        blocked.Remove(directory);
-                        completedSessions.Remove(directory);
-                    }
                     foreach (var session in SessionStore.Discover(config.MeetingsRoot, completedSessions, Eligible))
                     {
                         token.ThrowIfCancellationRequested();
@@ -85,8 +78,6 @@ public sealed class ProcessingJobs : IDisposable
         { throw new AudioPreparationShutdownException("Processing did not stop; new capture remains blocked. Check the process before restarting MeetTape."); }
     }
 
-    public void UnblockRecovered(string directory) => recovered.Enqueue(directory);
-
     public void Resume(string directory)
     {
         PauseAndWait();
@@ -105,19 +96,6 @@ public sealed class ProcessingJobs : IDisposable
         completedSessions.Remove(directory);
         observedRetries.Remove(directory);
         Report("Job resumed with current API settings; successful chunks retained.", NoticeKind.Information, data.Id);
-    }
-
-    public void Assemble(string directory)
-    {
-        PauseAndWait();
-        using var lease = Lease(directory);
-        var data = SessionStore.Read(directory);
-        if (!data.Stages.TryGetValue("transcribe", out var stage) || stage.Status != StageState.Completed)
-            throw new InvalidOperationException("Assembly requires all completed transcription chunks.");
-        var stages = new Dictionary<string, StageProgress>(data.Stages) { ["assemble"] = new(true, StageState.Pending) };
-        SessionStore.Save(directory, data with { Stages = stages, JobState = JobState.NotStarted, Error = null });
-        blocked.Remove(directory);
-        completedSessions.Remove(directory);
     }
 
     public void RequestSummary(string directory)
@@ -139,19 +117,6 @@ public sealed class ProcessingJobs : IDisposable
         completedSessions.Remove(directory);
     }
 
-    internal async Task AssembleLocalAsync(string directory)
-    {
-        PauseAndWait();
-        using var lease = Lease(directory);
-        var data = SessionStore.Read(directory);
-        if (!data.Stages.TryGetValue("transcribe", out var stage) || stage.Status != StageState.Completed)
-            throw new InvalidOperationException("Assembly requires all completed transcription chunks.");
-        string hash = await new TranscriptAssembler().BuildAsync(directory, data, CancellationToken.None);
-        SessionStore.Save(directory, data with { TranscriptSha256 = hash, Error = null, JobState = JobState.NotStarted,
-            Stages = new(data.Stages) { ["assemble"] = new(true, StageState.Completed) } });
-        Report($"Job {data.Id}: local transcription.md rebuilt; no API request made.", NoticeKind.Information, data.Id);
-    }
-
     public async Task ProcessSessionAsync(string directory, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
@@ -168,11 +133,6 @@ public sealed class ProcessingJobs : IDisposable
             string stage = "prepare";
             try
             {
-                if (!data.Stages.ContainsKey("assemble"))
-                {
-                    data = data with { Stages = new(data.Stages) { ["assemble"] = new(true, StageState.Pending) }, JobState = JobState.Running };
-                    SessionStore.Save(directory, data);
-                }
                 if (data.Audio is null)
                 {
                     data = Update(data, stage, StageState.Running);

@@ -1,5 +1,3 @@
-using System.Text.Json;
-using System.Text.Json.Serialization;
 using NAudio.Wave;
 
 namespace MeetTape;
@@ -24,11 +22,7 @@ public sealed record CaptureParameters(AudioDevice? MeDevice, AudioDevice? ThemD
 public sealed record ProcessingParameters(int ChunkSeconds, ApiSettings Transcription, ApiSettings Summary, string ConfigurationDirectory);
 public sealed record AudioChunk(int Index, string RelativePath, long StartFrame, long EndFrame,
     long OwnStartFrame, long OwnEndFrame, long SourceStartFrame);
-public sealed record ChunkRecovery(int OriginalChunkSeconds, int PreservedChunks, string OriginalRelativeDirectory);
-public sealed record PreparedAudio(string RelativeDirectory, List<AudioChunk> Chunks)
-{
-    public ChunkRecovery? Recovery { get; init; }
-}
+public sealed record PreparedAudio(string RelativeDirectory, List<AudioChunk> Chunks);
 public sealed record RetryProgress(int ChunkIndex, int Attempts, DateTimeOffset NextAttemptUtc);
 public sealed record SummaryResult(Guid SessionId, string TranscriptSha256, string Model, string PromptSha256, string Text);
 
@@ -54,8 +48,6 @@ public sealed record SessionData
     public AudioTimingStats MeTiming { get; init; } = new();
     public AudioTimingStats ThemTiming { get; init; } = new();
     public string? Error { get; init; }
-    [JsonExtensionData]
-    public Dictionary<string, JsonElement>? AdditionalData { get; init; }
 }
 
 public sealed record StoredSession(string Directory, SessionData? Data, bool MePresent, bool ThemPresent, string? Diagnostic);
