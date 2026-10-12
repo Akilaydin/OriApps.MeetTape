@@ -38,8 +38,8 @@ public sealed class DesktopController : IDesktopController
     {
         this.config = config;
         this.capture = capture ?? new Mp3Recorder(config).Capture;
-        preparation = new(config.Settings.Capture.FfmpegPath, TextWriter.Null);
-        jobs = new(config, TextWriter.Null, () => this.capture.Status.IsActive || Volatile.Read(ref awaitingTitle) is not null,
+        preparation = new(config.Settings.Capture.FfmpegPath);
+        jobs = new(config, () => this.capture.Status.IsActive || Volatile.Read(ref awaitingTitle) is not null,
             http: http, readKey: readKey);
         this.capture.Warning += Warn;
         this.capture.Failed += Fail;

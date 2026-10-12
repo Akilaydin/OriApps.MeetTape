@@ -10,30 +10,28 @@ internal static class StartupReleaseNotice
     private const string LatestReleaseUrl = "https://api.github.com/repos/Akilaydin/OriApps.MeetTape/releases/latest";
     private static readonly TimeSpan CheckTimeout = TimeSpan.FromSeconds(2);
 
-    internal static void Write(TextWriter output)
+    internal static string Get()
     {
-        string current = typeof(Cli).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+        string current = typeof(App).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
             ?? "unknown";
         using var client = new HttpClient();
-        Write(output, current, client, CheckTimeout);
+        return Get(current, client, CheckTimeout);
     }
 
-    internal static void Write(TextWriter output, string current, HttpClient client, TimeSpan timeout)
+    internal static string Get(string current, HttpClient client, TimeSpan timeout)
     {
         string localTag = current.Split('+', 2)[0];
         if (!TryParseVersion(localTag, out var local) || local == new Version(0, 0, 0))
         {
-            CliColors.WriteLine(output, "Current version:", ConsoleColor.Cyan, $" {localTag} (development build)");
-            CliColors.WriteLine(output, "Upstream version:", ConsoleColor.Cyan, " not checked for development builds");
-            return;
+            return $"Current version: {localTag} (development build){Environment.NewLine}Upstream version: not checked for development builds";
         }
 
-        CliColors.WriteLine(output, "Current version:", ConsoleColor.Cyan, $" v{local}");
+        string notice = $"Current version: v{local}{Environment.NewLine}";
         Version? upstream;
         try
         {
             using var deadline = new CancellationTokenSource(timeout);
-            // WaitAsync bounds CLI startup even if a network handler ignores cancellation.
+            // WaitAsync bounds the version check even if a network handler ignores cancellation.
             upstream = FetchLatestAsync(client, deadline.Token).WaitAsync(timeout).GetAwaiter().GetResult();
         }
         catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or TimeoutException
@@ -44,18 +42,14 @@ internal static class StartupReleaseNotice
 
         if (upstream is null)
         {
-            CliColors.WriteLine(output, "Upstream version:", ConsoleColor.Cyan, " unavailable (could not check GitHub)");
-            return;
+            return notice + "Upstream version: unavailable (could not check GitHub)";
         }
 
-        CliColors.WriteLine(output, "Upstream version:", ConsoleColor.Cyan, $" v{upstream}");
+        notice += $"Upstream version: v{upstream}{Environment.NewLine}";
         int comparison = upstream.CompareTo(local);
         if (comparison > 0)
-            CliColors.WriteLine(output, "Update available.", ConsoleColor.Yellow, " To update, run: update");
-        else if (comparison == 0)
-            CliColors.WriteLine(output, "Up to date.", ConsoleColor.Green);
-        else
-            CliColors.WriteLine(output, "Current version is newer than the latest published release.", ConsoleColor.Yellow);
+            return notice + "Update available. Use Update in MeetTape or run meettape-cli update.";
+        return notice + (comparison == 0 ? "Up to date." : "Current version is newer than the latest published release.");
     }
 
     private static async Task<Version?> FetchLatestAsync(HttpClient client, CancellationToken cancellationToken)

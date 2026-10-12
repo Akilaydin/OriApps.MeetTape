@@ -7,18 +7,10 @@ namespace MeetTape;
 
 internal static class CliColors
 {
-    internal static void Write(TextWriter output, string highlighted, ConsoleColor color, string rest = "")
-    {
-        if (output is CliColorWriter console)
-            console.WriteHighlighted(highlighted, rest, color, appendNewline: false);
-        else
-            output.Write(highlighted + rest);
-    }
-
     internal static void WriteLine(TextWriter output, string highlighted, ConsoleColor color, string rest = "")
     {
         if (output is CliColorWriter console)
-            console.WriteHighlighted(highlighted, rest, color, appendNewline: true);
+            console.WriteHighlighted(highlighted, rest, color);
         else
             output.WriteLine(highlighted + rest);
     }
@@ -43,9 +35,6 @@ internal static class CliColors
                 string command = trimmed.Split(' ', 2)[0];
                 if (headingEnd > 0 && indent == 0)
                     WriteLine(output, line[..headingEnd], ConsoleColor.Cyan, line[headingEnd..]);
-                else if (trimmed.StartsWith("At meettape>:", StringComparison.Ordinal) ||
-                         trimmed.StartsWith("Advanced commands", StringComparison.Ordinal))
-                    WriteLine(output, line, ConsoleColor.Cyan);
                 else if (indent >= 2 && CliHelp.IsCommandName(command))
                 {
                     int end = indent + command.Length;
@@ -59,7 +48,7 @@ internal static class CliColors
 }
 
 // Only real, non-redirected console streams can change the terminal palette.
-// All writes use one lock so background job output cannot inherit a temporary color.
+// All writes use one lock so concurrent diagnostic output cannot inherit a temporary color.
 internal sealed class CliColorWriter : TextWriter
 {
     private static readonly object ConsoleGate = new();
@@ -68,7 +57,6 @@ internal sealed class CliColorWriter : TextWriter
     private readonly Func<string?> readNoColor;
     private readonly Func<ConsoleColor> readForeground;
     private readonly Action<ConsoleColor> setForeground;
-    private bool awaitingCommand;
 
     internal CliColorWriter(TextWriter inner, Func<bool> isTerminal, Func<string?> readNoColor,
         Func<ConsoleColor> readForeground, Action<ConsoleColor> setForeground)
@@ -106,64 +94,40 @@ internal sealed class CliColorWriter : TextWriter
         lock (ConsoleGate) write();
     }
 
-    internal void BeginInteractivePrompt()
+    internal void WriteHighlighted(string highlighted, string rest, ConsoleColor color)
     {
         lock (ConsoleGate)
         {
-            awaitingCommand = true;
-            WriteHighlighted("meettape>", " ", ConsoleColor.Cyan, appendNewline: false);
-        }
-    }
-
-    internal void EndInteractivePrompt()
-    {
-        lock (ConsoleGate) awaitingCommand = false;
-    }
-
-    internal void WriteHighlighted(string highlighted, string rest, ConsoleColor color, bool appendNewline)
-    {
-        lock (ConsoleGate)
-        {
-            if (appendNewline && awaitingCommand) inner.WriteLine();
-            try
+            if (!CanColor)
             {
-                if (!CanColor)
-                {
-                    WritePlain(highlighted + rest);
-                    return;
-                }
-
-                ConsoleColor previous;
-                try { previous = readForeground(); }
-                catch (Exception)
-                {
-                    WritePlain(highlighted + rest);
-                    return;
-                }
-
-                try { setForeground(color); }
-                catch (Exception)
-                {
-                    TryRestore(previous);
-                    WritePlain(highlighted + rest);
-                    return;
-                }
-
-                try { inner.Write(highlighted); }
-                finally { TryRestore(previous); }
-                WritePlain(rest);
+                WritePlain(highlighted + rest);
+                return;
             }
-            finally
+
+            ConsoleColor previous;
+            try { previous = readForeground(); }
+            catch (Exception)
             {
-                if (appendNewline && awaitingCommand)
-                    WriteHighlighted("meettape>", " ", ConsoleColor.Cyan, appendNewline: false);
+                WritePlain(highlighted + rest);
+                return;
             }
+
+            try { setForeground(color); }
+            catch (Exception)
+            {
+                TryRestore(previous);
+                WritePlain(highlighted + rest);
+                return;
+            }
+
+            try { inner.Write(highlighted); }
+            finally { TryRestore(previous); }
+            WritePlain(rest);
         }
 
         void WritePlain(string value)
         {
-            if (appendNewline) inner.WriteLine(value);
-            else inner.Write(value);
+            inner.WriteLine(value);
         }
     }
 
@@ -174,20 +138,9 @@ internal sealed class CliColorWriter : TextWriter
         catch (Exception) { }
     }
 
-    private void WriteLineAndRestorePrompt(Action writeLine)
-    {
-        lock (ConsoleGate)
-        {
-            // ReadLine stays active while background jobs write progress.
-            if (awaitingCommand) inner.WriteLine();
-            writeLine();
-            if (awaitingCommand) WriteHighlighted("meettape>", " ", ConsoleColor.Cyan, appendNewline: false);
-        }
-    }
-
     public override void Write(char value) { lock (ConsoleGate) inner.Write(value); }
     public override void Write(string? value) { lock (ConsoleGate) inner.Write(value); }
-    public override void WriteLine(string? value) => WriteLineAndRestorePrompt(() => inner.WriteLine(value));
-    public override void WriteLine() => WriteLineAndRestorePrompt(inner.WriteLine);
+    public override void WriteLine(string? value) { lock (ConsoleGate) inner.WriteLine(value); }
+    public override void WriteLine() { lock (ConsoleGate) inner.WriteLine(); }
     public override void Flush() { lock (ConsoleGate) inner.Flush(); }
 }

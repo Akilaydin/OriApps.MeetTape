@@ -8,7 +8,6 @@ namespace MeetTape;
 public sealed class ProcessingJobs : IDisposable
 {
     private readonly LoadedConfiguration config;
-    private readonly TextWriter output;
     private readonly Func<bool> captureActive;
     private readonly HttpClient http;
     private readonly bool ownsHttp;
@@ -28,17 +27,15 @@ public sealed class ProcessingJobs : IDisposable
 
     private void Report(string message, NoticeKind kind, Guid? sessionId = null)
     {
-        CliColors.WriteLine(output, message, kind == NoticeKind.Error ? ConsoleColor.Red :
-            kind == NoticeKind.Warning ? ConsoleColor.Yellow : ConsoleColor.Green);
         try { Notice?.Invoke(new(kind, message, sessionId)); }
         catch (Exception) { /* Diagnostics cannot change checkpoint/processing outcomes. */ }
     }
 
-    public ProcessingJobs(LoadedConfiguration config, TextWriter output, Func<bool> captureActive,
+    public ProcessingJobs(LoadedConfiguration config, Func<bool> captureActive,
         HttpClient? http = null, Func<TimeSpan, CancellationToken, Task>? delay = null, Func<ApiSettings, string>? readKey = null,
         Func<DateTimeOffset>? utcNow = null, Func<long>? timestamp = null)
     {
-        this.config = config; this.output = output; this.captureActive = captureActive;
+        this.config = config; this.captureActive = captureActive;
         ownsHttp = http is null;
         this.http = http ?? new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = Timeout.InfiniteTimeSpan };
         this.delay = delay ?? ((duration, token) => Task.Delay(duration, token));
@@ -107,7 +104,7 @@ public sealed class ProcessingJobs : IDisposable
         blocked.Remove(directory);
         completedSessions.Remove(directory);
         observedRetries.Remove(directory);
-        CliColors.WriteLine(output, "Job resumed with current API settings; successful chunks retained.", ConsoleColor.Green);
+        Report("Job resumed with current API settings; successful chunks retained.", NoticeKind.Information, data.Id);
     }
 
     public void Assemble(string directory)

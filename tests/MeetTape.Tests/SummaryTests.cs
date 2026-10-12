@@ -43,7 +43,7 @@ public sealed class SummaryTests : IDisposable
             return Reply();
         });
         using var http = new HttpClient(handler);
-        using var jobs = new ProcessingJobs(config, TextWriter.Null, () => false, http, readKey: _ => "summary-key");
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "summary-key");
         await jobs.ProcessSessionAsync(directory, default);
         Assert.Equal(0, handler.Calls);
         jobs.RequestSummary(directory);
@@ -68,11 +68,11 @@ public sealed class SummaryTests : IDisposable
         using var handler = new Handler((_, _) => Task.FromResult(Reply()));
         using var http = new HttpClient(handler);
         using (var disabled = new ProcessingJobs(config with { Settings = config.Settings with { Stages = new() { Summary = false } } },
-            TextWriter.Null, () => false, http, readKey: _ => "key"))
+            () => false, http, readKey: _ => "key"))
             Assert.Throws<InvalidOperationException>(() => disabled.RequestSummary(directory));
         var data = SessionStore.Read(directory);
         SessionStore.Save(directory, data with { Stages = new(data.Stages) { ["transcribe"] = new(true, StageState.Pending) } });
-        using var incomplete = new ProcessingJobs(config, TextWriter.Null, () => false, http, readKey: _ => "key");
+        using var incomplete = new ProcessingJobs(config, () => false, http, readKey: _ => "key");
         Assert.Throws<InvalidOperationException>(() => incomplete.RequestSummary(directory));
         Assert.Equal(0, handler.Calls);
     }
@@ -99,7 +99,7 @@ public sealed class SummaryTests : IDisposable
         int calls = 0;
         using var handler = new Handler((_, _) => Task.FromResult(Reply(++calls <= 2 ? 503 : 403)));
         using var http = new HttpClient(handler);
-        using var jobs = new ProcessingJobs(config, TextWriter.Null, () => false, http, readKey: _ => "key", utcNow: () => now);
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "key", utcNow: () => now);
         string hash = SessionStore.Read(directory).TranscriptSha256!;
         jobs.RequestSummary(directory);
         for (int attempt = 1; attempt <= 2; attempt++)
@@ -129,7 +129,7 @@ public sealed class SummaryTests : IDisposable
         File.WriteAllText(target, "user notes");
         using var handler = new Handler((_, _) => Task.FromResult(Reply()));
         using var http = new HttpClient(handler);
-        using var jobs = new ProcessingJobs(config, TextWriter.Null, () => false, http, readKey: _ => "key");
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "key");
         jobs.RequestSummary(directory);
         await jobs.ProcessSessionAsync(directory, default);
         Assert.Equal(JobState.Paused, SessionStore.Read(directory).JobState);
@@ -149,7 +149,7 @@ public sealed class SummaryTests : IDisposable
         var now = DateTimeOffset.UtcNow;
         using var transient = new Handler((_, _) => Task.FromResult(Reply(503)));
         using (var http = new HttpClient(transient))
-        using (var jobs = new ProcessingJobs(config, TextWriter.Null, () => false, http, readKey: _ => "key", utcNow: () => now))
+        using (var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "key", utcNow: () => now))
         { jobs.RequestSummary(directory); await jobs.ProcessSessionAsync(directory, default); }
         var retry = Assert.IsType<RetryProgress>(SessionStore.Read(directory).Retry);
         Assert.Equal(0, retry.ChunkIndex);
@@ -157,7 +157,7 @@ public sealed class SummaryTests : IDisposable
         using var incomplete = new Handler((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             { Content = new StringContent("{\"choices\":[{\"finish_reason\":\"length\",\"message\":{\"content\":\"partial\"}}]}") }));
         using var nextHttp = new HttpClient(incomplete);
-        using var restarted = new ProcessingJobs(config, TextWriter.Null, () => false, nextHttp, readKey: _ => "key", utcNow: () => now);
+        using var restarted = new ProcessingJobs(config, () => false, nextHttp, readKey: _ => "key", utcNow: () => now);
         await restarted.ProcessSessionAsync(directory, default);
         Assert.Equal(0, incomplete.Calls); // Persisted retry deadline still applies after restart.
         now = retry.NextAttemptUtc;

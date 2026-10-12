@@ -105,9 +105,7 @@ public sealed class App : Application
             timer.Tick += async (_, _) => await model.RefreshAsync();
             timer.Start();
             // This bounded public GitHub lookup is separate from capture and API processing.
-            using var notice = new StringWriter();
-            await Task.Run(() => StartupReleaseNotice.Write(notice));
-            model.ReleaseText = notice.ToString().Trim();
+            model.ReleaseText = await Task.Run(StartupReleaseNotice.Get);
             model.SetInfo("Close hides the window. Use Exit to stop MeetTape.");
         }
         catch (Exception ex) { model.SetError(ex is InvalidDataException ? ex.Message :

@@ -69,7 +69,7 @@ public sealed class CliHelpTests
         bool launched = false;
         using var output = new StringWriter(); using var error = new StringWriter();
         Assert.Equal(0, Cli.Run(["update"], TextReader.Null, output, error,
-            _ => throw new Exception("No hardware"), (_, _) => { launched = true; return 0; }));
+            (_, _) => { launched = true; return 0; }, () => throw new Exception("No hardware")));
         Assert.True(launched); Assert.Empty(error.ToString());
     }
 
@@ -78,7 +78,7 @@ public sealed class CliHelpTests
     {
         using var output = new StringWriter(); using var error = new StringWriter();
         Assert.Equal(0, Cli.Run(["devices"], TextReader.Null, output, error,
-            _ => throw new Exception("No capture"), null, () =>
+            null, () =>
             [new("mic-id", "Microphone", CaptureChannel.Me, true), new("render-id", "Speakers", CaptureChannel.Them, false)]));
         Assert.Contains("Me (default): Microphone", output.ToString());
         Assert.Contains("render-id", output.ToString()); Assert.Empty(error.ToString());
@@ -89,7 +89,7 @@ public sealed class CliHelpTests
     {
         using var output = new StringWriter(); using var error = new StringWriter();
         Assert.Equal(2, Cli.Run(["devices"], TextReader.Null, output, error,
-            _ => throw new Exception("No capture"), null,
+            null,
             () => throw new System.Runtime.InteropServices.COMException("private device diagnostic")));
         Assert.Contains("Windows Audio", error.ToString()); Assert.DoesNotContain("private", error.ToString());
     }
@@ -129,7 +129,7 @@ public sealed class CliHelpTests
     {
         using var output = new StringWriter(); using var error = new StringWriter();
         int result = Cli.Run(args, TextReader.Null, output, error,
-            _ => throw new Exception("Help must not access hardware"));
+            null, () => throw new Exception("Help must not access hardware"));
         return (result, output.ToString(), error.ToString());
     }
 }
