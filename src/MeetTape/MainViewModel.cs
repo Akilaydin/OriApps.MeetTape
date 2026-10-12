@@ -25,6 +25,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public bool CanPrepare => CanProcess && selected!.NeedsPreparation;
     public bool CanResume => CanProcess && selected!.CanResume;
     public bool CanSummary => CanProcess && snapshot.SummaryEnabled && selected!.CanRequestSummary;
+    public string SummaryLabel => selected?.CanRestoreSummary == true ? "Restore Summary" : "Request Summary";
     public bool CanOpen => selected is not null;
     public bool CanOpenTranscript => selected?.HasTranscript == true;
     public bool CanOpenSummary => selected?.HasSummary == true;
@@ -258,6 +259,7 @@ public sealed record SessionRow(string Directory, Guid? Id, string Title, string
 {
     public bool CanResume { get; init; }
     public bool CanRequestSummary { get; init; }
+    public bool CanRestoreSummary { get; init; }
     public static SessionRow From(StoredSession session)
     {
         var data = session.Data;
@@ -275,13 +277,15 @@ public sealed record SessionRow(string Directory, Guid? Id, string Title, string
         bool hasSummary = File.Exists(Path.Combine(session.Directory, "summary.md"));
         StageProgress? summary = null;
         data?.Stages.TryGetValue("summary", out summary);
+        bool canRestoreSummary = summary?.Status == StageState.Completed && !hasSummary && File.Exists(Path.Combine(session.Directory, "summary.json"));
         return new(session.Directory, data?.Id, data?.Title ?? "Unnamed meeting", data?.StartedAtUtc.ToLocalTime().ToString("g") ?? "",
             status, progress, transcription?.TotalChunks is > 0 ? 100d * transcription.CompletedChunks / transcription.TotalChunks.Value : 0,
             session.Diagnostic, needsPreparation, hasTranscript, hasSummary)
         {
             CanResume = data is not null && ProcessingJobs.CanResume(data),
             CanRequestSummary = data is not null && ProcessingJobs.HasPublishedTranscription(data) && hasTranscript && !hasSummary
-                && (summary is null || summary.Status is StageState.Disabled or StageState.AwaitingRequest)
+                && (canRestoreSummary || summary is null || summary.Status is StageState.Disabled or StageState.AwaitingRequest),
+            CanRestoreSummary = canRestoreSummary
         };
     }
 }

@@ -318,6 +318,8 @@ public sealed class WindowTests
     [InlineData("running", false)]
     [InlineData("paused", false)]
     [InlineData("saved", false)]
+    [InlineData("restore", true)]
+    [InlineData("lost-checkpoint", false)]
     public async Task SummaryRequiresCurrentPermissionAndPublishedTranscriptWithoutExistingRequest(string state, bool allowed)
     {
         using var fixture = new Fixture();
@@ -328,14 +330,18 @@ public sealed class WindowTests
         if (state == "unpublished") data = data with { TranscriptSha256 = null };
         if (state is "pending" or "running" or "paused") data = data with
         { Stages = new(data.Stages) { ["summary"] = new(true, Enum.Parse<StageState>(state, true)) } };
+        if (state is "saved" or "restore" or "lost-checkpoint") data = data with
+        { Stages = new(data.Stages) { ["summary"] = new(true, StageState.Completed) } };
         File.WriteAllText(Path.Combine(fixture.SessionDirectory, "transcription.md"), "Fixture transcript");
         if (state == "saved") File.WriteAllText(Path.Combine(fixture.SessionDirectory, "summary.md"), "Fixture summary");
+        if (state == "restore") File.WriteAllText(Path.Combine(fixture.SessionDirectory, "summary.json"), "Fixture paid checkpoint");
         fake.Snapshot = fake.Snapshot with { SummaryEnabled = state != "disabled", Sessions = [session with { Data = data }] };
         var model = new MainViewModel(fake);
         var window = new MainWindow { DataContext = model };
         window.Show(); await model.RefreshAsync();
         window.FindControl<ListBox>("SessionList")!.SelectedIndex = 0;
         Assert.Equal(allowed, window.FindControl<Button>("RequestSummary")!.IsEnabled);
+        Assert.Equal(state == "restore" ? "Restore Summary" : "Request Summary", window.FindControl<Button>("RequestSummary")!.Content);
         Click(window, "RequestSummary");
         Assert.Equal(allowed ? 1 : 0, fake.Summaries);
         if (allowed)
