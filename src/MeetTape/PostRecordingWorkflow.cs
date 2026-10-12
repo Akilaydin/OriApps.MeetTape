@@ -4,7 +4,7 @@ namespace MeetTape;
 
 public sealed class PostRecordingWorkflow(string ffmpegPath) : IDisposable
 {
-    private readonly AudioTrimmer trimmer = new(ffmpegPath);
+    private AudioTrimmer trimmer = new(ffmpegPath);
     private readonly object gate = new();
     private CancellationTokenSource? cancellation;
     private Task operation = Task.CompletedTask;
@@ -15,6 +15,7 @@ public sealed class PostRecordingWorkflow(string ffmpegPath) : IDisposable
     public string? SelectedDirectory => directory;
     public TrimSuggestion? Suggestion { get { lock (gate) return suggestion; } }
     public event Action<OperationNotice>? Notice;
+    internal void ApplyFfmpeg(string path) => trimmer = new(path);
 
     public void Begin(string sessionDirectory, string? title = null)
     {
@@ -37,11 +38,12 @@ public sealed class PostRecordingWorkflow(string ffmpegPath) : IDisposable
             return;
         }
         string selected = directory;
+        var currentTrimmer = trimmer;
         Start(async token =>
         {
             using var lease = Lease(selected);
             var data = SessionStore.Read(selected);
-            var found = await trimmer.SuggestAsync(selected, data.DurationSeconds!.Value, token);
+            var found = await currentTrimmer.SuggestAsync(selected, data.DurationSeconds!.Value, token);
             token.ThrowIfCancellationRequested();
             SessionStore.Save(selected, Update(data, StageState.AwaitingUser, error: null));
             lock (gate) suggestion = found;
@@ -82,6 +84,7 @@ public sealed class PostRecordingWorkflow(string ffmpegPath) : IDisposable
         else if (decision != "manual") throw new ArgumentException("Unknown trim decision.", nameof(decision));
         AudioTrimmer.Validate(start ?? double.NaN, end ?? double.NaN, duration);
         double a = start!.Value, b = end!.Value;
+        var currentTrimmer = trimmer;
         Start(async token =>
         {
             using var lease = Lease(selected);
@@ -89,7 +92,7 @@ public sealed class PostRecordingWorkflow(string ffmpegPath) : IDisposable
             EnsurePending(current);
             SessionStore.Save(selected, Update(current, StageState.Running, error: null));
             TrimParameters choice = a == 0 && b == duration ? new(0, duration, false) { Decision = decision } :
-                await trimmer.ApplyAsync(selected, a, b, duration, decision, token);
+                await currentTrimmer.ApplyAsync(selected, a, b, duration, decision, token);
             token.ThrowIfCancellationRequested();
             SessionStore.Save(selected, Update(current with { Trim = choice }, StageState.Completed, error: null));
             Report(new(NoticeKind.Information, "Trim choice saved; originals retained.", current.Id));

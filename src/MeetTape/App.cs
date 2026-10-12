@@ -24,6 +24,7 @@ public sealed class App : Application
     private bool allowShutdown;
     private bool openingSettings;
     private bool initialized;
+    private bool initializingController;
     private IAppUpdates? updates;
 
     public override void Initialize() => Styles.Add(new FluentTheme());
@@ -104,9 +105,10 @@ public sealed class App : Application
             timer.Start();
             return;
         }
-        if (!File.Exists(ConfigPath)) await OpenSettingsAsync();
+        initializingController = true;
         try
         {
+            if (!File.Exists(ConfigPath)) await OpenSettingsAsync();
             var config = await Task.Run(() => ConfigurationLoader.LoadForCapture(ConfigPath));
             controller = new DesktopController(config);
             model.PropertyChanged -= ModelChanged;
@@ -138,6 +140,7 @@ public sealed class App : Application
         }
         catch (Exception ex) { model.SetError(ex is InvalidDataException ? ex.Message :
             "Cannot load settings or prompts. Open Settings; check configuration paths and permissions."); }
+        finally { initializingController = false; }
     }
 
     private static string ConfigPath => ConfigurationBootstrap.UserConfigurationPath;
@@ -152,14 +155,28 @@ public sealed class App : Application
             IReadOnlyList<AudioDevice> devices;
             try { devices = await Task.Run(AudioDevices.List); }
             catch (Exception) { devices = []; model.SetError("Cannot enumerate devices. Check Windows Audio service and permissions."); }
-            var settings = await Task.Run(() => new SettingsViewModel(ConfigPath, devices));
+            var settings = await Task.Run(() => new SettingsViewModel(ConfigPath, devices, applySettings: ApplySettingsAsync));
             var dialog = new SettingsWindow { DataContext = settings, Icon = window.Icon };
             ShowWindow();
             await dialog.ShowDialog(window);
-            if (settings.Saved) model.SetInfo("Settings saved. Exit and reopen MeetTape to apply them.");
+            if (settings.Saved) model.SetInfo(settings.Message);
         }
         catch (Exception ex) { model.SetError(ex is InvalidDataException ? ex.Message : "Cannot open settings; check config.json and permissions."); }
         finally { openingSettings = false; }
+    }
+
+    private async Task ApplySettingsAsync(LoadedConfiguration updated)
+    {
+        if (controller is not null)
+        {
+            await controller.ApplyConfigurationAsync(updated);
+            await model.RefreshAsync();
+        }
+        else if (!initializingController)
+        {
+            initialized = false;
+            await InitializeAsync();
+        }
     }
 
     private void ShowWindow() { window!.Show(); window.WindowState = WindowState.Normal; window.Activate(); }

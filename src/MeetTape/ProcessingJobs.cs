@@ -7,7 +7,9 @@ namespace MeetTape;
 public sealed class ProcessingJobs : IDisposable
 {
     private static readonly string[] ProcessingStages = ["prepare", "transcribe", "assemble", "summary"];
-    private readonly LoadedConfiguration config;
+    private volatile LoadedConfiguration config;
+    private volatile string[] meetingsRoots;
+    internal IReadOnlyList<string> MeetingsRoots => meetingsRoots;
     private readonly Func<bool> captureActive;
     private readonly HttpClient http;
     private readonly bool ownsHttp;
@@ -35,12 +37,20 @@ public sealed class ProcessingJobs : IDisposable
         Func<DateTimeOffset>? utcNow = null, Func<long>? timestamp = null)
     {
         this.config = config; this.captureActive = captureActive;
+        meetingsRoots = [config.MeetingsRoot];
         ownsHttp = http is null;
         this.http = http ?? new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = Timeout.InfiniteTimeSpan };
         this.delay = delay ?? ((duration, token) => Task.Delay(duration, token));
         this.utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
         this.timestamp = timestamp ?? Stopwatch.GetTimestamp;
         api = new(this.http, captureActive, readKey);
+    }
+
+    internal void ApplyConfiguration(LoadedConfiguration updated)
+    {
+        string root = updated.MeetingsRoot;
+        if (!meetingsRoots.Contains(root, StringComparer.OrdinalIgnoreCase)) meetingsRoots = [.. meetingsRoots, root];
+        config = updated;
     }
 
     public void Start()
@@ -56,7 +66,8 @@ public sealed class ProcessingJobs : IDisposable
                 while (true)
                 {
                     token.ThrowIfCancellationRequested();
-                    foreach (var session in SessionStore.Discover(config.MeetingsRoot, completedSessions, Eligible))
+                    foreach (string root in meetingsRoots)
+                    foreach (var session in SessionStore.Discover(root, completedSessions, Eligible))
                     {
                         token.ThrowIfCancellationRequested();
                         if (session.Data is { } data && !blocked.Contains(session.Directory) && Eligible(data) && !RetryPending(session.Directory, data))
@@ -104,7 +115,7 @@ public sealed class ProcessingJobs : IDisposable
         PauseAndWait();
         using var lease = Lease(directory);
         var data = SessionStore.Read(directory);
-        if (!config.Settings.Stages.Summary) throw new InvalidOperationException("Summary disabled; enable stages.summary and restart before requesting it.");
+        if (!config.Settings.Stages.Summary) throw new InvalidOperationException("Summary disabled; enable Summary in Settings before requesting it.");
         if (!HasPublishedTranscription(data))
             throw new InvalidOperationException("Summary requires a complete published transcription.md.");
         if (data.Stages.TryGetValue("summary", out var summary) && summary.Status == StageState.Completed && File.Exists(Path.Combine(directory, "summary.md")))
@@ -118,6 +129,7 @@ public sealed class ProcessingJobs : IDisposable
 
     public async Task ProcessSessionAsync(string directory, CancellationToken token)
     {
+        var currentConfig = config;
         token.ThrowIfCancellationRequested();
         if (captureActive()) return;
         FileStream lease;
@@ -136,7 +148,7 @@ public sealed class ProcessingJobs : IDisposable
                 {
                     data = Update(data, stage, StageState.Running);
                     SessionStore.Save(directory, data);
-                    var audio = await new AudioChunker(config.Settings.Capture.FfmpegPath).PrepareAsync(directory, data, token);
+                    var audio = await new AudioChunker(currentConfig.Settings.Capture.FfmpegPath).PrepareAsync(directory, data, token);
                     data = Update(data with { Audio = audio }, stage, StageState.Completed, audio.Chunks.Count, audio.Chunks.Count);
                     SessionStore.Save(directory, data);
                 }

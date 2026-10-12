@@ -4,7 +4,7 @@ namespace MeetTape;
 
 public sealed class Mp3Recorder
 {
-    private readonly LoadedConfiguration configuration;
+    private LoadedConfiguration configuration;
     private long origin100ns;
     private Mp3Track? me;
     private Mp3Track? them;
@@ -17,9 +17,11 @@ public sealed class Mp3Recorder
     public Mp3Recorder(LoadedConfiguration configuration, Func<CaptureSources>? openSources)
     {
         this.configuration = configuration;
-        Capture = new(openSources ?? (() => AudioDevices.Open(configuration.Settings.Capture)), Consume, Start, Stop);
+        Capture = new(openSources ?? (() => AudioDevices.Open(this.configuration.Settings.Capture)), Consume, Start, Stop);
         Capture.Finished += FinalizeSession;
     }
+
+    internal void ApplyConfiguration(LoadedConfiguration updated) => configuration = updated;
 
     private void Start(CaptureSources sources, long origin)
     {

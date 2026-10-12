@@ -14,6 +14,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
 {
     private readonly string original;
     private readonly Action<string, string, EnvironmentVariableTarget>? setKey;
+    private readonly Func<LoadedConfiguration, Task>? applySettings;
     public string ConfigurationPath { get; }
     public IReadOnlyList<DeviceChoice> Microphones { get; }
     public IReadOnlyList<DeviceChoice> PlaybackDevices { get; }
@@ -36,16 +37,18 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     // Only newly entered secrets live here. Existing keys are never loaded into controls.
     public string NewTranscriptionKey { get; set; } = "";
     public string NewSummaryKey { get; set; } = "";
-    public string Message { get; private set; } = "Restart MeetTape after saving. Empty key fields keep existing keys.";
+    public string Message { get; private set; } = "Changes apply to new recordings and explicit Resume. Empty key fields keep existing keys.";
     public bool CanSave { get; private set; } = true;
     public bool Saved { get; private set; }
     public event PropertyChangedEventHandler? PropertyChanged;
 
     public SettingsViewModel(string path, IReadOnlyList<AudioDevice> devices,
-        Action<string, string, EnvironmentVariableTarget>? setKey = null)
+        Action<string, string, EnvironmentVariableTarget>? setKey = null,
+        Func<LoadedConfiguration, Task>? applySettings = null)
     {
         ConfigurationPath = Path.GetFullPath(path);
         this.setKey = setKey;
+        this.applySettings = applySettings;
         original = File.ReadAllText(ConfigurationPath);
         var settings = ConfigurationLoader.Parse(original, ConfigurationPath, validatePrompts: false).Settings;
         var json = JsonNode.Parse(original)!;
@@ -97,10 +100,13 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
                 json.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) + (original.EndsWith('\n') ? Environment.NewLine : "");
             string? error = await Task.Run(() => ConfigurationStore.Save(ConfigurationPath, original, updated, keys, setKey));
             Saved = error is null;
-            Message = error ?? "Saved. Restart MeetTape to apply settings. User prompts retained.";
+            Message = error ?? "Saved. Capture changes apply to the next recording; running jobs keep their saved parameters. Resume uses current API settings. User prompts retained.";
+            if (Saved && applySettings is not null)
+                await applySettings(ConfigurationLoader.Parse(updated, ConfigurationPath, validatePrompts: false));
         }
         catch (InvalidDataException ex) { Message = ex.Message; }
-        catch (Exception) { Message = "Cannot save settings. Check paths and permissions; secrets are not logged."; }
+        catch (Exception) { Message = Saved ? "Settings saved, but could not be applied to the running app. Reopen Settings and Save to retry; current recording retained." :
+            "Cannot save settings. Check paths and permissions; secrets are not logged."; }
         finally { ClearSecrets(); CanSave = !Saved; Changed(); }
     }
 
