@@ -23,6 +23,94 @@ public static class TestApp
 
 public sealed class WindowTests
 {
+    [AvaloniaTheory]
+    [InlineData("transcription.md")]
+    [InlineData("summary.md")]
+    public async Task CopyMarkdownReadsExactTextOnlyAfterAnExplicitActionAndPreservesFiles(string name)
+    {
+        using var fixture = new Fixture();
+        const string markdown = "# PRIVATE fixture 🌍\r\n\r\n- **Decision**: keep Markdown unchanged.\n";
+        string path = Path.Combine(fixture.SessionDirectory, name);
+        File.WriteAllText(path, markdown);
+        File.WriteAllText(Path.Combine(fixture.SessionDirectory, "session.json"), "Fixture metadata unchanged");
+        File.WriteAllBytes(Path.Combine(fixture.SessionDirectory, "me.mp3"), [1, 2, 3]);
+        File.WriteAllBytes(Path.Combine(fixture.SessionDirectory, "them.mp3"), [4, 5, 6]);
+        var originals = Directory.GetFiles(fixture.SessionDirectory).ToDictionary(p => p, File.ReadAllBytes);
+        var fake = new FakeController(fixture);
+        var model = new MainViewModel(fake);
+        var copied = new List<string>();
+        var window = new MainWindow { DataContext = model, WriteClipboard = text => { copied.Add(text); return Task.CompletedTask; } };
+        await model.RefreshAsync();
+        model.SelectedSession = model.Sessions[0];
+        Assert.True(model.CanCopyDocument);
+        Assert.Empty(copied);
+        Assert.DoesNotContain("PRIVATE", model.InfoText);
+        await window.CopyDocumentAsync(name);
+        Assert.Equal(markdown, Assert.Single(copied));
+        foreach (var (file, bytes) in originals) Assert.Equal(bytes, File.ReadAllBytes(file));
+        Assert.Equal(originals.Count, Directory.GetFiles(fixture.SessionDirectory).Length);
+        Assert.DoesNotContain("PRIVATE", model.DiagnosticText);
+        Assert.Equal(0, fake.Starts); Assert.Equal(0, fake.Resumes); Assert.Equal(0, fake.Summaries);
+        Close(window, model);
+    }
+
+    [AvaloniaTheory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task MissingMarkdownAndClipboardFailureStaySafeWithoutLeakingContents(bool missing)
+    {
+        using var fixture = new Fixture();
+        string path = Path.Combine(fixture.SessionDirectory, "transcription.md");
+        const string markdown = "PRIVATE fixture transcript";
+        File.WriteAllText(path, markdown);
+        var fake = new FakeController(fixture);
+        var model = new MainViewModel(fake);
+        int writes = 0;
+        var window = new MainWindow { DataContext = model, WriteClipboard = _ =>
+        {
+            writes++;
+            throw new InvalidOperationException("PRIVATE clipboard failure diagnostic");
+        } };
+        await model.RefreshAsync(); model.SelectedSession = model.Sessions[0];
+        if (missing) File.Delete(path);
+        await window.CopyDocumentAsync("transcription.md");
+        Assert.True(model.HasError);
+        Assert.DoesNotContain("PRIVATE", model.ErrorText);
+        Assert.Equal(missing ? 0 : 1, writes);
+        if (missing) Assert.False(model.CanOpenTranscript); else Assert.Equal(markdown, File.ReadAllText(path));
+        model.SelectedSession = null;
+        await window.CopyDocumentAsync("transcription.md");
+        Assert.Equal(missing ? 0 : 1, writes);
+        Assert.Equal(0, fake.Starts); Assert.Equal(0, fake.Summaries);
+        Close(window, model);
+    }
+
+    [AvaloniaFact]
+    public async Task CopyMenuEnablesExistingDocumentsAndCopiesThroughActualMenuItem()
+    {
+        using var fixture = new Fixture();
+        var model = new MainViewModel(new FakeController(fixture));
+        var copied = new List<string>();
+        var window = new MainWindow { DataContext = model, WriteClipboard = text => { copied.Add(text); return Task.CompletedTask; } };
+        window.Show(); await model.RefreshAsync();
+        window.FindControl<ListBox>("SessionList")!.SelectedIndex = 0;
+        var button = window.FindControl<Button>("CopyMenu")!;
+        Assert.False(button.IsEnabled);
+        File.WriteAllText(Path.Combine(fixture.SessionDirectory, "transcription.md"), "# PRIVATE fixture transcript");
+        await model.RefreshAsync();
+        Assert.True(button.IsEnabled);
+        var menu = (MenuFlyout)button.Flyout!;
+        menu.ShowAt(button); Dispatcher.UIThread.RunJobs();
+        var items = menu.Items.OfType<MenuItem>().ToArray();
+        Assert.True(items[0].IsEnabled);
+        Assert.False(items[1].IsEnabled);
+        Assert.Empty(copied);
+        items[0].RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        await WaitFor(() => copied.Count == 1);
+        Assert.Equal("# PRIVATE fixture transcript", copied[0]);
+        menu.Hide(); Close(window, model);
+    }
+
     [AvaloniaFact]
     public async Task SearchUsesTitlesAndDisplayedDatesAndClearsMissingSelectionWithoutReadingDocuments()
     {

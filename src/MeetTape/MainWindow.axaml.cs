@@ -11,6 +11,7 @@ public sealed partial class MainWindow : Window
     public Func<Task>? OpenSettings { get; set; }
     public Func<Task>? ExitApplication { get; set; }
     public Func<Task>? UpdateApplication { get; set; }
+    internal Func<string, Task>? WriteClipboard { get; set; }
     public bool AllowClose { get; set; }
     private MainViewModel Model => (MainViewModel)DataContext!;
     public MainWindow()
@@ -34,11 +35,31 @@ public sealed partial class MainWindow : Window
     {
         try
         {
-            var clipboard = Clipboard ?? throw new InvalidOperationException();
-            await clipboard.SetTextAsync(Model.DiagnosticText);
+            await WriteClipboardAsync(Model.DiagnosticText);
             Model.SetInfo("Details copied.");
         }
         catch (Exception) { Model.SetError("Cannot copy details. Select the text in Details and press Ctrl+C."); }
+    }
+    private Task WriteClipboardAsync(string text) => WriteClipboard is { } write ? write(text) :
+        (Clipboard ?? throw new InvalidOperationException()).SetTextAsync(text);
+    private async void CopyTranscriptClick(object? sender, RoutedEventArgs e) => await CopyDocumentAsync("transcription.md");
+    private async void CopySummaryClick(object? sender, RoutedEventArgs e) => await CopyDocumentAsync("summary.md");
+    internal async Task CopyDocumentAsync(string name)
+    {
+        var session = Model.SelectedSession;
+        if (session is null || (name == "transcription.md" ? !Model.CanOpenTranscript : !Model.CanOpenSummary)) return;
+        try
+        {
+            string markdown = await File.ReadAllTextAsync(Path.Combine(session.Directory, name));
+            await WriteClipboardAsync(markdown);
+            Model.SetInfo(name == "transcription.md" ? "Transcript copied." : "Summary copied.");
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
+            Model.SetError("The selected Markdown file no longer exists. Refresh the meeting list.");
+            await Model.RefreshAsync();
+        }
+        catch (Exception) { Model.SetError("Cannot copy Markdown. Check file permissions and clipboard availability; the document was retained."); }
     }
     private void FolderClick(object? sender, RoutedEventArgs e) => OpenSelected(null);
     private void TranscriptClick(object? sender, RoutedEventArgs e) => OpenSelected("transcription.md");
