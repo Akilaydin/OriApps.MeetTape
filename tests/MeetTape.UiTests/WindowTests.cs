@@ -21,6 +21,80 @@ public static class TestApp
 
 public sealed class WindowTests
 {
+    [AvaloniaTheory]
+    [InlineData("empty", "No active jobs")]
+    [InlineData("queued", "Processing queued")]
+    [InlineData("running", "Processing: 3/8 chunks")]
+    [InlineData("completed", "Processing complete")]
+    [InlineData("paused", "Processing paused: open MeetTape")]
+    [InlineData("retry", "Processing: retry scheduled")]
+    [InlineData("multiple", "Processing: 2 jobs")]
+    [InlineData("recording", "Processing deferred during recording")]
+    [InlineData("recording-paused", "Processing deferred; jobs paused")]
+    [InlineData("trim", "Waiting for trim choice")]
+    [InlineData("naming", "Processing deferred: finish naming")]
+    [InlineData("preparing", "Preparing audio")]
+    [InlineData("summary", "Processing: Summary")]
+    public async Task TraySummarizesExistingSnapshotsWithoutPrivateContent(string state, string expected)
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var session = fake.Snapshot.Sessions[0];
+        var data = Published(session.Data!) with { Title = "PRIVATE meeting contents", JobState = JobState.NotStarted,
+            Stages = new(Published(session.Data!).Stages) { ["transcribe"] = new(true, StageState.Pending) } };
+        if (state is "running" or "retry") data = data with { JobState = state == "retry" ? JobState.NotStarted : JobState.Running,
+            Stages = new(data.Stages) { ["transcribe"] = new(true, StageState.Running, 3, 8) },
+            Retry = state == "retry" ? new(3, 2, DateTimeOffset.UtcNow.AddMinutes(1)) : null };
+        if (state == "completed") data = Published(data);
+        if (state is "paused" or "recording-paused") data = data with { JobState = JobState.Paused,
+            Stages = new(data.Stages) { ["transcribe"] = new(true, StageState.Paused) } };
+        if (state is "trim" or "preparing" or "naming") data = session.Data!;
+        if (state == "summary") data = Published(data) with { JobState = JobState.Running,
+            Stages = new(Published(data).Stages) { ["summary"] = new(true, StageState.Running) } };
+        var first = session with { Data = data };
+        fake.Snapshot = fake.Snapshot with
+        {
+            Sessions = state == "empty" ? [] : state == "multiple" ?
+                [first, first with { Directory = Path.Combine(fixture.Root, "second"), Data = data with { Id = Guid.NewGuid() } }] : [first],
+            Capture = new(state.StartsWith("recording"), TimeSpan.FromSeconds(9), 0, 0, null),
+            AwaitingTitleDirectory = state == "naming" ? fixture.SessionDirectory : null,
+            Preparing = state == "preparing"
+        };
+        var model = new MainViewModel(fake);
+        await model.RefreshAsync();
+        Assert.Equal(expected, model.ProcessingText);
+        Assert.StartsWith("MeetTape — " + model.CaptureText, model.TrayText);
+        Assert.DoesNotContain("PRIVATE", model.TrayText);
+        Assert.DoesNotContain(data.Processing.Transcription.ApiKeyEnvironmentVariable, model.TrayText);
+        Assert.True(model.TrayText.Length <= 127);
+        Assert.Equal(0, fake.Starts); Assert.Equal(0, fake.Resumes); Assert.Equal(0, fake.Summaries);
+        model.Detach();
+    }
+
+    [AvaloniaFact]
+    public async Task TrayClearsRecoveredJobFailuresAndKeepsUnpersistedFailuresVisible()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var session = fake.Snapshot.Sessions[0];
+        var model = new MainViewModel(fake);
+        await model.RefreshAsync();
+        fake.Report(new(NoticeKind.Error, "Fixture storage failure: metadata could not be saved.", session.Data!.Id));
+        Dispatcher.UIThread.RunJobs();
+        Assert.Equal("Processing paused: open MeetTape", model.ProcessingText);
+        Assert.Contains("Error: open MeetTape", model.TrayText);
+        fake.Report(new(NoticeKind.Information, "Job resumed with current settings.", session.Data!.Id));
+        Dispatcher.UIThread.RunJobs();
+        Assert.False(model.HasProcessingErrors);
+        fake.Report(new(NoticeKind.Error, "Fixture provider failure.", session.Data!.Id));
+        Dispatcher.UIThread.RunJobs();
+        fake.Snapshot = fake.Snapshot with { Sessions = [session with { Data = Published(session.Data!) }] };
+        await model.RefreshAsync();
+        Assert.Equal("Processing complete", model.ProcessingText);
+        Assert.DoesNotContain("Error", model.TrayText);
+        model.Detach();
+    }
+
     [AvaloniaFact]
     public async Task AudioLevelBarsUpdateIndependentlyAndResetAcrossStopAndQuickStart()
     {
