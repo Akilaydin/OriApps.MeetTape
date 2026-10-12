@@ -1,6 +1,4 @@
 using System.Runtime.InteropServices;
-using System.Text.Json.Nodes;
-using System.Threading.Channels;
 using NAudio.Wave;
 
 namespace MeetTape.Tests;
@@ -110,21 +108,27 @@ public sealed class CaptureTests
     }
 
     [Fact]
-    public void CliHandlesDuplicateStartStopAndStopsOnExit()
+    public async Task ControllerRejectsDuplicateStartStopAndFinalizesOnExit()
     {
-        var me = new FakeSource();
-        var them = new FakeSource();
-        using var output = new StringWriter();
-        using var error = new StringWriter();
+        var me = new FakeSource(); var them = new FakeSource();
         string example = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../config.example.json"));
-        int result = Cli.Run(["--config", example], new StringReader("start\nstart\nstatus\nexit\n"), output, error,
-            _ => new CaptureCoordinator(() => new(me, them)));
-        Assert.Equal(0, result);
-        Assert.Contains("already active", output.ToString());
-        Assert.Contains("Capturing", output.ToString());
+        using var capture = new CaptureCoordinator(() => new(me, them));
+        var config = ConfigurationLoader.Load(example);
+        var controller = new DesktopController(config with { Settings = config.Settings with { MeetingsRoot = "dist/controller-empty" } }, capture);
+        try
+        {
+            await controller.StartAsync();
+            await Assert.ThrowsAsync<InvalidOperationException>(controller.StartAsync);
+            Assert.True(capture.Status.IsActive);
+            await controller.StopAsync();
+            await Assert.ThrowsAsync<InvalidOperationException>(async () => await controller.StopAsync());
+            await controller.StartAsync();
+        }
+        finally { await controller.ShutdownAsync(); }
+        Assert.False(capture.Status.IsActive);
         Assert.True(me.Disposed && them.Disposed);
+        await Assert.ThrowsAsync<InvalidOperationException>(controller.StartAsync);
     }
-
     [Fact]
     public void RepeatedTimingProblemsNotifyOnceUntilTheirImpactEscalates()
     {
@@ -154,125 +158,69 @@ public sealed class CaptureTests
     }
 
     [Fact]
-    public async Task CliShowsWarningDuringRecordingAndTimingCountersOnStatusAndStop()
+    public async Task ControllerPublishesLiveWarningsAndRetainsTimingCounters()
     {
-        string root = Path.Combine(Path.GetTempPath(), "MeetTapeCliTiming-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(root);
-        var input = new QueuedReader();
-        using var output = new StringWriter();
-        using var error = new StringWriter();
-        var me = new FakeSource();
-        var them = new FakeSource();
-        CaptureCoordinator? capture = null;
         string example = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../config.example.json"));
-        string projectRoot = Path.GetDirectoryName(example)!;
-        string configPath = Path.Combine(root, "config.json");
-        var config = JsonNode.Parse(File.ReadAllText(example))!;
-        config["meetingsRoot"] = Path.Combine(root, "meetings");
-        config["transcription"]!["promptFile"] = Path.Combine(projectRoot, "prompts", "transcription.md");
-        config["summary"]!["promptFile"] = Path.Combine(projectRoot, "prompts", "summary.md");
-        File.WriteAllText(configPath, config.ToJsonString());
-        Task<int>? cli = null;
+        var config = ConfigurationLoader.Load(example);
+        var me = new FakeSource(); var them = new FakeSource();
+        using var capture = new CaptureCoordinator(() => new(me, them));
+        var controller = new DesktopController(config with { Settings = config.Settings with { MeetingsRoot = "dist/controller-empty" } }, capture);
+        var notices = new System.Collections.Concurrent.ConcurrentQueue<OperationNotice>();
+        controller.Notice += notices.Enqueue;
         try
         {
-            cli = Task.Run(() => Cli.Run(["--config", configPath], input, output, error,
-                _ => capture = new CaptureCoordinator(() => new(me, them), (channel, _, _, _) =>
-                    capture!.ReportTiming(channel, new(AudioTimingIssueKind.Overlap, 307, 480, "synthetic QPC regression"))),
-                (_, _) => 0, () => [], _ => { }));
-            input.Post("start");
-            Assert.True(SpinWait.SpinUntil(() => capture?.Status.IsActive == true, TimeSpan.FromSeconds(5)));
-            them.Emit();
-            Assert.Equal(1, capture!.Status.ClockAdjustments);
-            Assert.True(capture.Status.IsActive);
-            input.Post("status");
-            input.Post("stop");
-            input.Post("exit");
-            Assert.Equal(0, await cli.WaitAsync(TimeSpan.FromSeconds(10)));
-            string result = output.ToString();
-            Assert.Contains("Them: audio timing moved by 6.396 ms. Recording continues", result);
-            Assert.Contains("Capturing.", result);
-            Assert.Contains("WASAPI timing corrections: Me 0", result);
-            Assert.Contains("Them 1", result);
-            Assert.Contains("Recording retained", result);
+            await controller.StartAsync();
+            capture.ReportTiming(CaptureChannel.Them, new(AudioTimingIssueKind.Overlap, 307, 480, "synthetic QPC regression"));
+            Assert.Contains(notices, notice => notice.Kind == NoticeKind.Warning && notice.Message.Contains("Recording continues"));
+            var active = await controller.ReadAsync();
+            Assert.True(active.Capture.IsActive);
+            Assert.Equal(1, active.Capture.ClockAdjustments);
+            await controller.StopAsync();
+            Assert.Equal(307, (await controller.ReadAsync()).Capture.ThemTiming.LargestShiftFrames);
         }
-        finally
-        {
-            input.Post("exit");
-            if (cli is { IsCompleted: false }) await cli.WaitAsync(TimeSpan.FromSeconds(10));
-            Directory.Delete(root, recursive: true);
-        }
+        finally { await controller.ShutdownAsync(); }
     }
-
     [Fact]
     public async Task AsynchronousCaptureFailureRestartsDeferredJobsWithoutRequiringStop()
     {
         string root = Path.Combine(Path.GetTempPath(), "MeetTapeAutoResume-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
-        var input = new QueuedReader();
-        var output = new StringWriter();
-        var error = new StringWriter();
-        var me = new FakeSource();
-        var them = new FakeSource();
-        CaptureCoordinator? capture = null;
-        string example = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../config.example.json"));
-        string projectRoot = Path.GetDirectoryName(example)!;
-        string configPath = Path.Combine(root, "config.json");
-        var config = JsonNode.Parse(File.ReadAllText(example))!;
-        config["meetingsRoot"] = Path.Combine(root, "meetings");
-        config["transcription"]!["promptFile"] = Path.Combine(projectRoot, "prompts", "transcription.md");
-        config["summary"]!["promptFile"] = Path.Combine(projectRoot, "prompts", "summary.md");
-        File.WriteAllText(configPath, config.ToJsonString());
-        Task<int>? cli = null;
+        var me = new FakeSource(); var them = new FakeSource();
+        using var capture = new CaptureCoordinator(() => new(me, them));
+        string path = Path.Combine(root, "config.json");
+        ConfigurationBootstrap.Initialize(path, Path.Combine(root, "meetings"));
+        var config = ConfigurationLoader.Load(path);
+        var controller = new DesktopController(config, capture);
         try
         {
-            cli = Task.Run(() => Cli.Run(["--config", configPath], input, output, error,
-                _ => capture = new CaptureCoordinator(() => new(me, them)),
-                (_, _) => 0, () => [], _ => { }));
-            input.Post("start");
-            Assert.True(SpinWait.SpinUntil(() => capture?.Status.IsActive == true, TimeSpan.FromSeconds(5)));
-
-            var loaded = ConfigurationLoader.Load(configPath);
+            await controller.InitializeAsync();
+            await controller.StartAsync();
             var session = new SessionData
             {
                 Id = Guid.NewGuid(), StartedAtUtc = DateTimeOffset.UtcNow, DurationSeconds = 1,
                 RecordingState = RecordingState.Recorded,
                 Capture = new(null, null, new(48000, 32, 1, "float"), new(48000, 32, 1, "float")),
-                Processing = new(120, loaded.Settings.Transcription, loaded.Settings.Summary, loaded.Directory),
+                Processing = new(120, config.Settings.Transcription, config.Settings.Summary, config.Directory),
                 Stages = new()
                 {
-                    ["trim"] = new(true, StageState.Completed),
-                    ["prepare"] = new(true, StageState.Pending),
-                    ["transcribe"] = new(true, StageState.Pending),
-                    ["assemble"] = new(true, StageState.Pending),
+                    ["trim"] = new(true, StageState.Completed), ["prepare"] = new(true, StageState.Pending),
+                    ["transcribe"] = new(true, StageState.Pending), ["assemble"] = new(true, StageState.Pending),
                     ["summary"] = new(false, StageState.Disabled)
                 }
             };
-            var created = SessionStore.Create(loaded.MeetingsRoot, session);
+            var created = SessionStore.Create(config.MeetingsRoot, session);
             created.Lease.Dispose();
-            // Missing originals force the resumed job into a recoverable pause; no provider call is possible.
+            // Missing originals force a pause before any provider request.
             me.Fail(new IOException("Simulated device failure"));
             Assert.True(SpinWait.SpinUntil(() =>
             {
                 try { return SessionStore.Read(created.Directory).JobState == JobState.Paused; }
                 catch (IOException) { return false; }
-            }, TimeSpan.FromSeconds(5)), "The deferred runner did not restart after capture failed.");
-            Assert.False(capture!.Status.IsActive);
+            }, TimeSpan.FromSeconds(5)), "Deferred runner did not restart after capture failed.");
+            Assert.False(capture.Status.IsActive);
         }
-        finally
-        {
-            input.Post("exit");
-            if (cli is not null) Assert.Equal(0, await cli.WaitAsync(TimeSpan.FromSeconds(10)));
-            Directory.Delete(root, recursive: true);
-        }
+        finally { await controller.ShutdownAsync(); Directory.Delete(root, recursive: true); }
     }
-
-    private sealed class QueuedReader : TextReader
-    {
-        private readonly Channel<string> messages = Channel.CreateUnbounded<string>();
-        public void Post(string text) => messages.Writer.TryWrite(text);
-        public override string? ReadLine() => messages.Reader.ReadAsync().AsTask().GetAwaiter().GetResult();
-    }
-
     private sealed class FakeSource : IWaveIn
     {
         public WaveFormat WaveFormat { get; set; } = new(16000, 16, 1);

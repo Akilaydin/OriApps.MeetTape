@@ -197,6 +197,14 @@ try {
 }
 $ownsClient = $null -eq $HttpClient
 try {
+    if ([IO.File]::Exists($executable)) {
+        try {
+            $runningCheck = [IO.File]::Open($executable, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+            $runningCheck.Dispose()
+        } catch {
+            throw "Cannot replace installed MeetTape.exe at $executable. Use Exit in every running MeetTape window or tray before updating."
+        }
+    }
     if ($ownsClient) {
         [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
         $HttpClient = [Net.Http.HttpClient]::new()
@@ -365,10 +373,13 @@ try {
         }
         if ($pathChanged) { Write-Output 'Added the MeetTape app directory to the user PATH (open a new terminal).' }
         if ($launcherRemoved) { Write-Output 'Removed obsolete meettape.cmd; MeetTape.exe now runs directly.' }
+        $shortcutPath = Join-Path ([Environment]::GetFolderPath('Programs')) 'MeetTape.lnk'
+        Write-MeetTapeLaunchers $appDirectory $shortcutPath
+        Write-Output "Start menu shortcut: $shortcutPath. Use meettape-cli for terminal commands that wait for completion."
     } elseif ([IO.File]::Exists($launcher)) {
         Write-Output 'Legacy launcher preserved because -SkipPath was specified; run without -SkipPath to migrate it.'
     }
-    Write-Output 'To configure MeetTape run: meettape configure'
+    Write-Output 'Open MeetTape from the Start menu or run meettape configure for graphical Settings.'
 } finally {
     if ($ownsClient -and $HttpClient) { $HttpClient.Dispose() }
     $lock.Dispose()

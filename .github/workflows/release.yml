@@ -47,6 +47,8 @@ jobs:
         run: |
           dotnet test tests/MeetTape.Tests/MeetTape.Tests.csproj --configuration Release --filter 'Category!=Hardware&Category!=LongRunning'
           if ($LASTEXITCODE -ne 0) { throw 'Tests failed.' }
+          dotnet test tests/MeetTape.UiTests/MeetTape.UiTests.csproj --configuration Release
+          if ($LASTEXITCODE -ne 0) { throw 'Headless UI tests failed.' }
 
       - name: Test installer and updater
         shell: pwsh
@@ -85,8 +87,10 @@ jobs:
             throw 'Self-contained .NET runtime differs from the version in THIRD-PARTY-NOTICES.txt; update and review notices before release.'
           }
           if (-not (Test-Path -LiteralPath dist/MeetTape.exe)) { throw 'Release executable was not produced.' }
-          & ./dist/MeetTape.exe --help
+          & ./dist/MeetTape.exe --help | Out-Null
           if ($LASTEXITCODE -ne 0) { throw 'Release executable smoke test failed.' }
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/Test-Desktop.ps1 -ExecutablePath dist/MeetTape.exe -SkipNativeWindow
+          if ($LASTEXITCODE -ne 0) { throw 'Published GUI/CLI contract checks failed.' }
           Copy-Item -LiteralPath install.cmd, install.ps1, update.ps1, tools/InstallerPath.ps1, LICENSE, THIRD-PARTY-NOTICES.txt -Destination dist
           foreach ($script in @('install.ps1', 'update.ps1', 'InstallerPath.ps1')) {
             $parseErrors = $null

@@ -260,6 +260,35 @@ public sealed class StalledDownload : Stream {
         throw 'Unchanged release should not redownload FFmpeg or release files.'
     }
 
+    # GUI processes also block same-version script repair and FFmpeg replacement.
+    $locked = [IO.File]::Open($binary, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+    $rejectedRunningUpdate = $false
+    try { & (Join-Path $repository 'update.ps1') -InstallDirectory $install -SkipPath -HttpClient $client @ffmpegArgs | Out-Null }
+    catch { $rejectedRunningUpdate = $_.Exception.Message -match 'Use Exit in every running MeetTape' }
+    finally { $locked.Dispose() }
+    if (-not $rejectedRunningUpdate -or $handler.Downloads -ne 6) {
+        throw 'Even a same-version update must reject a running GUI before downloads/replacements.'
+    }
+
+    # Exercise launchers only inside the fixture; never touch PATH or the real Start menu.
+    $shortcutPath = Join-Path $testRoot 'shortcuts\MeetTape.lnk'
+    Write-MeetTapeLaunchers (Join-Path $install 'app') $shortcutPath
+    $consoleLauncher = Join-Path $install 'app\meettape-cli.cmd'
+    $launcherOutput = & $consoleLauncher --help | Out-String
+    if ($LASTEXITCODE -ne 0 -or $launcherOutput -notmatch 'MeetTape test executable') { throw 'Console launcher must wait and retain stdout/exit code.' }
+    $shell = New-Object -ComObject WScript.Shell
+    try {
+        $shortcut = $shell.CreateShortcut($shortcutPath)
+        if ($shortcut.TargetPath -ine $binary) { throw 'Shortcut must launch the WinExe directly.' }
+    } finally {
+        [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shortcut)
+        [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell)
+    }
+    [IO.File]::WriteAllText($consoleLauncher, 'custom CLI launcher')
+    Write-MeetTapeLaunchers (Join-Path $install 'app') $shortcutPath
+    if ([IO.File]::ReadAllText($consoleLauncher) -cne 'custom CLI launcher') { throw 'Custom console launcher must be preserved.' }
+    [IO.File]::Delete($consoleLauncher)
+
     # Verify that the installed updater uses its adjacent scripts, not the source repository.
     & (Join-Path $install 'app\update.ps1') -SkipPath -HttpClient $client @ffmpegArgs | Out-Null
     if ($handler.Downloads -ne 6 -or $handler.FfmpegDownloads -ne 1) {

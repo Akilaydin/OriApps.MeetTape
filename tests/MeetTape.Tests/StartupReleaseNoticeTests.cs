@@ -113,7 +113,7 @@ public sealed class StartupReleaseNoticeTests
     }
 
     [Fact]
-    public void CliDisplaysNoticeOnlyBeforeInteractivePrompt()
+    public void OneShotCliNeverChecksGithub()
     {
         string root = Path.Combine(Path.GetTempPath(), "MeetTape-Startup-" + Guid.NewGuid().ToString("N"));
         try
@@ -137,16 +137,7 @@ public sealed class StartupReleaseNoticeTests
                 Assert.DoesNotContain("version check marker", output.ToString());
             }
 
-            using var shellOutput = new StringWriter();
-            using var shellError = new StringWriter();
-            Assert.Equal(0, Cli.Run(["--config", config], new StringReader("exit\n"), shellOutput, shellError,
-                Capture, (_, _) => 0, () => [], WriteNotice));
-
-            Assert.Equal(1, notices);
-            Assert.Empty(shellError.ToString());
-            string text = shellOutput.ToString();
-            Assert.True(text.IndexOf("version check marker", StringComparison.Ordinal)
-                < text.IndexOf("meettape> ", StringComparison.Ordinal));
+            Assert.Equal(0, notices);
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
     }

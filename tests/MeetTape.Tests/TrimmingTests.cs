@@ -188,27 +188,30 @@ public sealed class TrimmingTests : IDisposable
     }
 
     [Fact]
-    public void CliPromptsTitleAndPreparationCommandsAreRejectedDuringCapture()
+    public async Task ControllerNamesStoppedRecordingAndRejectsPreparationDuringCapture()
     {
         string configPath = Path.Combine(root, "config.json");
-        string example = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../config.example.json"));
-        var json = JsonNode.Parse(File.ReadAllText(example))!;
-        json["meetingsRoot"] = root;
+        ConfigurationBootstrap.Initialize(configPath, root);
+        var json = JsonNode.Parse(File.ReadAllText(configPath))!;
         json["stages"]!["trim"] = false;
         json["stages"]!["transcribe"] = false;
         File.WriteAllText(configPath, json.ToJsonString());
         var loaded = ConfigurationLoader.Load(configPath);
-        var output = new StringWriter();
-        int result = Cli.Run(["--config", configPath], new StringReader("start\ntrim 0 1\nstop\nWeekend\nsessions\nexit\n"),
-            output, TextWriter.Null, _ => new Mp3Recorder(loaded, () => new(new Source(), new Source())).Capture);
-        Assert.Equal(0, result);
-        Assert.Contains("Meeting title", output.ToString());
-        Assert.Contains("paused during capture", output.ToString());
-        var saved = Assert.Single(SessionStore.Discover(root));
-        Assert.Equal("Weekend", saved.Data!.Title);
-        Assert.Contains("Weekend", saved.Directory);
+        var capture = new Mp3Recorder(loaded, () => new(new Source(), new Source())).Capture;
+        var controller = new DesktopController(loaded, capture);
+        try
+        {
+            await controller.StartAsync();
+            await Assert.ThrowsAsync<InvalidOperationException>(() => controller.ChooseTrimAsync(TrimDecision.Manual, 0, 1));
+            string directory = (await controller.StopAsync())!;
+            await Assert.ThrowsAsync<InvalidOperationException>(controller.StartAsync);
+            await controller.PrepareAsync(directory, "Weekend");
+            var saved = Assert.Single(SessionStore.Discover(root));
+            Assert.Equal("Weekend", saved.Data!.Title);
+            Assert.Contains("Weekend", saved.Directory);
+        }
+        finally { await controller.ShutdownAsync(); }
     }
-
     [Theory]
     [InlineData("12.5", 12.5)]
     [InlineData("01:23.5", 83.5)]

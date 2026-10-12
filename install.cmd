@@ -1,4 +1,5 @@
 @echo off
+rem Installs the graphical recorder and a Start menu shortcut; existing data stays in its configured folders.
 setlocal
 set "MEETTAPE_BOOTSTRAP_FILE=%~f0"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$text = [IO.File]::ReadAllText($env:MEETTAPE_BOOTSTRAP_FILE); $marker = ':__MEETTAPE_POWERSHELL__'; $start = $text.LastIndexOf($marker); if ($start -lt 0) { throw 'Invalid MeetTape installer.' }; & ([scriptblock]::Create($text.Substring($start + $marker.Length)))"

@@ -1,6 +1,7 @@
 using System.Text;
 
 [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("MeetTape.Tests")]
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("MeetTape.UiTests")]
 
 namespace MeetTape;
 

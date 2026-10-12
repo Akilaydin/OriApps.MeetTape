@@ -13,6 +13,8 @@ public sealed class PostRecordingWorkflow(string ffmpegPath, TextWriter output) 
 
     public Task Completion => operation;
     public string? SelectedDirectory => directory;
+    public TrimSuggestion? Suggestion { get { lock (gate) return suggestion; } }
+    public event Action<OperationNotice>? Notice;
 
     public void Begin(string sessionDirectory, string? title = null)
     {
@@ -43,6 +45,7 @@ public sealed class PostRecordingWorkflow(string ffmpegPath, TextWriter output) 
             token.ThrowIfCancellationRequested();
             SessionStore.Save(selected, Update(data, StageState.AwaitingUser, error: null));
             lock (gate) suggestion = found;
+            Report(new(NoticeKind.Information, "Trim suggestion ready; choose Accept, Skip or a manual interval.", data.Id));
             CliColors.WriteLine(output, "Trim suggestion:", ConsoleColor.Yellow,
                 FormattableString.Invariant($" {found.StartSeconds:F3} .. {found.EndSeconds:F3} seconds."));
             if (!found.HasActivity) CliColors.WriteLine(output, "No activity detected; keep the full recording.", ConsoleColor.Yellow);
@@ -69,6 +72,7 @@ public sealed class PostRecordingWorkflow(string ffmpegPath, TextWriter output) 
             SessionStore.Save(selected, Update(data with { Trim = new(0, duration, false) { Decision = "skip" } },
                 StageState.Completed, error: null));
             CliColors.WriteLine(output, "Trim skipped; original tracks selected.", ConsoleColor.Green);
+            Report(new(NoticeKind.Information, "Trim skipped; original tracks selected.", data.Id));
             return;
         }
         if (decision == "accept")
@@ -92,6 +96,7 @@ public sealed class PostRecordingWorkflow(string ffmpegPath, TextWriter output) 
             token.ThrowIfCancellationRequested();
             SessionStore.Save(selected, Update(current with { Trim = choice }, StageState.Completed, error: null));
             CliColors.WriteLine(output, "Trim choice saved; synchronized input selected. Originals retained.", ConsoleColor.Green);
+            Report(new(NoticeKind.Information, "Trim choice saved; originals retained.", current.Id));
         });
     }
 
@@ -248,6 +253,13 @@ public sealed class PostRecordingWorkflow(string ffmpegPath, TextWriter output) 
         catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
         { diagnostic += " Could not update session.json; prior state retained."; }
         CliColors.WriteLine(output, diagnostic, ConsoleColor.Yellow);
+        Report(new(NoticeKind.Warning, diagnostic));
+    }
+
+    private void Report(OperationNotice notice)
+    {
+        try { Notice?.Invoke(notice); }
+        catch (Exception) { /* Diagnostics must not change preparation outcomes. */ }
     }
 
     public void CancelAndWait()

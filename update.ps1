@@ -27,7 +27,7 @@ try {
             } finally { $owner.Dispose() }
         }
     }
-    Write-Host '[MeetTape] Checking for updates...'
+    Write-Host '[MeetTape] Checking for updates (use Exit in every MeetTape window/tray first)...'
     & (Join-Path $PSScriptRoot 'install.ps1') -InstallDirectory $InstallDirectory -UpdateOnly -SkipPath:$SkipPath -DownloadIdleTimeoutSeconds $DownloadIdleTimeoutSeconds -ProgressIntervalSeconds $ProgressIntervalSeconds -HttpClient $HttpClient -FfmpegArchiveUrl $FfmpegArchiveUrl -FfmpegArchiveSha256 $FfmpegArchiveSha256
 } catch {
     if ($WaitForProcessId -gt 0) {
