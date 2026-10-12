@@ -35,6 +35,18 @@ function Write-Stage([string]$message) {
     Write-Host "[MeetTape] $message"
 }
 
+function Get-MeetTapeSha256([string]$path) {
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    $stream = $null
+    try {
+        $stream = [IO.File]::OpenRead($path)
+        return [BitConverter]::ToString($sha256.ComputeHash($stream)).Replace('-', '')
+    } finally {
+        if ($stream) { $stream.Dispose() }
+        $sha256.Dispose()
+    }
+}
+
 function Install-StagedFile([string]$source, [string]$destination) {
     if ([IO.File]::Exists($destination)) {
         # File.Move(source, destination, overwrite) is unavailable on Windows PowerShell 5.1.
@@ -156,7 +168,7 @@ function Download-Release([string]$tag, [string]$destination, [long]$expectedSiz
         if ($idle.IsCancellationRequested) {
             throw "Download stalled for $DownloadIdleTimeoutSeconds seconds without new bytes. Check GitHub asset/CDN access, then retry."
         }
-        throw "Cannot download $fileName from the public GitHub Release; check network access, disk space and permissions."
+        throw "Cannot download $fileName from the public GitHub Release: $($_.Exception.Message)"
     } finally {
         $idle.Cancel()
         if ($file) { $file.Dispose() }
@@ -227,7 +239,7 @@ try {
     foreach ($name in ($scriptNames + $legalNames)) {
         $path = Join-Path $appDirectory $name
         if ($needsInstall -or -not [IO.File]::Exists($path) -or
-            (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ine $assets[$name].digest.Substring(7)) {
+            (Get-MeetTapeSha256 $path) -ine $assets[$name].digest.Substring(7)) {
             $filesToInstall += $name
         }
     }
@@ -256,7 +268,7 @@ try {
                 Download-Release $tag $stagingDirectory ([long]$asset.size) $name ([string]$asset.browser_download_url)
                 $stagedPath = Join-Path $stagingDirectory $name
                 if (-not [IO.File]::Exists($stagedPath) -or
-                    (Get-FileHash -LiteralPath $stagedPath -Algorithm SHA256).Hash -ine $asset.digest.Substring(7)) {
+                    (Get-MeetTapeSha256 $stagedPath) -ine $asset.digest.Substring(7)) {
                     throw "Downloaded $name is missing or does not match the published SHA-256 digest."
                 }
             }
@@ -265,7 +277,7 @@ try {
                 Write-Stage 'Downloading FFmpeg 9.0...'
                 Download-Release 'FFmpeg 9.0' $stagingDirectory 0 $archiveName $FfmpegArchiveUrl
                 $archivePath = Join-Path $stagingDirectory $archiveName
-                if ((Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash -ine $FfmpegArchiveSha256) {
+                if ((Get-MeetTapeSha256 $archivePath) -ine $FfmpegArchiveSha256) {
                     throw 'Downloaded FFmpeg archive does not match the pinned SHA-256.'
                 }
                 Expand-VerifiedFfmpeg $archivePath $stagingDirectory
@@ -293,9 +305,13 @@ try {
                 foreach ($name in $filesToCommit) {
                     $destination = Join-Path $appDirectory $name
                     if ([IO.File]::Exists($destination)) {
-                        $stream = [IO.File]::Open($destination, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite,
-                            [IO.FileShare]::None)
-                        $stream.Dispose()
+                        try {
+                            $stream = [IO.File]::Open($destination, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite,
+                                [IO.FileShare]::None)
+                            $stream.Dispose()
+                        } catch {
+                            throw "Cannot replace installed $name at $destination. Close running MeetTape instances and check file permissions. $($_.Exception.Message)"
+                        }
                     }
                 }
                 if ($needsInstall) {
