@@ -50,6 +50,87 @@ public sealed class WindowTests
     }
 
     [AvaloniaTheory]
+    [InlineData("")]
+    [InlineData("Next planning meeting")]
+    public async Task StartNextRecordingSavesOptionalTitleWithoutContinueAndRejectsSecondStart(string title)
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var model = new MainViewModel(fake);
+        var window = new MainWindow { DataContext = model };
+        window.Show(); await model.RefreshAsync();
+        Click(window, "RecordButton");
+        Click(window, "RecordButton");
+        window.FindControl<TextBox>("MeetingTitle")!.Text = title;
+        Assert.True(window.FindControl<Button>("StartNextRecording")!.IsEnabled);
+        Click(window, "StartNextRecording");
+        Assert.Equal(title, fake.Title);
+        Assert.Equal(1, fake.Prepares);
+        Assert.Equal(2, fake.Starts);
+        Assert.True(model.IsRecording);
+        Assert.False(model.IsNaming);
+        Assert.False(model.CanTrim);
+        Assert.False(model.CanStartNextRecording);
+        Click(window, "StartNextRecording");
+        Assert.Equal(2, fake.Starts);
+        Assert.Equal(0, fake.Summaries);
+        Assert.Equal(0, fake.Resumes);
+        Close(window, model);
+    }
+
+    [AvaloniaFact]
+    public async Task StartNextRecordingRejectsRepeatedClickWhilePreparing()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var model = new MainViewModel(fake);
+        var window = new MainWindow { DataContext = model };
+        window.Show(); await model.RefreshAsync();
+        Click(window, "RecordButton"); Click(window, "RecordButton");
+        fake.PrepareCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        Click(window, "StartNextRecording");
+        Assert.True(model.IsBusy);
+        Assert.False(window.FindControl<Button>("StartNextRecording")!.IsEnabled);
+        Click(window, "StartNextRecording");
+        Assert.Equal(1, fake.Prepares);
+        Assert.Equal(1, fake.Starts);
+        fake.PrepareCompletion.SetResult();
+        await WaitFor(() => model.IsRecording);
+        Assert.Equal(2, fake.Starts);
+        Close(window, model);
+    }
+
+    [AvaloniaFact]
+    public async Task FailedNextStartRetainsPreviousMeetingAndAllowsRetryButNotAfterExit()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var model = new MainViewModel(fake);
+        var window = new MainWindow { DataContext = model };
+        window.Show(); await model.RefreshAsync();
+        Click(window, "RecordButton"); Click(window, "RecordButton");
+        Guid id = fake.Snapshot.Sessions[0].Data!.Id;
+        fake.FailStart = true;
+        Click(window, "StartNextRecording");
+        Assert.True(model.HasError);
+        Assert.DoesNotContain("private-secret", model.ErrorText);
+        Assert.False(model.IsNaming);
+        Assert.True(model.CanRecord);
+        Assert.Equal(id, model.Sessions[0].Id);
+        model.SelectedSession = model.Sessions[0];
+        Assert.True(model.CanPrepare);
+        fake.FailStart = false;
+        Click(window, "RecordButton");
+        Assert.True(model.IsRecording);
+        Click(window, "RecordButton");
+        Assert.True(await model.ShutdownAsync());
+        Assert.False(model.CanStartNextRecording);
+        Click(window, "StartNextRecording");
+        Assert.Equal(2, fake.Starts);
+        Close(window, model);
+    }
+
+    [AvaloniaTheory]
     [InlineData(TrimDecision.Accept)]
     [InlineData(TrimDecision.Skip)]
     public async Task DeferredTrimCanResumeAfterRestartAndChooseWithoutAutomaticSummary(TrimDecision decision)
@@ -308,12 +389,13 @@ public sealed class WindowTests
     private sealed class FakeController : IDesktopController
     {
         public DesktopSnapshot Snapshot { get; set; }
-        public int Starts, Stops, Summaries, Resumes, Shutdowns;
+        public int Starts, Stops, Summaries, Resumes, Shutdowns, Prepares;
         public bool FailStart;
         public string? Title;
         public TrimDecision? Decision;
         public double? StartSeconds, EndSeconds;
         public TaskCompletionSource? ShutdownCompletion;
+        public TaskCompletionSource? PrepareCompletion;
         public event Action<OperationNotice>? Notice;
         public void Report(OperationNotice notice) => Notice?.Invoke(notice);
         public FakeController(Fixture fixture)
@@ -343,11 +425,12 @@ public sealed class WindowTests
             Snapshot = Snapshot with { Capture = Snapshot.Capture with { IsActive = false }, AwaitingTitleDirectory = directory };
             return Task.FromResult<string?>(directory);
         }
-        public Task PrepareAsync(string directory, string? title)
+        public async Task PrepareAsync(string directory, string? title)
         {
+            Prepares++;
+            if (PrepareCompletion is not null) await PrepareCompletion.Task;
             Title = title;
             Snapshot = Snapshot with { AwaitingTitleDirectory = null, PreparationDirectory = directory, Suggestion = new(2, 28, true) };
-            return Task.CompletedTask;
         }
         public Task ChooseTrimAsync(TrimDecision decision, double? start = null, double? end = null)
         {

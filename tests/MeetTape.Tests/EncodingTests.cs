@@ -192,7 +192,7 @@ public sealed class EncodingTests : IDisposable
     }
 
     [Fact]
-    public async Task ImmediateSecondSessionUsesNewSourcesAndProducesIndependentSynchronizedTracks()
+    public async Task ImmediateSecondSessionAfterPreparationRetainsOriginalsAndPendingTrim()
     {
         string example = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../config.example.json"));
         var loaded = ConfigurationLoader.Load(example);
@@ -205,26 +205,51 @@ public sealed class EncodingTests : IDisposable
             return new CaptureSources(pair.Item1, pair.Item2);
         }).Capture;
 
-        var folders = new List<string>();
-        for (int i = 0; i < 2; i++)
+        int keyReads = 0;
+        var controller = new DesktopController(config, capture, readKey: _ =>
         {
-            capture.Start();
-            sources[i].Me.Emit();
-            sources[i].Them.Emit();
-            await Task.Delay(30);
-            capture.Stop();
+            Interlocked.Increment(ref keyReads);
+            throw new Exception("No API key read expected");
+        });
+        try
+        {
+            await controller.StartAsync();
+            sources[0].Me.Emit(); sources[0].Them.Emit();
+            await controller.StopAsync();
             Assert.Null(capture.Status.Error);
-            var saved = SessionStore.Read(capture.RecordingDirectory!);
-            Assert.Equal(RecordingState.Recorded, saved.RecordingState);
-            Assert.Equal(capture.Status.Duration.TotalSeconds, saved.DurationSeconds);
-            folders.Add(capture.RecordingDirectory!);
-            float[] me = await DecodeAsync(Path.Combine(folders[i], "me.mp3"));
-            float[] them = await DecodeAsync(Path.Combine(folders[i], "them.mp3"));
+            string previous = capture.RecordingDirectory!;
+            Guid id = SessionStore.Read(previous).Id;
+            byte[] originalMe = File.ReadAllBytes(Path.Combine(previous, "me.mp3"));
+            byte[] originalThem = File.ReadAllBytes(Path.Combine(previous, "them.mp3"));
+            await controller.PrepareAsync(previous, "Planning");
+            previous = capture.RecordingDirectory!;
+            await controller.StartAsync();
+            await Assert.ThrowsAsync<InvalidOperationException>(controller.StartAsync);
+            Assert.NotEqual(id, SessionStore.Read(capture.RecordingDirectory!).Id);
+            Assert.Equal(id, SessionStore.Read(previous).Id);
+            Assert.Equal("Planning", SessionStore.Read(previous).Title);
+            Assert.NotEqual(StageState.Completed, SessionStore.Read(previous).Stages["trim"].Status);
+            Assert.Equal(0, keyReads);
+            sources[1].Me.Emit(); sources[1].Them.Emit();
+            await controller.StopAsync();
+            Assert.Null(capture.Status.Error);
+            Assert.Equal(originalMe, File.ReadAllBytes(Path.Combine(previous, "me.mp3")));
+            Assert.Equal(originalThem, File.ReadAllBytes(Path.Combine(previous, "them.mp3")));
+            float[] me = await DecodeAsync(Path.Combine(capture.RecordingDirectory!, "me.mp3"));
+            float[] them = await DecodeAsync(Path.Combine(capture.RecordingDirectory!, "them.mp3"));
             Assert.Equal(me.Length, them.Length);
             Assert.True(me.Length > 0);
+            await controller.PrepareAsync(capture.RecordingDirectory!, "");
+            await controller.PrepareAsync(previous, null);
+            DateTime deadline = DateTime.UtcNow.AddSeconds(5);
+            while ((await controller.ReadAsync()).Preparing && DateTime.UtcNow < deadline) await Task.Delay(10);
+            Assert.False((await controller.ReadAsync()).Preparing);
+            await controller.ChooseTrimAsync(TrimDecision.Skip);
+            Assert.Equal(StageState.Completed, SessionStore.Read(previous).Stages["trim"].Status);
+            Assert.Equal(originalMe, File.ReadAllBytes(Path.Combine(previous, "me.mp3")));
+            Assert.Equal(2, sources.Count);
         }
-        Assert.NotEqual(folders[0], folders[1]);
-        Assert.Equal(2, sources.Count);
+        finally { await controller.ShutdownAsync(); }
     }
 
     private sealed class SyntheticSource : IWaveIn
