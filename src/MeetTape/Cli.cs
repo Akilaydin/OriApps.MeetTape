@@ -308,6 +308,9 @@ public static class Cli
                 $"Them {status.ThemTiming.Corrections} (unreliable timestamps {status.ThemTiming.InvalidTimestamps}, " +
                 $"largest shift {status.ThemTiming.LargestShiftFrames * 1000d / PcmTimeline.SampleRate:F3} ms). " +
                 (status.IsActive ? "Recording continues." : "Recording retained."));
+        if (!status.IsActive && status.AudioFrames > Math.Round(status.Duration.TotalSeconds * PcmTimeline.SampleRate))
+            CliColors.WriteLine(output, "Recovered audio extends beyond the wall-clock stop time: ", ConsoleColor.Yellow,
+                $"{status.AudioFrames / (double)PcmTimeline.SampleRate:F3}s saved, {status.Duration.TotalSeconds:F3}s elapsed. Both tracks retained at the same length.");
     }
 
     private static void WriteDevices(TextWriter output, IReadOnlyList<AudioDevice> devices)

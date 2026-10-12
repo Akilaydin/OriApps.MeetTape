@@ -12,6 +12,7 @@ public sealed record AudioTimingStats(int Corrections = 0, int InvalidTimestamps
 public sealed record CaptureStatus(bool IsActive, TimeSpan Duration, long MeBytes, long ThemBytes, string? Error)
 {
     public string? RecordingDirectory { get; init; }
+    public long AudioFrames { get; init; }
     public int Discontinuities { get; init; }
     public int ClockAdjustments { get; init; }
     public AudioTimingStats MeTiming { get; init; } = new();
@@ -43,6 +44,7 @@ public sealed class CaptureCoordinator(
     internal event Action<string>? Warning;
     public event Action<CaptureStatus>? Finished;
     public string? RecordingDirectory { get; internal set; }
+    public long AudioFrames { get; internal set; }
     public int Discontinuities { get; internal set; }
     public int ClockAdjustments { get; internal set; }
 
@@ -57,7 +59,7 @@ public sealed class CaptureCoordinator(
                     return new(active is not null, startedAt == 0 ? TimeSpan.Zero : Stopwatch.GetElapsedTime(startedAt, end),
                         Interlocked.Read(ref meBytes), Interlocked.Read(ref themBytes), Volatile.Read(ref lastError))
                     {
-                        RecordingDirectory = RecordingDirectory, Discontinuities = Discontinuities,
+                        RecordingDirectory = RecordingDirectory, AudioFrames = AudioFrames, Discontinuities = Discontinuities,
                         ClockAdjustments = ClockAdjustments, MeTiming = meTiming, ThemTiming = themTiming
                     };
             }
@@ -81,6 +83,7 @@ public sealed class CaptureCoordinator(
                 Interlocked.Exchange(ref themBytes, 0);
                 Volatile.Write(ref lastError, null);
                 stopping = false;
+                AudioFrames = 0;
                 lock (timingGate)
                 {
                     meTiming = new(); themTiming = new();

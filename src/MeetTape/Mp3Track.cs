@@ -11,6 +11,8 @@ public sealed class Mp3Track
     });
     private readonly long origin100ns;
     private readonly Task worker;
+    private readonly TaskCompletionSource<long> drained = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource<long> synchronizedEnd = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private long end100ns = -1;
     private RecordingException? failure;
     public int Discontinuities { get; private set; }
@@ -43,8 +45,20 @@ public sealed class Mp3Track
 
     public async Task CompleteAsync(long ended100ns)
     {
+        long frames = await DrainAsync(ended100ns);
+        await FinishAsync(frames);
+    }
+
+    internal async Task<long> DrainAsync(long ended100ns)
+    {
         Volatile.Write(ref end100ns, ended100ns);
         packets.Writer.TryComplete();
+        return await drained.Task.WaitAsync(TimeSpan.FromSeconds(15));
+    }
+
+    internal async Task FinishAsync(long commonEndFrame)
+    {
+        synchronizedEnd.TrySetResult(commonEndFrame);
         await worker.WaitAsync(TimeSpan.FromSeconds(15));
         if (failure is not null)
             throw failure;
@@ -62,24 +76,24 @@ public sealed class Mp3Track
             while (true)
             {
                 long ended = Volatile.Read(ref end100ns);
-                long limit = ended < 0 ? long.MaxValue : timeline.FrameAt(ended);
                 using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
                 int drained = 0;
                 while (drained++ < 100 && packets.Reader.TryRead(out var next))
                 {
                     if (pending is not null)
                     {
-                        try { await timeline.AppendAsync(pending, next, limit, timeout.Token); }
+                        try { await timeline.AppendAsync(pending, next, long.MaxValue, timeout.Token); }
                         catch { next.Dispose(); throw; }
                         finally { pending.Dispose(); pending = null; }
                     }
                     pending = next;
                 }
-                long horizon = ended < 0 ? Math.Max(0, timeline.FrameAt(To100ns(Stopwatch.GetTimestamp())) - PcmTimeline.SampleRate / 2) : limit;
+                long horizon = ended < 0 ? Math.Max(0, timeline.FrameAt(To100ns(Stopwatch.GetTimestamp())) - PcmTimeline.SampleRate / 2)
+                    : timeline.FrameAt(ended);
                 if (pending is not null && (ended >= 0 ||
                     timeline.PacketEndFrame(pending) <= horizon))
                 {
-                    try { await timeline.AppendAsync(pending, null, limit, timeout.Token); }
+                    try { await timeline.AppendAsync(pending, null, long.MaxValue, timeout.Token); }
                     finally { pending.Dispose(); pending = null; }
                 }
                 await timeline.SilenceUntilAsync(Math.Min(horizon, pending is null ? horizon : timeline.PacketStartFrame(pending)), timeout.Token);
@@ -87,6 +101,9 @@ public sealed class Mp3Track
                     break;
                 await timer.WaitForNextTickAsync();
             }
+            drained.TrySetResult(timeline.FramesWritten);
+            long commonEndFrame = await synchronizedEnd.Task.WaitAsync(TimeSpan.FromSeconds(15));
+            await timeline.SilenceUntilAsync(commonEndFrame);
             completionAttempted = true;
             await encoder.CompleteAsync();
         }
@@ -95,6 +112,7 @@ public sealed class Mp3Track
             var error = ex as RecordingException ?? new RecordingException(
                 "MP3 write/encoder failed or stalled; check output permissions, disk space and FFmpeg. Partial originals retained.");
             Volatile.Write(ref failure, error);
+            drained.TrySetException(error);
             // Close FFmpeg's stdin and let it flush the already written PCM before any forced disposal.
             // If the encoder itself failed, preserve the initial error and let Dispose kill a stalled process.
             if (!completionAttempted)
