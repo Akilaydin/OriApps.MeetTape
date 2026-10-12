@@ -70,6 +70,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public bool IsNaming => NamingDirectory is not null;
     public string MeetingTitle { get; set; } = "";
     public bool CanName => IsNaming && !busy && !updating;
+    public bool CanStartNextRecording => CanName && controller is not null && !shutdownStarted && !snapshot.Capture.IsActive;
     public bool ShowTrim => snapshot.Suggestion is not null && snapshot.PreparationDirectory is { } directory
         && snapshot.Sessions.Any(s => s.Directory == directory && s.Data?.Stages.TryGetValue("trim", out var trim) == true
             && trim.Enabled && trim.Status != StageState.Completed);
@@ -160,6 +161,18 @@ public sealed class MainViewModel : INotifyPropertyChanged
         await controller!.PrepareAsync(NamingDirectory, MeetingTitle);
         NamingDirectory = null;
     });
+
+    public Task StartNextRecordingAsync()
+    {
+        if (!CanStartNextRecording) return Task.CompletedTask;
+        return ExecuteAsync(async () =>
+        {
+            await controller!.PrepareAsync(NamingDirectory!, MeetingTitle);
+            NamingDirectory = null;
+            warnings.Clear();
+            await controller.StartAsync();
+        });
+    }
 
     public Task ChooseAsync(TrimDecision decision) => ExecuteAsync(async () =>
     {

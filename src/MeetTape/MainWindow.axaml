@@ -30,10 +30,11 @@
     <StackPanel Grid.Row="2" Spacing="12">
       <Border IsVisible="{Binding IsNaming}" Padding="12" BorderThickness="1" BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}" CornerRadius="6">
         <StackPanel Spacing="8">
-          <TextBlock Text="Recording saved. Name the meeting (optional), then continue." TextWrapping="Wrap" />
-          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+          <TextBlock Text="Recording saved. Name the meeting (optional), then continue or start the next recording." TextWrapping="Wrap" />
+          <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
             <TextBox Name="MeetingTitle" Text="{Binding MeetingTitle}" PlaceholderText="Unnamed meeting" MaxLength="200" />
             <Button Grid.Column="1" Name="ContinuePreparation" Content="Continue" IsEnabled="{Binding CanName}" Click="ContinueClick" />
+            <Button Grid.Column="2" Name="StartNextRecording" Content="Start next recording" IsEnabled="{Binding CanStartNextRecording}" Click="StartNextClick" />
           </Grid>
         </StackPanel>
       </Border>

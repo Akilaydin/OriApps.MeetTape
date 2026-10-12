@@ -19,6 +19,7 @@ public sealed partial class MainWindow : Window
     }
     private async void RecordClick(object? sender, RoutedEventArgs e) => await Model.ToggleAsync();
     private async void ContinueClick(object? sender, RoutedEventArgs e) => await Model.ContinuePreparationAsync();
+    private async void StartNextClick(object? sender, RoutedEventArgs e) => await Model.StartNextRecordingAsync();
     private void PrepareClick(object? sender, RoutedEventArgs e) => Model.PrepareSelected();
     private async void AcceptClick(object? sender, RoutedEventArgs e) => await Model.ChooseAsync(TrimDecision.Accept);
     private async void SkipClick(object? sender, RoutedEventArgs e) => await Model.ChooseAsync(TrimDecision.Skip);
