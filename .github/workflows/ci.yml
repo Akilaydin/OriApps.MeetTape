@@ -47,7 +47,7 @@ jobs:
           name: ui-snapshots
           path: dist/screenshots/*.png
 
-      - name: Publish and check Windows single-file CLI output
+      - name: Publish and check isolated Windows GUI startup
         shell: pwsh
         env:
           AVALONIA_TELEMETRY_OPTOUT: '1'

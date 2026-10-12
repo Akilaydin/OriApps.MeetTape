@@ -96,126 +96,7 @@ public sealed class PostRecordingWorkflow(string ffmpegPath) : IDisposable
         });
     }
 
-    public void PrepareChunks(string sessionDirectory)
-    {
-        CancelAndWait();
-        var data = SessionStore.Read(sessionDirectory);
-        if (!data.Stages.TryGetValue("prepare", out var stage) || !stage.Enabled)
-            throw new InvalidOperationException("Audio chunk preparation is disabled for this session.");
-        if (stage.Status == StageState.Completed || data.Audio is not null)
-            throw new InvalidOperationException("Chunk set already selected; existing audio retained.");
-        if (data.RecordingState != RecordingState.Recorded ||
-            data.Stages.TryGetValue("trim", out var trim) && trim.Enabled && trim.Status != StageState.Completed)
-            throw new InvalidOperationException("Finalize recording and save the trim choice before preparing chunks.");
-        directory = sessionDirectory;
-        Start(async token =>
-        {
-            using var lease = Lease(sessionDirectory);
-            var current = SessionStore.Read(sessionDirectory);
-            if (current.Audio is not null || current.Stages["prepare"].Status == StageState.Completed)
-                throw new InvalidOperationException("Chunk set already selected.");
-            SessionStore.Save(sessionDirectory, Update(current, StageState.Running, null, "prepare"));
-            var audio = await new AudioChunker(ffmpegPath).PrepareAsync(sessionDirectory, current, token);
-            token.ThrowIfCancellationRequested();
-            var completed = Update(current with { Audio = audio }, StageState.Completed, null, "prepare");
-            completed.Stages["prepare"] = completed.Stages["prepare"] with { CompletedChunks = audio.Chunks.Count, TotalChunks = audio.Chunks.Count };
-            SessionStore.Save(sessionDirectory, completed);
-            Report(new(NoticeKind.Information, $"Prepared {audio.Chunks.Count} stereo chunks (L=Me/R=Them); originals retained. Transcription pending.", current.Id));
-        }, "prepare");
-        Report(new(NoticeKind.Information, "Preparing stereo chunks with boundary context. New capture cancels preparation.", data.Id));
-    }
-
-    public void Rechunk(string sessionDirectory, int chunkSeconds, Action<string>? onCompleted = null)
-    {
-        CancelAndWait();
-        if (chunkSeconds is < 1 or > AudioChunker.MaxChunkSeconds)
-            throw new InvalidOperationException($"Set chunkSeconds to 1-{AudioChunker.MaxChunkSeconds} before rechunking.");
-        using (var lease = Lease(sessionDirectory))
-        {
-            var data = SessionStore.Read(sessionDirectory);
-            if (data.RecordingState != RecordingState.Recorded || data.DurationSeconds is not > 0
-                || !data.Stages.TryGetValue("prepare", out var stage) || !stage.Enabled
-                || !data.Stages.TryGetValue("transcribe", out var transcription) || !transcription.Enabled
-                || transcription.Status == StageState.Completed || data.TranscriptSha256 is not null)
-                throw new InvalidOperationException("Only incomplete transcription sessions with finalized audio can be rechunked.");
-            if (data.Stages.TryGetValue("trim", out var trim) && trim.Enabled && trim.Status != StageState.Completed)
-                throw new InvalidOperationException("Save the trim choice before rechunking.");
-            if (data.Audio is not null)
-            {
-                AudioChunker.ValidateManifest(data);
-                if (data.Audio.Recovery is not null)
-                    throw new InvalidOperationException("This session has already been rechunked; existing checkpoints retained.");
-                if (!data.Audio.Chunks.Any(chunk => !File.Exists(ChunkStore.PathFor(sessionDirectory, chunk.Index))
-                    && new FileInfo(AudioChunker.ResolveProcessed(sessionDirectory, chunk.RelativePath)).Length > ChatApiClient.MaxAudioBytes))
-                    throw new InvalidOperationException("No unprocessed chunk exceeds 8 MiB; existing audio retained.");
-            }
-            else if (data.Processing.ChunkSeconds <= AudioChunker.MaxChunkSeconds)
-                throw new InvalidOperationException("Unselected audio already has a safe chunk duration; use chunks or resume.");
-            var stages = new Dictionary<string, StageProgress>(data.Stages)
-            { ["prepare"] = stage with { Status = StageState.Running } };
-            // Block the automatic job runner until a replacement set is fully encoded and selected.
-            SessionStore.Save(sessionDirectory, data with { Stages = stages, JobState = JobState.Paused, Error = null });
-        }
-        directory = sessionDirectory;
-        Start(async token =>
-        {
-            using var lease = Lease(sessionDirectory);
-            var current = SessionStore.Read(sessionDirectory);
-            int preserved = await VerifiedCheckpointPrefixAsync(sessionDirectory, current, token);
-            var chunker = new AudioChunker(ffmpegPath);
-            var replacement = current.Audio is null
-                ? await chunker.PrepareAsync(sessionDirectory, current with
-                  { Processing = current.Processing with { ChunkSeconds = chunkSeconds } }, token)
-                : await chunker.RecoverAsync(sessionDirectory, current, chunkSeconds, preserved, token);
-            token.ThrowIfCancellationRequested();
-            var stages = new Dictionary<string, StageProgress>(current.Stages)
-            {
-                ["prepare"] = current.Stages["prepare"] with
-                { Status = StageState.Completed, CompletedChunks = replacement.Chunks.Count, TotalChunks = replacement.Chunks.Count },
-                ["transcribe"] = current.Stages["transcribe"] with
-                { Status = StageState.Pending, CompletedChunks = preserved, TotalChunks = replacement.Chunks.Count }
-            };
-            if (stages.TryGetValue("assemble", out var assemble))
-                stages["assemble"] = assemble with { Status = StageState.Pending };
-            var updated = current with
-            {
-                Processing = current.Processing with { ChunkSeconds = chunkSeconds },
-                Audio = replacement, Stages = stages, Retry = null, Error = null, JobState = JobState.NotStarted
-            };
-            AudioChunker.ValidateManifest(updated);
-            SessionStore.Save(sessionDirectory, updated);
-            onCompleted?.Invoke(sessionDirectory);
-            Report(new(NoticeKind.Information, $"Rechunked to {replacement.Chunks.Count} stereo chunks; {preserved} paid checkpoints retained. Transcription pending.", current.Id));
-        }, "prepare");
-        Report(new(NoticeKind.Information, "Rechunking in the background; original audio and saved results retained."));
-    }
-
-    private static async Task<int> VerifiedCheckpointPrefixAsync(string directory, SessionData data, CancellationToken token)
-    {
-        string savedDirectory = Path.Combine(directory, "chunks");
-        var chunks = data.Audio?.Chunks;
-        var known = chunks?.Select(chunk => Path.GetFullPath(ChunkStore.PathFor(directory, chunk.Index)))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase) ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (Directory.Exists(savedDirectory) && Directory.EnumerateFiles(savedDirectory, "*.json")
-            .Any(file => !known.Contains(Path.GetFullPath(file))))
-            throw new InvalidDataException("Unexpected chunk checkpoints exist; no results or audio were replaced.");
-        if (chunks is null) return 0;
-        int preserved = 0;
-        bool gap = false;
-        foreach (var chunk in chunks)
-        {
-            token.ThrowIfCancellationRequested();
-            if (!File.Exists(ChunkStore.PathFor(directory, chunk.Index))) { gap = true; continue; }
-            if (gap) throw new InvalidDataException("Saved checkpoints are not a continuous prefix; preserving them without rechunking.");
-            _ = await ChunkStore.ReadAsync(directory, data, chunk, token);
-            preserved++;
-        }
-        if (preserved == chunks.Count)
-            throw new InvalidOperationException("Every chunk is already checkpointed; no API requests need rechunking.");
-        return preserved;
-    }
-
-    private void Start(Func<CancellationToken, Task> work, string stage = "trim")
+    private void Start(Func<CancellationToken, Task> work)
     {
         cancellation?.Dispose();
         cancellation = new();
@@ -226,26 +107,24 @@ public sealed class PostRecordingWorkflow(string ffmpegPath) : IDisposable
             try { await work(token); }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
             {
-                SavePaused(selected, stage == "trim" ? "Audio preparation canceled; reopen trim selection to continue."
-                    : "Audio preparation canceled; saved audio and checkpoints retained. Retry local recovery to continue.",
-                    stage == "trim" ? StageState.AwaitingUser : StageState.Pending, stage);
+                SavePaused(selected, "Audio preparation canceled; reopen trim selection to continue.", StageState.AwaitingUser);
             }
             catch (Exception ex) when (ex is not AudioPreparationShutdownException && ex is (InvalidDataException or IOException or UnauthorizedAccessException
                 or InvalidOperationException or System.ComponentModel.Win32Exception or TimeoutException))
             {
-                SavePaused(selected, "Audio preparation paused; check originals, FFmpeg, permissions and free space.", StageState.Paused, stage);
+                SavePaused(selected, "Audio preparation paused; check originals, FFmpeg, permissions and free space.", StageState.Paused);
             }
         });
     }
 
-    private void SavePaused(string selected, string diagnostic, StageState state, string stage)
+    private void SavePaused(string selected, string diagnostic, StageState state)
     {
         try
         {
             using var lease = Lease(selected);
             var data = SessionStore.Read(selected);
-            if (data.Stages.TryGetValue(stage, out var progress) && progress.Status == StageState.Completed) return;
-            SessionStore.Save(selected, Update(data, state, diagnostic, stage) with { JobState = JobState.Paused });
+            if (data.Stages.TryGetValue("trim", out var progress) && progress.Status == StageState.Completed) return;
+            SessionStore.Save(selected, Update(data, state, diagnostic) with { JobState = JobState.Paused });
         }
         catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
         { diagnostic += " Could not update session.json; prior state retained."; }
@@ -266,10 +145,10 @@ public sealed class PostRecordingWorkflow(string ffmpegPath) : IDisposable
         { throw new AudioPreparationShutdownException("Audio preparation did not stop; capture remains blocked. Check FFmpeg and restart MeetTape."); }
     }
 
-    private static SessionData Update(SessionData data, StageState state, string? error, string stage = "trim")
+    private static SessionData Update(SessionData data, StageState state, string? error)
     {
         var stages = new Dictionary<string, StageProgress>(data.Stages);
-        stages[stage] = stages[stage] with { Status = state };
+        stages["trim"] = stages["trim"] with { Status = state };
         return data with { Stages = stages, Error = error, JobState = JobState.NotStarted };
     }
 

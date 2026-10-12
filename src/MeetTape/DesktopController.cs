@@ -102,21 +102,6 @@ public sealed class DesktopController : IDesktopController
     public Task ResumeAsync(string directory) => JobActionAsync(() => jobs.Resume(directory));
     public Task SummaryAsync(string directory) => JobActionAsync(() => jobs.RequestSummary(directory));
 
-    public Task RecoverAsync(string directory, string command) => RunAsync(() =>
-    {
-        RequireIdle();
-        jobs.PauseAndWait();
-        preparation.CancelAndWait();
-        switch (command)
-        {
-            case "chunks": preparation.PrepareChunks(directory); break;
-            case "rechunk": preparation.Rechunk(directory, config.Settings.ChunkSeconds, jobs.UnblockRecovered); break;
-            case "assemble": jobs.AssembleLocalAsync(directory).GetAwaiter().GetResult(); break;
-            default: throw new InvalidOperationException("Unknown recovery operation.");
-        }
-        preparation.Completion.GetAwaiter().GetResult();
-    });
-
     private Task JobActionAsync(Action action) => RunAsync(() =>
     {
         RequireIdle();

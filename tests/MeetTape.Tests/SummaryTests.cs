@@ -10,24 +10,6 @@ public sealed class SummaryTests : IDisposable
         { Content = new StringContent(status == 200 ? "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"# Decisions\\n- Retry after 300 seconds.\"}}]}" : "private error") };
 
     [Fact]
-    public async Task ControllerLocalAssemblyNeverRunsAlreadyRequestedSummary()
-    {
-        var (directory, config) = await SessionAsync();
-        byte[] original = File.ReadAllBytes(Path.Combine(directory, "transcription.md"));
-        var data = SessionStore.Read(directory);
-        SessionStore.Save(directory, data with { Stages = new(data.Stages) { ["summary"] = new(true, StageState.Pending) } });
-        File.Delete(Path.Combine(directory, "transcription.md"));
-        using var handler = new Handler((_, _) => throw new Exception("Local recovery must never use an API."));
-        using var http = new HttpClient(handler);
-        var controller = new DesktopController(config, http: http, readKey: _ => "fixture-key");
-        try { await controller.RecoverAsync(directory, "assemble"); }
-        finally { await controller.ShutdownAsync(); }
-        Assert.Equal(0, handler.Calls);
-        Assert.Equal(original, File.ReadAllBytes(Path.Combine(directory, "transcription.md")));
-        Assert.Equal(StageState.Pending, SessionStore.Read(directory).Stages["summary"].Status);
-    }
-
-    [Fact]
     public async Task OnlyExplicitRequestUsesSeparateModelPromptAndPreservesTranscriptAndRepeatedResult()
     {
         var (directory, config) = await SessionAsync();
