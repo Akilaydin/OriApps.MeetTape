@@ -6,6 +6,7 @@ namespace MeetTape;
 
 public sealed class ProcessingJobs : IDisposable
 {
+    private static readonly string[] ProcessingStages = ["prepare", "transcribe", "assemble", "summary"];
     private readonly LoadedConfiguration config;
     private readonly Func<bool> captureActive;
     private readonly HttpClient http;
@@ -86,7 +87,7 @@ public sealed class ProcessingJobs : IDisposable
         if (data.RecordingState != RecordingState.Recorded)
             throw new InvalidOperationException("Verify incomplete recording before processing.");
         var stages = new Dictionary<string, StageProgress>(data.Stages);
-        foreach (string name in new[] { "prepare", "transcribe", "assemble", "summary" })
+        foreach (string name in ProcessingStages)
             if (stages.TryGetValue(name, out var stage) && stage.Enabled && stage.Status == StageState.Paused)
                 stages[name] = stage with { Status = StageState.Pending };
         SessionStore.Save(directory, data with { Stages = stages, JobState = JobState.NotStarted, Error = null,
@@ -104,9 +105,7 @@ public sealed class ProcessingJobs : IDisposable
         using var lease = Lease(directory);
         var data = SessionStore.Read(directory);
         if (!config.Settings.Stages.Summary) throw new InvalidOperationException("Summary disabled; enable stages.summary and restart before requesting it.");
-        if (data.RecordingState != RecordingState.Recorded || data.Audio is null ||
-            !data.Stages.TryGetValue("transcribe", out var transcribe) || transcribe.Status != StageState.Completed || transcribe.CompletedChunks != data.Audio.Chunks.Count ||
-            !data.Stages.TryGetValue("assemble", out var stage) || stage.Status != StageState.Completed || data.TranscriptSha256 is null)
+        if (!HasPublishedTranscription(data))
             throw new InvalidOperationException("Summary requires a complete published transcription.md.");
         if (data.Stages.TryGetValue("summary", out var summary) && summary.Status == StageState.Completed && File.Exists(Path.Combine(directory, "summary.md")))
             throw new InvalidOperationException("Summary already saved; repeated request retains it without a new API call.");
@@ -230,6 +229,16 @@ public sealed class ProcessingJobs : IDisposable
         && data.Stages.TryGetValue("transcribe", out var transcribe) && transcribe.Enabled
         && (transcribe.Status != StageState.Completed || !data.Stages.TryGetValue("assemble", out var assemble) || assemble.Status != StageState.Completed || SummaryRequested(data))
         && (!data.Stages.TryGetValue("trim", out var trim) || !trim.Enabled || trim.Status == StageState.Completed);
+
+    internal static bool CanResume(SessionData data) => data.RecordingState == RecordingState.Recorded && data.JobState == JobState.Paused
+        && data.Stages.TryGetValue("transcribe", out var transcribe) && transcribe.Enabled
+        && (!data.Stages.TryGetValue("trim", out var trim) || !trim.Enabled || trim.Status == StageState.Completed)
+        && ProcessingStages.Any(name => data.Stages.TryGetValue(name, out var stage) && stage.Enabled && stage.Status == StageState.Paused);
+
+    internal static bool HasPublishedTranscription(SessionData data) => data.RecordingState == RecordingState.Recorded && data.Audio is not null
+        && data.Stages.TryGetValue("transcribe", out var transcribe) && transcribe.Status == StageState.Completed
+        && transcribe.CompletedChunks == data.Audio.Chunks.Count
+        && data.Stages.TryGetValue("assemble", out var assemble) && assemble.Status == StageState.Completed && data.TranscriptSha256 is not null;
 
     private bool RetryPending(string directory, SessionData data)
     {
