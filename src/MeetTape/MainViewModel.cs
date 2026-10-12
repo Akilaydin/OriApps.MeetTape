@@ -82,6 +82,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public bool CanOpen => selected is not null;
     public bool CanOpenTranscript => selected?.HasTranscript == true;
     public bool CanOpenSummary => selected?.HasSummary == true;
+    public bool CanCopyDocument => CanOpenTranscript || CanOpenSummary;
     public bool CanConfigure => !busy && !updating && !shutdownStarted;
     public bool CanUpdate => CanConfigure && !snapshot.Capture.IsActive && NamingDirectory is null && snapshot.AwaitingTitleDirectory is null;
     public bool IsUpdating => updating;
