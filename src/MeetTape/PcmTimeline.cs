@@ -40,11 +40,12 @@ public sealed class PcmTimeline(Stream destination, long origin100ns)
         lastRate = rate;
         long start = FrameAt(packet.Position100ns);
         long endPosition = packet.Position100ns + (long)Math.Round(packet.Frames * 10_000_000d / rate);
-        if (next is not null && next.Position100ns > packet.Position100ns && endPosition > next.Position100ns
+        if (next is not null && next.DevicePosition >= packet.DevicePosition + packet.Frames
+            && next.Position100ns > packet.Position100ns && endPosition > next.Position100ns
             && next.Position100ns - packet.Position100ns >= packet.Frames * 10_000_000d / packet.SampleRate * MinAnchorIntervalRatio)
         {
-            // A plausible next timestamp may bound the packet even if WASAPI rebased its device counter.
-            // Do not compress a whole packet into a wildly short timestamp interval.
+            // Trust the next boundary only with a consistent device counter and a plausible QPC interval.
+            // A broken anchor must not compress a whole packet into a few milliseconds.
             endPosition = next.Position100ns;
             rate = packet.Frames * 10_000_000d / (endPosition - packet.Position100ns);
         }
