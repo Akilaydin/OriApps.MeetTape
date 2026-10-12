@@ -86,16 +86,23 @@ public static class SessionStore
     public static IReadOnlyList<StoredSession> Discover(string root) => Discover(root, null);
 
     internal static IReadOnlyList<StoredSession> Discover(string root,
-        Dictionary<string, (DateTime LastWriteTimeUtc, long Length)>? completed, Func<SessionData, bool>? eligible = null)
+        Dictionary<string, (DateTime LastWriteTimeUtc, long Length)>? completed, Func<SessionData, bool>? eligible = null,
+        Func<string, IEnumerable<string>>? enumerateDirectories = null)
     {
         if (!Directory.Exists(root))
         {
             completed?.Clear();
             return [];
         }
+        string[] directories;
+        try { directories = (enumerateDirectories ?? Directory.EnumerateDirectories)(root).ToArray(); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return [new(root, null, false, false, "Cannot read this meetings folder. Check its availability and permissions; other folders remain available.")];
+        }
         var seen = completed is null ? null : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var result = new List<StoredSession>();
-        foreach (string directory in Directory.EnumerateDirectories(root))
+        foreach (string directory in directories)
         {
             seen?.Add(directory);
             var metadata = new FileInfo(Path.Combine(directory, "session.json"));
