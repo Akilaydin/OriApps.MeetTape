@@ -16,8 +16,9 @@ public sealed class AudioPacket(float[] samples, int frames, int sampleRate, lon
     public long Position100ns { get; } = position100ns;
     public long DevicePosition { get; } = devicePosition;
     public AudioClientBufferFlags Flags { get; } = flags;
+    public long Received100ns { get; init; }
 
-    public static AudioPacket Copy(WaveInEventArgs args, WaveFormat format)
+    public static AudioPacket Copy(WaveInEventArgs args, WaveFormat format, long received100ns = 0)
     {
         if (args is not WasapiPacketEventArgs packet || (packet.Flags & AudioClientBufferFlags.TimestampError) != 0)
             throw new RecordingException("WASAPI timestamp is unavailable/invalid; partial originals retained.");
@@ -57,7 +58,8 @@ public sealed class AudioPacket(float[] samples, int frames, int sampleRate, lon
                 float sample = (float)(value / format.Channels);
                 mono[frame] = float.IsFinite(sample) ? Math.Clamp(sample, -1, 1) : 0;
             }
-            return new(mono, frames, format.SampleRate, packet.QpcPosition100ns, packet.DevicePosition, packet.Flags);
+            return new(mono, frames, format.SampleRate, packet.QpcPosition100ns, packet.DevicePosition, packet.Flags)
+            { Received100ns = received100ns };
         }
         catch { ArrayPool<float>.Shared.Return(mono); throw; }
     }

@@ -72,6 +72,78 @@ public sealed class TimelineTests
     }
 
     [Fact]
+    public async Task LoopbackClockRebaseDoesNotStopCaptureOrDiscardAnAudioPacket()
+    {
+        using var stream = new MemoryStream();
+        var timeline = new PcmTimeline(stream, Origin);
+        // Packet B arrives only 3.6045 ms after A, while both contain 10 ms of audio.
+        // This reproduces the observed 307-frame failure after an idle loopback interval.
+        using var a = Packet(48000, 480, Origin + 149_131_875, 480);
+        using var b = Packet(48000, 480, Origin + 149_167_920, 480);
+        using var c = Packet(48000, 480, Origin + 149_267_884, 960);
+        Array.Fill(a.Samples, 0.25f, 0, a.Frames);
+        Array.Fill(b.Samples, 0.5f, 0, b.Frames);
+        Array.Fill(c.Samples, 0.75f, 0, c.Frames);
+
+        await timeline.AppendAsync(a, b, 800000);
+        Assert.Equal(716313, timeline.FramesWritten);
+        await timeline.AppendAsync(b, c, 800000);
+        await timeline.AppendAsync(c, null, 800000);
+
+        float[] decoded = Samples(stream);
+        Assert.InRange(decoded.Count(value => Math.Abs(value - 0.25f) < 0.00001f), 470, 490);
+        Assert.InRange(decoded.Count(value => Math.Abs(value - 0.5f) < 0.00001f), 470, 490);
+        Assert.InRange(decoded.Count(value => Math.Abs(value - 0.75f) < 0.00001f), 470, 490);
+        Assert.Equal(2, timeline.ClockAdjustments);
+    }
+
+    [Fact]
+    public async Task SmallQpcRegressionRetainsOrderedPackets()
+    {
+        using var stream = new MemoryStream();
+        var timeline = new PcmTimeline(stream, Origin);
+        using var a = Packet(48000, 480, Origin + 1_000_000, 0);
+        using var b = Packet(48000, 480, Origin + 970_000, 480);
+        using var c = Packet(48000, 480, Origin + 1_070_000, 960);
+        Array.Fill(a.Samples, 0.25f, 0, a.Frames);
+        Array.Fill(b.Samples, 0.5f, 0, b.Frames);
+
+        await timeline.AppendAsync(a, b, 8000);
+        await timeline.AppendAsync(b, c, 8000);
+        Assert.True(Samples(stream).Count(value => Math.Abs(value - 0.5f) < 0.00001f) >= 470);
+    }
+
+    [Fact]
+    public async Task BadAdjacentQpcAnchorDoesNotCompressTenMillisecondsIntoThree()
+    {
+        using var stream = new MemoryStream();
+        var timeline = new PcmTimeline(stream, Origin);
+        using var a = Packet(48000, 480, Origin + 1_000_000, 0);
+        using var b = Packet(48000, 480, Origin + 1_036_045, 480);
+        using var c = Packet(48000, 480, Origin + 1_136_045, 960);
+        Array.Fill(a.Samples, 0.25f, 0, a.Frames);
+        Array.Fill(b.Samples, 0.5f, 0, b.Frames);
+
+        await timeline.AppendAsync(a, b, 8000);
+        await timeline.AppendAsync(b, c, 8000);
+        Assert.True(Samples(stream).Count(value => Math.Abs(value - 0.25f) < 0.00001f) >= 470);
+        Assert.True(Samples(stream).Count(value => Math.Abs(value - 0.5f) < 0.00001f) >= 470);
+    }
+
+    [Fact]
+    public async Task LargeOverlapStillStopsInsteadOfHidingLateSpeech()
+    {
+        using var stream = new MemoryStream();
+        var timeline = new PcmTimeline(stream, Origin);
+        await timeline.SilenceUntilAsync(9600);
+        using var packet = Packet(48000, 480, Origin + 1_000_000, 0);
+        var error = await Assert.ThrowsAsync<RecordingException>(async () => await timeline.AppendAsync(packet, null, 12000));
+        Assert.Contains("Recent WASAPI packet metadata", error.Message);
+        Assert.Contains("device=0", error.Message);
+        Assert.Contains("committed=9600", error.Message);
+    }
+
+    [Fact]
     public async Task CompressedTimestampIntervalResamplesWholePacketIntoItsAvailableTime()
     {
         using var stream = new MemoryStream();
