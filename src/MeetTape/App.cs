@@ -23,6 +23,7 @@ public sealed class App : Application
     private bool allowShutdown;
     private bool openingSettings;
     private bool initialized;
+    private IAppUpdates? updates;
 
     public override void Initialize() => Styles.Add(new FluentTheme());
 
@@ -104,8 +105,8 @@ public sealed class App : Application
             timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
             timer.Tick += async (_, _) => await model.RefreshAsync();
             timer.Start();
-            // This bounded public GitHub lookup is separate from capture and API processing.
-            model.ReleaseText = await Task.Run(StartupReleaseNotice.Get);
+            updates = new AppUpdates(ConfigurationPath is null ? [] : ["--config", Path.GetFullPath(ConfigurationPath)]);
+            model.ReleaseText = await StartupReleaseNotice.GetAsync(updates);
             model.SetInfo("Close hides the window. Use Exit to stop MeetTape.");
         }
         catch (Exception ex) { model.SetError(ex is InvalidDataException ? ex.Message :
@@ -148,12 +149,16 @@ public sealed class App : Application
 
     private async Task UpdateAsync()
     {
-        if (model.IsRecording) { model.SetError("Stop the recording before updating MeetTape."); return; }
-        if (!await model.ShutdownAsync()) return;
-        using var output = new StringWriter();
-        using var error = new StringWriter();
-        int result = await Task.Run(() => UpdateLauncher.Run(output, error));
-        if (result != 0) { model.SetError(error.ToString().Trim() + " Exit and reopen MeetTape before recording."); return; }
-        await ExitAsync();
+        if (Smoke || window is null) return;
+        updates ??= new AppUpdates(ConfigurationPath is null ? [] : ["--config", Path.GetFullPath(ConfigurationPath)]);
+        bool applied = await model.UpdateAsync(updates, async (current, available) =>
+        {
+            ShowWindow();
+            return await new UpdateWindow(current, available) { Icon = window.Icon }.ShowDialog<bool>(window);
+        });
+        if (!applied) return;
+        allowShutdown = true;
+        window.AllowClose = true;
+        desktop!.Shutdown();
     }
 }

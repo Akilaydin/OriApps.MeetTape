@@ -57,24 +57,32 @@ jobs:
           & powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/Test-Desktop.ps1 -ExecutablePath dist/publish/MeetTape.exe -SkipNativeWindow
           if ($LASTEXITCODE -ne 0) { throw 'Published executable tests failed.' }
 
-  installer-tests:
+  package-smoke:
     runs-on: windows-latest
     env:
+      AVALONIA_TELEMETRY_OPTOUT: '1'
       DOTNET_GENERATE_ASPNET_CERTIFICATE: 'false'
       DOTNET_ADD_GLOBAL_TOOLS_TO_PATH: 'false'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 10.0.x
-
-      - name: Run isolated installer and updater tests
+          dotnet-version: 10.0.401
+      - name: Build two local full packages
         shell: pwsh
         run: |
-          $env:TEMP = Join-Path $env:GITHUB_WORKSPACE 'dist/test-temp'
-          $env:TMP = $env:TEMP
-          New-Item -ItemType Directory -Path $env:TEMP -Force | Out-Null
-          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/Test-Bootstrap.ps1
-          if ($LASTEXITCODE -ne 0) { throw 'CMD bootstrap tests failed.' }
-          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/Test-InstallScripts.ps1
-          if ($LASTEXITCODE -ne 0) { throw 'Installer tests failed.' }
+          dotnet tool install vpk --version 1.2.161 --tool-path dist/vpk
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot install pinned vpk.' }
+          ./tools/Build-Package.ps1 -Version 1.0.0 -VpkPath ./dist/vpk/vpk.exe
+          Copy-Item -LiteralPath dist/releases/OriApps.MeetTape-win-Setup.exe -Destination dist/releases/first-Setup.exe
+          ./tools/Build-Package.ps1 -Version 1.0.1 -VpkPath ./dist/vpk/vpk.exe
+      - name: Test SDK restart, isolated install, update and uninstall
+        shell: pwsh
+        run: ./tools/Test-Package.ps1 -InstallOnCi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: velopack-smoke
+          path: |
+            dist/releases/*
+            dist/package-tests/**

@@ -16,6 +16,9 @@ public static class ConfigurationBootstrap
     public static string DefaultConfigurationPath(string workingDirectory, string userConfigurationPath, string? executableDirectory = null)
     {
         string legacyPath = Path.Combine(workingDirectory, "config.json");
+        // Velopack replaces current on update. Defaults always live outside that directory.
+        if (executableDirectory is not null && File.Exists(Path.Combine(executableDirectory, "sq.version")))
+            return userConfigurationPath;
         // Installed EXEs prefer user settings, even inside a source checkout.
         // Source builds prefer current-directory settings; installed EXEs fall back to them if user config is missing.
         if (executableDirectory is not null && File.Exists(userConfigurationPath) && !IsSourceBuild(executableDirectory))

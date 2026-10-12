@@ -9,7 +9,7 @@
       <TextBlock Grid.Row="1" Text="{Binding ReleaseText}" Opacity="0.65" TextWrapping="Wrap" />
       <StackPanel Grid.Column="1" Grid.RowSpan="2" Orientation="Horizontal" Spacing="8">
         <Button Content="Settings" IsEnabled="{Binding CanConfigure}" Click="SettingsClick" />
-        <Button Content="Update" IsEnabled="{Binding CanConfigure}" Click="UpdateClick" />
+        <Button Name="UpdateButton" Content="Update" IsEnabled="{Binding CanUpdate}" Click="UpdateClick" />
         <Button Content="Exit" Click="ExitClick" />
       </StackPanel>
     </Grid>
@@ -24,6 +24,7 @@
         <TextBlock Name="Warnings" Text="{Binding WarningText}" IsVisible="{Binding HasWarnings}" TextWrapping="Wrap" Foreground="DarkOrange" />
         <TextBlock Name="ErrorMessage" Text="{Binding ErrorText}" IsVisible="{Binding HasError}" TextWrapping="Wrap" Foreground="IndianRed" />
         <TextBlock Text="{Binding PreparationText}" IsVisible="{Binding IsPreparing}" TextWrapping="Wrap" />
+        <ProgressBar Name="UpdateProgress" Value="{Binding UpdateProgress}" IsVisible="{Binding IsUpdating}" Height="6" />
       </StackPanel>
     </Border>
     <StackPanel Grid.Row="2" Spacing="12">

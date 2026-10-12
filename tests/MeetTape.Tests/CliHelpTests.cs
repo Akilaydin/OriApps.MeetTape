@@ -10,7 +10,7 @@ public sealed class CliHelpTests
         Assert.Empty(result.Error);
         Assert.Contains("Avalonia UI", result.Output);
         Assert.Contains("Start / Stop", result.Output);
-        Assert.Contains("meettape configure", result.Output);
+        Assert.Contains("meettape-cli.cmd configure", result.Output);
         Assert.Contains("help advanced", result.Output);
         Assert.DoesNotContain("meettape>", result.Output);
     }
@@ -18,22 +18,22 @@ public sealed class CliHelpTests
     [Theory]
     [InlineData("start", "GUI action")]
     [InlineData("stop", "GUI action")]
-    [InlineData("sessions", "PowerShell: meettape sessions")]
-    [InlineData("status", "PowerShell: meettape status")]
-    [InlineData("configure", "PowerShell: meettape configure")]
-    [InlineData("devices", "PowerShell: meettape devices")]
-    [InlineData("check-config", "PowerShell: meettape check-config")]
-    [InlineData("update", "PowerShell: meettape update")]
+    [InlineData("sessions", "PowerShell: .\\meettape-cli.cmd sessions")]
+    [InlineData("status", "PowerShell: .\\meettape-cli.cmd status")]
+    [InlineData("configure", "PowerShell: .\\meettape-cli.cmd configure")]
+    [InlineData("devices", "PowerShell: .\\meettape-cli.cmd devices")]
+    [InlineData("check-config", "PowerShell: .\\meettape-cli.cmd check-config")]
+    [InlineData("update", "GUI action")]
     [InlineData("prepare", "GUI action")]
-    [InlineData("chunks", "PowerShell: meettape chunks")]
-    [InlineData("rechunk", "PowerShell: meettape rechunk")]
+    [InlineData("chunks", "PowerShell: .\\meettape-cli.cmd chunks")]
+    [InlineData("rechunk", "PowerShell: .\\meettape-cli.cmd rechunk")]
     [InlineData("resume", "GUI action")]
-    [InlineData("assemble", "PowerShell: meettape assemble")]
+    [InlineData("assemble", "PowerShell: .\\meettape-cli.cmd assemble")]
     [InlineData("summary", "GUI action")]
     [InlineData("accept", "GUI action")]
     [InlineData("skip", "GUI action")]
     [InlineData("trim", "GUI action")]
-    [InlineData("help", "PowerShell: meettape --help")]
+    [InlineData("help", "PowerShell: .\\meettape-cli.cmd --help")]
     [InlineData("exit", "GUI action")]
     [InlineData("quit", "GUI action")]
     public void ContextHelpDoesNotAccessConfigurationOrDevices(string command, string expected)
@@ -66,11 +66,10 @@ public sealed class CliHelpTests
     [Fact]
     public void UpdateDoesNotLoadSettingsOrAudioDevices()
     {
-        bool launched = false;
         using var output = new StringWriter(); using var error = new StringWriter();
         Assert.Equal(0, Cli.Run(["update"], TextReader.Null, output, error,
-            (_, _) => { launched = true; return 0; }, () => throw new Exception("No hardware")));
-        Assert.True(launched); Assert.Empty(error.ToString());
+            () => throw new Exception("No hardware")));
+        Assert.Contains("review and confirm", output.ToString()); Assert.Empty(error.ToString());
     }
 
     [Fact]
@@ -78,7 +77,7 @@ public sealed class CliHelpTests
     {
         using var output = new StringWriter(); using var error = new StringWriter();
         Assert.Equal(0, Cli.Run(["devices"], TextReader.Null, output, error,
-            null, () =>
+            () =>
             [new("mic-id", "Microphone", CaptureChannel.Me, true), new("render-id", "Speakers", CaptureChannel.Them, false)]));
         Assert.Contains("Me (default): Microphone", output.ToString());
         Assert.Contains("render-id", output.ToString()); Assert.Empty(error.ToString());
@@ -89,7 +88,6 @@ public sealed class CliHelpTests
     {
         using var output = new StringWriter(); using var error = new StringWriter();
         Assert.Equal(2, Cli.Run(["devices"], TextReader.Null, output, error,
-            null,
             () => throw new System.Runtime.InteropServices.COMException("private device diagnostic")));
         Assert.Contains("Windows Audio", error.ToString()); Assert.DoesNotContain("private", error.ToString());
     }
@@ -129,7 +127,7 @@ public sealed class CliHelpTests
     {
         using var output = new StringWriter(); using var error = new StringWriter();
         int result = Cli.Run(args, TextReader.Null, output, error,
-            null, () => throw new Exception("Help must not access hardware"));
+            () => throw new Exception("Help must not access hardware"));
         return (result, output.ToString(), error.ToString());
     }
 }

@@ -14,6 +14,7 @@
     <PackageReference Include="Avalonia.Desktop" Version="12.1.4" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.4" />
     <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
+    <PackageReference Include="Velopack" Version="1.2.161" />
   </ItemGroup>
 
   <ItemGroup>
@@ -24,9 +25,6 @@
     <EmbeddedResource Include="..\..\config.example.json" LogicalName="MeetTape.Defaults.config.json" />
     <EmbeddedResource Include="..\..\prompts\transcription.md" LogicalName="MeetTape.Defaults.transcription.md" />
     <EmbeddedResource Include="..\..\prompts\summary.md" LogicalName="MeetTape.Defaults.summary.md" />
-    <EmbeddedResource Include="..\..\install.ps1" LogicalName="MeetTape.Installer.install.ps1" />
-    <EmbeddedResource Include="..\..\update.ps1" LogicalName="MeetTape.Installer.update.ps1" />
-    <EmbeddedResource Include="..\..\tools\InstallerPath.ps1" LogicalName="MeetTape.Installer.InstallerPath.ps1" />
   </ItemGroup>
 
 </Project>

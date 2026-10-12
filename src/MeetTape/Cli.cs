@@ -3,15 +3,14 @@ namespace MeetTape;
 public static class Cli
 {
     public static int Run(string[] args, TextReader input, TextWriter output, TextWriter error) =>
-        RunCore(args, input, output, error, UpdateLauncher.Run, AudioDevices.List);
+        RunCore(args, input, output, error, AudioDevices.List);
 
     internal static int Run(string[] args, TextReader input, TextWriter output, TextWriter error,
-        Func<TextWriter, TextWriter, int>? launchUpdate,
         Func<IReadOnlyList<AudioDevice>> listDevices) =>
-        RunCore(args, input, output, error, launchUpdate ?? UpdateLauncher.Run, listDevices);
+        RunCore(args, input, output, error, listDevices);
 
     private static int RunCore(string[] args, TextReader input, TextWriter output, TextWriter error,
-        Func<TextWriter, TextWriter, int> launchUpdate, Func<IReadOnlyList<AudioDevice>> listDevices)
+        Func<IReadOnlyList<AudioDevice>> listDevices)
     {
         output = CliColorWriter.Wrap(output);
         error = CliColorWriter.Wrap(error, stderr: true);
@@ -43,7 +42,7 @@ public static class Cli
         }
         try
         {
-            if (command == "update") return launchUpdate(output, error);
+            if (command == "update") { output.WriteLine("Use Update in the MeetTape window to review and confirm an update. Stop recording first."); return 0; }
             if (command == "configure") return ConfigurationWizard.Run(
                 explicitConfigPath ?? ConfigurationBootstrap.UserConfigurationPath, input, output, error);
             if (command == "devices")
