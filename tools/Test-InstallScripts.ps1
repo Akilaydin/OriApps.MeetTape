@@ -299,7 +299,10 @@ public sealed class StalledDownload : Stream {
         [IO.FileShare]::None)
     $failedAsExpected = $false
     try { & (Join-Path $repository 'update.ps1') -InstallDirectory $install -SkipPath -HttpClient $client @ffmpegArgs | Out-Null }
-    catch { $failedAsExpected = $true }
+    catch {
+        if ($_.Exception.Message -notmatch 'Cannot replace installed MeetTape.exe') { throw }
+        $failedAsExpected = $true
+    }
     finally { $locked.Dispose() }
     if (-not $failedAsExpected -or (Get-Content -LiteralPath $marker -Raw).Trim() -ne 'v1.2.4' -or
         (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash -ne $digest -or
@@ -354,6 +357,22 @@ public sealed class StalledDownload : Stream {
         $handler.FfmpegDownloads -ne $ffmpegDownloadsBefore) {
         throw 'Existing unmanaged FFmpeg must be preserved and never marked or downloaded as managed.'
     }
+
+    # Simulate Get-FileHash failing to resolve in the updater's PowerShell process.
+    # Install, same-version checks and a real update must all use the .NET SHA-256 implementation.
+    $hashlessInstall = Join-Path $testRoot 'hashless-install'
+    $handler.ReleaseTag = 'v1.2.4'
+    & {
+        function Get-FileHash { throw 'Get-FileHash must not be used by the installer.' }
+        & (Join-Path $repository 'install.ps1') -InstallDirectory $hashlessInstall -SkipPath -HttpClient $client @ffmpegArgs | Out-Null
+        & (Join-Path $hashlessInstall 'app\update.ps1') -SkipPath -HttpClient $client @ffmpegArgs | Out-Null
+        $handler.ReleaseTag = 'v1.2.5'
+        & (Join-Path $hashlessInstall 'app\update.ps1') -SkipPath -HttpClient $client @ffmpegArgs | Out-Null
+    }
+    if ((Get-Content -LiteralPath (Join-Path $hashlessInstall 'installed-version.txt') -Raw).Trim() -ne 'v1.2.5') {
+        throw 'Update without Get-FileHash did not install the new release.'
+    }
+
     $env:PATH = "$(Join-Path $fresh 'app');$originalPath"
     Push-Location $testRoot
     try {
@@ -410,7 +429,7 @@ public sealed class StalledDownload : Stream {
         throw 'HTTP failures changed installed files or user settings.'
     }
 
-    Write-Output 'Installer tests passed: direct EXE launch, updater failure diagnostics, adjacent scripts, script repair, PATH migration, FFmpeg ZIP/license and unmanaged binary preservation, install/update/no-op, locked EXE, checksum failure, anonymous HTTP, private-release failure, URL validation, download timeout.'
+    Write-Output 'Installer tests passed: direct EXE launch, updater failure diagnostics, adjacent scripts, script repair, PATH migration, FFmpeg ZIP/license and unmanaged binary preservation, install/update/no-op without Get-FileHash, locked EXE, checksum failure, anonymous HTTP, private-release failure, URL validation, download timeout.'
 } finally {
     $env:PATH = $originalPath
     $env:TEMP = $originalTemp

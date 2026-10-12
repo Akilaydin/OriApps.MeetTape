@@ -35,7 +35,16 @@ try {
         $contents = $client.GetByteArrayAsync([string]$asset.browser_download_url).GetAwaiter().GetResult()
         if ($contents.Length -ne $asset.size) { throw "Invalid downloaded size: $name" }
         [IO.File]::WriteAllBytes($destination, $contents)
-        if ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash -ine $asset.digest.Substring(7)) {
+        $sha256 = [Security.Cryptography.SHA256]::Create()
+        $stream = $null
+        try {
+            $stream = [IO.File]::OpenRead($destination)
+            $actualHash = [BitConverter]::ToString($sha256.ComputeHash($stream)).Replace('-', '')
+        } finally {
+            if ($stream) { $stream.Dispose() }
+            $sha256.Dispose()
+        }
+        if ($actualHash -ine $asset.digest.Substring(7)) {
             throw "Invalid downloaded SHA-256: $name"
         }
     }
