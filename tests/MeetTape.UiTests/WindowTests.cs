@@ -179,6 +179,52 @@ public sealed class WindowTests
         window.Close();
     }
 
+    [AvaloniaTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task MissingOrEmptyProcessingPromptDoesNotDisableRecordingOnGuiStartup(bool empty)
+    {
+        using var fixture = new Fixture();
+        string prompt = Path.Combine(fixture.Root, "prompts", "transcription.md");
+        if (empty) File.WriteAllText(prompt, " "); else File.Delete(prompt);
+        var config = ConfigurationLoader.LoadForCapture(fixture.ConfigPath);
+        var source = new CaptureSource();
+        using var capture = new CaptureCoordinator(() => new(source, new CaptureSource()));
+        using var http = new HttpClient(new NoRequests());
+        var controller = new DesktopController(config, capture, http, _ => throw new Exception("No key read expected"));
+        var model = new MainViewModel(controller);
+        var window = new MainWindow { DataContext = model };
+        try
+        {
+            await controller.InitializeAsync();
+            window.Show();
+            await model.RefreshAsync();
+            Assert.True(window.FindControl<Button>("RecordButton")!.IsEnabled);
+            await model.ToggleAsync();
+            Assert.True(source.Started);
+            Assert.True(capture.Status.IsActive);
+            Assert.Empty(model.ErrorText);
+        }
+        finally { await controller.ShutdownAsync(); Close(window, model); }
+    }
+
+    private sealed class CaptureSource : NAudio.Wave.IWaveIn
+    {
+        public bool Started;
+        public NAudio.Wave.WaveFormat WaveFormat { get; set; } = new(48000, 16, 1);
+        public event EventHandler<NAudio.Wave.WaveInEventArgs>? DataAvailable { add { } remove { } }
+        public event EventHandler<NAudio.Wave.StoppedEventArgs>? RecordingStopped;
+        public void StartRecording() => Started = true;
+        public void StopRecording() => RecordingStopped?.Invoke(this, new NAudio.Wave.StoppedEventArgs());
+        public void Dispose() { }
+    }
+
+    private sealed class NoRequests : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token) =>
+            throw new Exception("No API request expected");
+    }
+
     [AvaloniaFact]
     public async Task SettingsRejectConcurrentChangesAndPreserveUserPrompt()
     {

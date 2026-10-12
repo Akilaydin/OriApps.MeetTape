@@ -12,17 +12,14 @@ internal static class ConfigurationStore
         setKey ??= (name, value, target) => Environment.SetEnvironmentVariable(name, value, target);
         path = Path.GetFullPath(path);
         bool changed = !string.Equals(originalText, updatedText, StringComparison.Ordinal);
-        if (keysToSave.Any(pair => !ValidEnvironmentName(pair.Key) || pair.Value.Length > 32767
+        if (keysToSave.Any(pair => !ApiKeyProvider.ValidEnvironmentName(pair.Key) || pair.Value.Length > 32767
             || pair.Value.Any(char.IsControl) || string.IsNullOrWhiteSpace(pair.Value)))
         {
             return "Invalid API key or environment variable name. Nothing saved.";
         }
         try
         {
-            var candidate = ConfigurationLoader.Parse(updatedText, path, validatePrompts: true);
-            if (!ValidEnvironmentName(candidate.Settings.Transcription.ApiKeyEnvironmentVariable)
-                || !ValidEnvironmentName(candidate.Settings.Summary.ApiKeyEnvironmentVariable))
-                throw new InvalidDataException("Invalid API key environment variable name.");
+            _ = ConfigurationLoader.Parse(updatedText, path, validatePrompts: true);
         }
         catch (InvalidDataException ex)
         {
@@ -76,10 +73,6 @@ internal static class ConfigurationStore
 
         return null;
     }
-
-    private static bool ValidEnvironmentName(string name) =>
-        !string.IsNullOrWhiteSpace(name) && name.Length <= 32767
-        && !name.Contains('=') && !name.Any(char.IsControl);
 
     private static void SaveAtomically(string path, string content)
     {

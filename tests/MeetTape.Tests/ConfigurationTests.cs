@@ -247,7 +247,7 @@ public sealed class ConfigurationTests : IDisposable
         File.WriteAllText(Path.Combine(directory, "prompt.md"), " ");
         Assert.Throws<InvalidDataException>(() => Load());
         File.Delete(Path.Combine(directory, "prompt.md"));
-        Assert.Throws<FileNotFoundException>(() => Load());
+        Assert.Throws<InvalidDataException>(() => Load());
     }
 
     [Fact]
@@ -269,7 +269,7 @@ public sealed class ConfigurationTests : IDisposable
     {
         var config = Load();
         var error = Assert.Throws<InvalidDataException>(() =>
-            ApiKeyProvider.Get(config.Settings.Transcription, _ => key));
+            ApiKeyProvider.Get(config.Settings.Transcription, (_, _) => key));
         Assert.DoesNotContain("secret", error.Message);
     }
 
@@ -277,9 +277,53 @@ public sealed class ConfigurationTests : IDisposable
     public void ApiKeyUsesConfiguredEnvironmentVariable()
     {
         var config = Load();
-        string key = ApiKeyProvider.Get(config.Settings.Transcription, name =>
+        string key = ApiKeyProvider.Get(config.Settings.Transcription, (name, _) =>
             name == config.Settings.Transcription.ApiKeyEnvironmentVariable ? "test-key" : null);
         Assert.Equal("test-key", key);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" ")]
+    public void MissingProcessKeyUsesUserEnvironmentWithoutReadingRealKeys(string? processKey)
+    {
+        var config = Load();
+        var targets = new List<EnvironmentVariableTarget>();
+        string key = ApiKeyProvider.Get(config.Settings.Transcription, (name, target) =>
+        {
+            Assert.Equal(config.Settings.Transcription.ApiKeyEnvironmentVariable, name);
+            targets.Add(target);
+            return target == EnvironmentVariableTarget.Process ? processKey : "fixture-user-key";
+        });
+        Assert.Equal("fixture-user-key", key);
+        Assert.Equal(new[] { EnvironmentVariableTarget.Process, EnvironmentVariableTarget.User }, targets);
+    }
+
+    [Fact]
+    public void ExplicitProcessKeyRetainsPriorityAndInvalidKeyNeverLeaks()
+    {
+        var api = Load().Settings.Transcription;
+        Assert.Equal("fixture-process-key", ApiKeyProvider.Get(api, (_, target) =>
+            target == EnvironmentVariableTarget.Process ? "fixture-process-key" : throw new Exception("No User lookup expected")));
+        var error = Assert.Throws<InvalidDataException>(() => ApiKeyProvider.Get(api, (_, target) =>
+            target == EnvironmentVariableTarget.Process ? "fixture-secret\ninvalid" : throw new Exception("No User lookup expected")));
+        Assert.Contains(api.ApiKeyEnvironmentVariable, error.Message);
+        Assert.DoesNotContain("fixture-secret", error.Message);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CaptureConfigurationRetainsValidationWithoutRequiringPromptFiles(bool empty)
+    {
+        string prompt = Path.Combine(directory, "prompt.md");
+        if (empty) File.WriteAllText(prompt, " "); else File.Delete(prompt);
+        string path = WriteConfig();
+        Assert.Throws<InvalidDataException>(() => ConfigurationLoader.Load(path));
+        Assert.True(ConfigurationLoader.LoadForCapture(path).Settings.Stages.Transcribe);
+        json["capture"] = new JsonObject { ["ffmpegPath"] = "" };
+        Assert.Throws<InvalidDataException>(() => ConfigurationLoader.LoadForCapture(WriteConfig()));
     }
 
     private LoadedConfiguration Load() => ConfigurationLoader.Load(WriteConfig());
