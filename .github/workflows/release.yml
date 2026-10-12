@@ -81,9 +81,25 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $files = @('dist/releases/OriApps.MeetTape-win-Setup.exe', "dist/releases/OriApps.MeetTape-$env:MEETTAPE_VERSION-full.nupkg", 'dist/releases/releases.win.json')
+          $files = @(
+            'dist/releases/OriApps.MeetTape-win-Setup.exe#Установщик Windows — скачать для установки',
+            "dist/releases/OriApps.MeetTape-$env:MEETTAPE_VERSION-full.nupkg#Служебный пакет обновления — используется приложением",
+            'dist/releases/releases.win.json#Служебный список обновлений — используется приложением'
+          )
+          $setupUrl = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:MEETTAPE_TAG/OriApps.MeetTape-win-Setup.exe"
+          $notes = @(
+            '## Установка Windows',
+            '',
+            "**[Скачать установщик Windows]($setupUrl)**",
+            '',
+            'Для установки скачайте только установщик по ссылке выше. FFmpeg и .NET runtime включены.',
+            '',
+            '**Служебные файлы:** пакет `.nupkg` и `releases.win.json` нужны приложению для обновлений. Вручную скачивать их не требуется.',
+            ''
+          ) -join "`n"
+          [IO.File]::WriteAllText('dist/release-notes.md', $notes, [Text.UTF8Encoding]::new($false))
           # Create exactly once. Never upload over an existing Release or clobber its assets.
-          gh release create $env:MEETTAPE_TAG @files --draft --target $env:GITHUB_SHA --title "MeetTape $env:MEETTAPE_VERSION" --generate-notes
+          gh release create $env:MEETTAPE_TAG @files --draft --target $env:GITHUB_SHA --title "MeetTape $env:MEETTAPE_VERSION" --generate-notes --notes-file dist/release-notes.md
           if ($LASTEXITCODE -ne 0) { throw 'Release creation failed; no published asset is replaced.' }
           gh release edit $env:MEETTAPE_TAG --draft=false --latest
           if ($LASTEXITCODE -ne 0) { throw 'Release remains draft; inspect it before a new publication attempt.' }
