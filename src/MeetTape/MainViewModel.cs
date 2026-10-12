@@ -42,7 +42,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string ErrorSummary => Brief(ErrorText);
     public string WarningSummary => IsRecording ? "Recording continues with warnings. See Details." : "Recording or preparation reported warnings. See Details.";
     public bool HasProcessingIssues => processingIssues.Count > 0;
-    public string ProcessingIssueSummary => processingIssues.Any(n => n.Kind == NoticeKind.Error)
+    public bool HasProcessingErrors => processingIssues.Any(n => n.Kind == NoticeKind.Error);
+    public string ProcessingIssueSummary => HasProcessingErrors
         ? "Background processing reported an error. Select a meeting or open Details."
         : "Background processing reported warnings. Select a meeting or open Details.";
     public bool HasTiming => TimingText.Length > 0;

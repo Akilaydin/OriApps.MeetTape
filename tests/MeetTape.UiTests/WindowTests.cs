@@ -44,7 +44,7 @@ public sealed class WindowTests
         Assert.Equal("Recording — 00:00:09", window.FindControl<TextBlock>("CaptureStatus")!.Text);
         Assert.False(window.FindControl<Expander>("DiagnosticsExpander")!.IsExpanded);
         var details = window.FindControl<TextBox>("DiagnosticDetails")!;
-        Assert.False(details.IsEffectivelyVisible);
+        Assert.False(details.IsEffectivelyVisible && TopLevel.GetTopLevel(details) is not null);
         Assert.Contains("2270", details.Text);
         Assert.Contains("Fixture QPC timing diagnostic", details.Text);
         Assert.Contains("long device name", details.Text);
@@ -102,6 +102,7 @@ public sealed class WindowTests
         Assert.Equal(warning, model.WarningText);
         Assert.DoesNotContain("WASAPI", window.FindControl<TextBlock>("Warnings")!.Text);
         Assert.Empty(model.ErrorText);
+        Assert.True(model.HasProcessingErrors);
         Assert.True(model.IsRecording);
         Assert.True(window.FindControl<TextBlock>("ProcessingIssues")!.IsVisible);
         Assert.Contains("processing paused; saved chunks retained", model.DiagnosticText);

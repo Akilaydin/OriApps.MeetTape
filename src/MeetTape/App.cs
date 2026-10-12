@@ -72,7 +72,7 @@ public sealed class App : Application
         if (status is not null) status.Header = model.CaptureText;
         if (record is not null) { record.Header = model.RecordLabel; record.IsEnabled = model.CanRecord; }
         if (tray is not null) tray.ToolTipText = "MeetTape — " +
-            (model.ErrorText.Length > 0 ? "Error: open window" : model.WarningText.Length > 0 ? "Warning: open window — " : "") + model.CaptureText;
+            (model.HasError || model.HasProcessingErrors ? "Error: open window" : model.HasWarnings || model.HasProcessingIssues ? "Warning: open window — " : "") + model.CaptureText;
     }
 
     private async Task InitializeAsync()
