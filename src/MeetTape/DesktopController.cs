@@ -4,7 +4,10 @@ public enum NoticeKind { Information, Warning, Error }
 public sealed record OperationNotice(NoticeKind Kind, string Message, Guid? SessionId = null);
 public enum TrimDecision { Accept, Skip, Manual }
 public sealed record DesktopSnapshot(CaptureStatus Capture, IReadOnlyList<StoredSession> Sessions,
-    string? PreparationDirectory, TrimSuggestion? Suggestion, bool Preparing, string? AwaitingTitleDirectory);
+    string? PreparationDirectory, TrimSuggestion? Suggestion, bool Preparing, string? AwaitingTitleDirectory)
+{
+    public bool SummaryEnabled { get; init; }
+}
 
 public interface IDesktopController
 {
@@ -52,7 +55,7 @@ public sealed class DesktopController : IDesktopController
 
     public Task<DesktopSnapshot> ReadAsync() => Task.Run(() => new DesktopSnapshot(capture.Status,
         SessionStore.Discover(config.MeetingsRoot), preparation.SelectedDirectory, preparation.Suggestion,
-        !preparation.Completion.IsCompleted, Volatile.Read(ref awaitingTitle)));
+        !preparation.Completion.IsCompleted, Volatile.Read(ref awaitingTitle)) { SummaryEnabled = config.Settings.Stages.Summary });
 
     public Task StartAsync() => RunAsync(() =>
     {

@@ -73,7 +73,7 @@
           <Button Content="Transcript" IsEnabled="{Binding CanOpenTranscript}" Click="TranscriptClick" Margin="0,0,8,8" />
           <Button Content="Summary file" IsEnabled="{Binding CanOpenSummary}" Click="SummaryFileClick" Margin="0,0,8,8" />
           <Button Name="PrepareSession" Content="Name / Trim" IsEnabled="{Binding CanPrepare}" Click="PrepareClick" Margin="0,0,8,8" />
-          <Button Name="ResumeSession" Content="Resume" IsEnabled="{Binding CanProcess}" Click="ResumeClick" Margin="0,0,8,8" />
+          <Button Name="ResumeSession" Content="Resume processing" IsEnabled="{Binding CanResume}" Click="ResumeClick" Margin="0,0,8,8" />
           <Button Name="RequestSummary" Content="Request Summary" IsEnabled="{Binding CanSummary}" Click="SummaryClick" Margin="0,0,8,8" />
         </WrapPanel>
       </StackPanel>

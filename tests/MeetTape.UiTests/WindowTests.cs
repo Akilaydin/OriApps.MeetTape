@@ -252,13 +252,139 @@ public sealed class WindowTests
         Assert.Equal(0, fake.Resumes); Assert.Equal(0, fake.Summaries);
         window.FindControl<ListBox>("SessionList")!.SelectedIndex = 0;
         Click(window, "ResumeSession");
+        Assert.Equal(0, fake.Resumes);
+        fake.Snapshot = fake.Snapshot with { Sessions = [session with { Data = data with
+        {
+            JobState = JobState.Paused,
+            Stages = new(data.Stages) { ["transcribe"] = new(true, StageState.Paused, 2, 5) }
+        } }] };
+        await model.RefreshAsync();
+        Click(window, "ResumeSession");
         Assert.Equal(1, fake.Resumes);
         File.WriteAllText(Path.Combine(fixture.SessionDirectory, "transcription.md"), "Fixture transcript");
+        fake.Snapshot = fake.Snapshot with { Sessions = [session with { Data = Published(data) }] };
         await model.RefreshAsync();
+        Click(window, "RequestSummary");
+        Assert.Equal(1, fake.Summaries);
         Click(window, "RequestSummary");
         Assert.Equal(1, fake.Summaries);
         Close(window, model);
     }
+
+    [AvaloniaTheory]
+    [InlineData("paused", true)]
+    [InlineData("paused-with-retry", true)]
+    [InlineData("retry", false)]
+    [InlineData("completed", false)]
+    [InlineData("interrupted", false)]
+    [InlineData("failed", false)]
+    [InlineData("invalid", false)]
+    [InlineData("trim", false)]
+    public async Task ResumeOnlyOffersRecoverablePausedProcessing(string state, bool allowed)
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var session = fake.Snapshot.Sessions[0];
+        var data = session.Data! with { JobState = JobState.Paused,
+            Stages = new(session.Data!.Stages) { ["trim"] = new(false, StageState.Disabled), ["transcribe"] = new(true, StageState.Paused) } };
+        data = state switch
+        {
+            "paused-with-retry" => data with { Retry = new(1, 2, DateTimeOffset.UtcNow.AddMinutes(1)) },
+            "retry" => data with { JobState = JobState.NotStarted, Retry = new(1, 2, DateTimeOffset.UtcNow.AddMinutes(1)),
+                Stages = new(data.Stages) { ["transcribe"] = new(true, StageState.Running) } },
+            "completed" => Published(data),
+            "interrupted" => data with { RecordingState = RecordingState.Interrupted },
+            "failed" => data with { RecordingState = RecordingState.Failed },
+            "trim" => data with { Stages = new(data.Stages) { ["trim"] = new(true, StageState.AwaitingUser) } },
+            _ => data
+        };
+        fake.Snapshot = fake.Snapshot with { Sessions = [session with { Data = state == "invalid" ? null : data }] };
+        var model = new MainViewModel(fake);
+        var window = new MainWindow { DataContext = model };
+        window.Show(); await model.RefreshAsync();
+        window.FindControl<ListBox>("SessionList")!.SelectedIndex = 0;
+        Assert.Equal(allowed, window.FindControl<Button>("ResumeSession")!.IsEnabled);
+        Click(window, "ResumeSession");
+        Assert.Equal(allowed ? 1 : 0, fake.Resumes);
+        Close(window, model);
+    }
+
+    [AvaloniaTheory]
+    [InlineData("ready", true)]
+    [InlineData("disabled", false)]
+    [InlineData("incomplete", false)]
+    [InlineData("unpublished", false)]
+    [InlineData("pending", false)]
+    [InlineData("running", false)]
+    [InlineData("paused", false)]
+    [InlineData("saved", false)]
+    public async Task SummaryRequiresCurrentPermissionAndPublishedTranscriptWithoutExistingRequest(string state, bool allowed)
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var session = fake.Snapshot.Sessions[0];
+        var data = Published(session.Data!);
+        if (state == "incomplete") data = data with { Stages = new(data.Stages) { ["transcribe"] = new(true, StageState.Pending) } };
+        if (state == "unpublished") data = data with { TranscriptSha256 = null };
+        if (state is "pending" or "running" or "paused") data = data with
+        { Stages = new(data.Stages) { ["summary"] = new(true, Enum.Parse<StageState>(state, true)) } };
+        File.WriteAllText(Path.Combine(fixture.SessionDirectory, "transcription.md"), "Fixture transcript");
+        if (state == "saved") File.WriteAllText(Path.Combine(fixture.SessionDirectory, "summary.md"), "Fixture summary");
+        fake.Snapshot = fake.Snapshot with { SummaryEnabled = state != "disabled", Sessions = [session with { Data = data }] };
+        var model = new MainViewModel(fake);
+        var window = new MainWindow { DataContext = model };
+        window.Show(); await model.RefreshAsync();
+        window.FindControl<ListBox>("SessionList")!.SelectedIndex = 0;
+        Assert.Equal(allowed, window.FindControl<Button>("RequestSummary")!.IsEnabled);
+        Click(window, "RequestSummary");
+        Assert.Equal(allowed ? 1 : 0, fake.Summaries);
+        if (allowed)
+        {
+            await model.RefreshAsync();
+            Assert.False(window.FindControl<Button>("RequestSummary")!.IsEnabled);
+        }
+        Close(window, model);
+    }
+
+    [AvaloniaFact]
+    public async Task ChangingSelectionAndBackgroundRefreshUpdateActions()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var first = fake.Snapshot.Sessions[0];
+        var second = first with { Directory = Path.Combine(fixture.Root, "second"), Data = Published(first.Data!) with { Id = Guid.NewGuid() } };
+        var paused = first with { Data = first.Data! with { JobState = JobState.Paused,
+            Stages = new(first.Data!.Stages) { ["trim"] = new(false, StageState.Disabled), ["transcribe"] = new(true, StageState.Paused) } } };
+        fake.Snapshot = fake.Snapshot with { Sessions = [paused, second] };
+        var model = new MainViewModel(fake);
+        var window = new MainWindow { DataContext = model };
+        window.Show(); await model.RefreshAsync();
+        var list = window.FindControl<ListBox>("SessionList")!;
+        list.SelectedIndex = 0;
+        Assert.True(model.CanResume);
+        list.SelectedIndex = 1;
+        Assert.False(model.CanResume);
+        list.SelectedIndex = 0;
+        fake.Snapshot = fake.Snapshot with { Sessions = [first with { Data = Published(first.Data!) }, second] };
+        await model.RefreshAsync();
+        Assert.Equal(first.Data!.Id, model.SelectedSession!.Id);
+        Assert.False(window.FindControl<Button>("ResumeSession")!.IsEnabled);
+        File.WriteAllText(Path.Combine(fixture.SessionDirectory, "transcription.md"), "Fixture transcript");
+        await model.RefreshAsync();
+        Assert.True(window.FindControl<Button>("RequestSummary")!.IsEnabled);
+        fake.Snapshot = fake.Snapshot with { SummaryEnabled = false };
+        await model.RefreshAsync();
+        Assert.False(window.FindControl<Button>("RequestSummary")!.IsEnabled);
+        Close(window, model);
+    }
+
+    private static SessionData Published(SessionData data) => data with
+    {
+        JobState = JobState.Completed, Retry = null, TranscriptSha256 = new string('A', 64),
+        Audio = new("processed", [new(1, "processed/chunk.mp3", 0, 48000, 0, 48000, 0)]),
+        Stages = new(data.Stages) { ["trim"] = new(false, StageState.Disabled), ["transcribe"] = new(true, StageState.Completed, 1, 1),
+            ["assemble"] = new(true, StageState.Completed), ["summary"] = new(true, StageState.AwaitingRequest) }
+    };
 
     [AvaloniaFact]
     public async Task SettingsValidateBeforeSavingAndNeverSerializeOrDisplayExistingSecrets()
@@ -411,7 +537,7 @@ public sealed class WindowTests
                     ["summary"] = new(true, StageState.AwaitingRequest) }
             };
             Snapshot = new(new(false, TimeSpan.Zero, 0, 0, null),
-                [new(fixture.SessionDirectory, data, true, true, null)], null, null, false, null);
+                [new(fixture.SessionDirectory, data, true, true, null)], null, null, false, null) { SummaryEnabled = true };
         }
         public Task<DesktopSnapshot> ReadAsync() => Task.FromResult(Snapshot);
         public Task StartAsync()
@@ -440,7 +566,13 @@ public sealed class WindowTests
             return Task.CompletedTask;
         }
         public Task ResumeAsync(string directory) { Resumes++; return Task.CompletedTask; }
-        public Task SummaryAsync(string directory) { Summaries++; return Task.CompletedTask; }
+        public Task SummaryAsync(string directory)
+        {
+            Summaries++;
+            Snapshot = Snapshot with { Sessions = Snapshot.Sessions.Select(s => s.Directory == directory && s.Data is { } data
+                ? s with { Data = data with { Stages = new(data.Stages) { ["summary"] = new(true, StageState.Pending) } } } : s).ToArray() };
+            return Task.CompletedTask;
+        }
         public async Task ShutdownAsync()
         {
             Shutdowns++; if (ShutdownCompletion is not null) await ShutdownCompletion.Task;

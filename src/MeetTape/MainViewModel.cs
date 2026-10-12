@@ -23,7 +23,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public bool CanRecord => controller is not null && !busy && !updating && !shutdownStarted && NamingDirectory is null && snapshot.AwaitingTitleDirectory is null;
     public bool CanProcess => controller is not null && !busy && !updating && !shutdownStarted && !snapshot.Capture.IsActive && selected is not null && NamingDirectory is null;
     public bool CanPrepare => CanProcess && selected!.NeedsPreparation;
-    public bool CanSummary => CanProcess && selected!.HasTranscript && !selected.HasSummary;
+    public bool CanResume => CanProcess && selected!.CanResume;
+    public bool CanSummary => CanProcess && snapshot.SummaryEnabled && selected!.CanRequestSummary;
     public bool CanOpen => selected is not null;
     public bool CanOpenTranscript => selected?.HasTranscript == true;
     public bool CanOpenSummary => selected?.HasSummary == true;
@@ -186,8 +187,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         await controller!.ChooseTrimAsync(decision, start, end);
     });
 
-    public Task ResumeAsync() => ExecuteAsync(() => controller!.ResumeAsync(selected!.Directory));
-    public Task SummaryAsync() => ExecuteAsync(() => controller!.SummaryAsync(selected!.Directory));
+    public Task ResumeAsync() => CanResume ? ExecuteAsync(() => controller!.ResumeAsync(selected!.Directory)) : Task.CompletedTask;
+    public Task SummaryAsync() => CanSummary ? ExecuteAsync(() => controller!.SummaryAsync(selected!.Directory)) : Task.CompletedTask;
 
     public async Task ExecuteAsync(Func<Task> action)
     {
@@ -255,6 +256,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
 public sealed record SessionRow(string Directory, Guid? Id, string Title, string Date, string Status,
     string Progress, double ProgressPercent, string? Diagnostic, bool NeedsPreparation, bool HasTranscript, bool HasSummary)
 {
+    public bool CanResume { get; init; }
+    public bool CanRequestSummary { get; init; }
     public static SessionRow From(StoredSession session)
     {
         var data = session.Data;
@@ -268,9 +271,17 @@ public sealed record SessionRow(string Directory, Guid? Id, string Title, string
             "Completed" : data.JobState.ToString();
         string progress = transcription?.TotalChunks is { } total ? $"Chunks: {transcription.CompletedChunks}/{total}" :
             data?.Stages.FirstOrDefault(s => s.Value.Status == StageState.Running).Key is { } stage ? stage : "";
+        bool hasTranscript = File.Exists(Path.Combine(session.Directory, "transcription.md"));
+        bool hasSummary = File.Exists(Path.Combine(session.Directory, "summary.md"));
+        StageProgress? summary = null;
+        data?.Stages.TryGetValue("summary", out summary);
         return new(session.Directory, data?.Id, data?.Title ?? "Unnamed meeting", data?.StartedAtUtc.ToLocalTime().ToString("g") ?? "",
             status, progress, transcription?.TotalChunks is > 0 ? 100d * transcription.CompletedChunks / transcription.TotalChunks.Value : 0,
-            session.Diagnostic, needsPreparation, File.Exists(Path.Combine(session.Directory, "transcription.md")),
-            File.Exists(Path.Combine(session.Directory, "summary.md")));
+            session.Diagnostic, needsPreparation, hasTranscript, hasSummary)
+        {
+            CanResume = data is not null && ProcessingJobs.CanResume(data),
+            CanRequestSummary = data is not null && ProcessingJobs.HasPublishedTranscription(data) && hasTranscript && !hasSummary
+                && (summary is null || summary.Status is StageState.Disabled or StageState.AwaitingRequest)
+        };
     }
 }
