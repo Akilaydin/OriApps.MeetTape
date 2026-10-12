@@ -19,6 +19,7 @@ public sealed class App : Application
     private DispatcherTimer? timer;
     private TrayIcon? tray;
     private NativeMenuItem? record;
+    private NativeMenuItem? status;
     private bool allowShutdown;
     private bool openingSettings;
     private bool initialized;
@@ -38,13 +39,14 @@ public sealed class App : Application
             window.UpdateApplication = UpdateAsync;
             window.Opened += async (_, _) => await InitializeAsync();
             var menu = new NativeMenu();
+            status = new NativeMenuItem(model.CaptureText) { IsEnabled = false };
             var open = new NativeMenuItem("Open MeetTape");
             open.Click += (_, _) => ShowWindow();
             record = new NativeMenuItem("Start recording") { IsEnabled = false };
             record.Click += async (_, _) => { await model.ToggleAsync(); if (model.IsNaming) ShowWindow(); };
             var exit = new NativeMenuItem("Exit");
             exit.Click += async (_, _) => await ExitAsync();
-            menu.Items.Add(open); menu.Items.Add(record); menu.Items.Add(exit);
+            menu.Items.Add(status); menu.Items.Add(open); menu.Items.Add(record); menu.Items.Add(exit);
             using var iconStream = AssetLoader.Open(new Uri("avares://MeetTape/Assets/MeetTape.png"));
             var icon = new WindowIcon(iconStream);
             window.Icon = icon;
@@ -65,6 +67,7 @@ public sealed class App : Application
 
     private void ModelChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
+        if (status is not null) status.Header = model.CaptureText;
         if (record is not null) { record.Header = model.RecordLabel; record.IsEnabled = model.CanRecord; }
         if (tray is not null) tray.ToolTipText = "MeetTape — " +
             (model.ErrorText.Length > 0 ? "Error: open window" : model.WarningText.Length > 0 ? "Warning: open window — " : "") + model.CaptureText;
