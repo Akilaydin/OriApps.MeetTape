@@ -4,7 +4,7 @@ MeetTape is a Windows desktop application on Avalonia 12 and .NET 10 for recordi
 
 ## Recording and desktop lifecycle
 
-`MeetTape.exe` opens one window and a system tray icon, without a console. The window and tray share Start/Stop; the window shows elapsed duration, active device names, capture warnings/errors and saved sessions. Closing the window hides it and does not stop recording. Open from the tray to restore it. Explicit Exit finalizes both MP3s and cancels/joins preparation and processing before the process exits. Only one capture is active per process. A second Start is rejected.
+`MeetTape.exe` opens one window and a system tray icon, without a console. The window and tray share Start/Stop; the window shows elapsed duration, active device names, capture warnings/errors and saved sessions. Closing the window hides it and does not stop recording. Open from the tray or launch MeetTape again to restore it; a repeated ordinary launch does not create another recorder, job runner or tray icon. Explicit Exit finalizes both MP3s and cancels/joins preparation and processing before the process exits; a new ordinary launch then starts normally. A second Start is rejected.
 
 Start cancels and joins local preparation/API jobs before opening capture; an unconfirmed join blocks capture. No conflicting processing runs during recording. Stop finalizes audio on a worker, then awaits an optional meeting title and trim decision. Jobs remain deferred while the just-stopped recording awaits its title; Continue saves the title (empty is unnamed), offers trimming when enabled and lets eligible processing resume. Capture failures retain surviving audio and restart deferred jobs for eligible earlier meetings.
 

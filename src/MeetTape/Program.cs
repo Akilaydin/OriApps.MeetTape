@@ -11,7 +11,12 @@ internal static class Program
         VelopackApp.Build().SetAutoApplyOnStartup(false).Run();
 
         ConfigureStartup(args);
-        return BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+        using var instance = App.Smoke || App.StartupError is not null
+            ? null : new DesktopInstance(@"Local\OriApps.MeetTape.Desktop");
+        if (instance is { IsPrimary: false }) { instance.ActivateExisting(); return 0; }
+        App.Instance = instance;
+        try { return BuildAvaloniaApp().StartWithClassicDesktopLifetime(args); }
+        finally { App.Instance = null; }
     }
 
     internal static void ConfigureStartup(string[] args)

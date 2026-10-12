@@ -14,6 +14,8 @@ Copyright (C) 2026 OriApps. Licensed under GPL-3.0-only.
 2. Click **Start recording** → **Stop**. Enter an optional title, then **Continue**. If trimming is enabled, choose **Accept**, **Skip**, or a manual shared interval. Closing the window hides it to the tray and keeps recording; **Exit** finalizes capture and saves background work.
 3. Follow session progress, retry/errors and resume paused work in the window. Open the meeting folder or completed documents. **Request Summary** explicitly starts the optional Summary stage after a complete transcript exists.
 
+Launching MeetTape again reopens its existing window and keeps that instance's recording or processing running.
+
 The editable transcription prompt targets Russian (`ru`) by default. Enabled transcription uploads audio to your configured API; Summary uploads the completed transcript. The bounded startup GitHub version check does not block recording.
 
 ## Installation
