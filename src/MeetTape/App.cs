@@ -72,7 +72,7 @@ public sealed class App : Application
         if (status is not null) status.Header = model.CaptureText;
         if (record is not null) { record.Header = model.RecordLabel; record.IsEnabled = model.CanRecord; }
         if (tray is not null) tray.ToolTipText = "MeetTape — " +
-            (model.ErrorText.Length > 0 ? "Error: open window" : model.WarningText.Length > 0 ? "Warning: open window — " : "") + model.CaptureText;
+            (model.HasError || model.HasProcessingErrors ? "Error: open window" : model.HasWarnings || model.HasProcessingIssues ? "Warning: open window — " : "") + model.CaptureText;
     }
 
     private async Task InitializeAsync()
@@ -86,7 +86,16 @@ public sealed class App : Application
             timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
             timer.Tick += async (_, _) =>
             {
-                if (++tick == 3) ShowWindow();
+                if (++tick == 3)
+                {
+                    ShowWindow();
+                    model.SetError("Smoke recording diagnostic. Original fixture detail retained for copying.");
+                    window!.FindControl<Expander>("DiagnosticsExpander")!.IsExpanded = true;
+                    var details = window!.FindControl<TextBox>("DiagnosticDetails")!;
+                    details.SelectAll();
+                    if (details.SelectedText != model.DiagnosticText)
+                    { timer.Stop(); desktop!.Shutdown(1); return; }
+                }
                 if (tick == 5) { timer.Stop(); await ExitAsync(); }
             };
             timer.Start();

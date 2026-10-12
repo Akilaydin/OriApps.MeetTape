@@ -3,6 +3,8 @@ using Avalonia.Controls;
 using Avalonia.Headless;
 using Avalonia.Headless.XUnit;
 using Avalonia.Interactivity;
+using Avalonia.Input;
+using Avalonia.Input.Platform;
 using Avalonia.Media.Imaging;
 using Avalonia.Styling;
 using Avalonia.Threading;
@@ -19,6 +21,99 @@ public static class TestApp
 
 public sealed class WindowTests
 {
+    [AvaloniaFact]
+    public async Task RecordingStatusStaysCompactWithTimingAndDevicesAvailableInCollapsedDetails()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var session = fake.Snapshot.Sessions[0];
+        var data = session.Data! with { Capture = session.Data!.Capture with
+        { MeDevice = new("mic", "Fixture microphone with a long device name", CaptureChannel.Me, true) } };
+        fake.Snapshot = fake.Snapshot with
+        {
+            Sessions = [session with { Data = data }],
+            Capture = new(true, TimeSpan.FromSeconds(9), 100, 100, null)
+            {
+                RecordingDirectory = fixture.SessionDirectory, ClockAdjustments = 2270,
+                ThemTiming = new(2270, 2270, 0, 480, "Fixture QPC timing diagnostic")
+            }
+        };
+        var model = new MainViewModel(fake);
+        var window = new MainWindow { DataContext = model };
+        window.Show(); await model.RefreshAsync();
+        Assert.Equal("Recording — 00:00:09", window.FindControl<TextBlock>("CaptureStatus")!.Text);
+        Assert.False(window.FindControl<Expander>("DiagnosticsExpander")!.IsExpanded);
+        var details = window.FindControl<TextBox>("DiagnosticDetails")!;
+        Assert.False(details.IsEffectivelyVisible && TopLevel.GetTopLevel(details) is not null);
+        Assert.Contains("2270", details.Text);
+        Assert.Contains("Fixture QPC timing diagnostic", details.Text);
+        Assert.Contains("long device name", details.Text);
+        Assert.True(window.FindControl<Button>("RecordButton")!.IsEnabled);
+        Close(window, model);
+    }
+
+    [AvaloniaFact]
+    public async Task FullDiagnosticsCanBeSelectedAndCopiedEvenWhenTheVisibleErrorIsBrief()
+    {
+        using var fixture = new Fixture();
+        var model = new MainViewModel(new FakeController(fixture));
+        const string original = "Cannot start capture. Check microphone permissions and reconnect the selected device.\nOriginal diagnostic retained for investigation.";
+        model.SetError(original);
+        var window = new MainWindow { DataContext = model };
+        window.Show(); await model.RefreshAsync();
+        Assert.Equal("Cannot start capture.", window.FindControl<TextBlock>("ErrorMessage")!.Text);
+        Assert.True(window.FindControl<TextBlock>("ErrorMessage")!.IsVisible);
+        window.FindControl<Expander>("DiagnosticsExpander")!.IsExpanded = true;
+        Dispatcher.UIThread.RunJobs();
+        var details = window.FindControl<TextBox>("DiagnosticDetails")!;
+        Assert.True(details.IsReadOnly);
+        Assert.True(details.Focus());
+        details.SelectAll();
+        Assert.Equal(model.DiagnosticText, details.SelectedText);
+        Assert.Contains(original, details.SelectedText);
+        var clipboard = window.Clipboard!;
+        await clipboard.ClearAsync();
+        window.KeyPress(Key.C, RawInputModifiers.Control, PhysicalKey.C, "c");
+        window.KeyRelease(Key.C, RawInputModifiers.Control, PhysicalKey.C, "c");
+        Assert.Equal(model.DiagnosticText, await clipboard.TryGetTextAsync());
+        details.SelectionEnd = details.SelectionStart;
+        await clipboard.ClearAsync();
+        Click(window, "CopyDiagnostics");
+        await WaitFor(() => model.InfoText == "Details copied.");
+        Assert.Equal(model.DiagnosticText, await clipboard.TryGetTextAsync());
+        await clipboard.ClearAsync();
+        Close(window, model);
+    }
+
+    [AvaloniaFact]
+    public async Task RepeatedCaptureWarningsAreBoundedAndBackgroundErrorsStaySeparate()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var model = new MainViewModel(fake);
+        var window = new MainWindow { DataContext = model };
+        window.Show(); await model.RefreshAsync();
+        Click(window, "RecordButton");
+        const string warning = "Them: invalid WASAPI timestamp. Recording continues.";
+        for (int i = 0; i < 20; i++) fake.Report(new(NoticeKind.Warning, warning));
+        fake.Report(new(NoticeKind.Error, "Previous meeting: processing paused; saved chunks retained.", Guid.NewGuid()));
+        fake.Report(new(NoticeKind.Information, "Job progress fixture diagnostic", Guid.NewGuid()));
+        Dispatcher.UIThread.RunJobs();
+        Assert.Equal(warning, model.WarningText);
+        Assert.DoesNotContain("WASAPI", window.FindControl<TextBlock>("Warnings")!.Text);
+        Assert.Empty(model.ErrorText);
+        Assert.True(model.HasProcessingErrors);
+        Assert.True(model.IsRecording);
+        Assert.True(window.FindControl<TextBlock>("ProcessingIssues")!.IsVisible);
+        Assert.Contains("processing paused; saved chunks retained", model.DiagnosticText);
+        Assert.DoesNotContain("Job progress fixture", model.InfoText);
+        for (int i = 0; i < 10; i++) fake.Report(new(NoticeKind.Warning, "Fixture warning " + i));
+        Dispatcher.UIThread.RunJobs();
+        Assert.Equal(8, model.WarningText.Split(Environment.NewLine).Length);
+        Assert.DoesNotContain("Fixture warning 0" + Environment.NewLine, model.WarningText);
+        Close(window, model);
+    }
+
     [AvaloniaFact]
     public async Task StartStopNamingAndTrimUseFakeServicesThroughActualControls()
     {
