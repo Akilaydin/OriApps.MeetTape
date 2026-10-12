@@ -1,0 +1,11 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="using:MeetTape"
+        x:Class="MeetTape.MainWindow" x:DataType="local:MainViewModel"
+        Title="MeetTape" Width="780" Height="580" MinWidth="640" MinHeight="440">
+  <StackPanel Margin="24" Spacing="16">
+    <TextBlock Text="MeetTape" FontSize="24" />
+    <TextBlock Name="CaptureStatus" Text="{Binding CaptureText}" />
+    <Button Name="RecordButton" Content="{Binding RecordLabel}" Click="RecordClick" />
+  </StackPanel>
+</Window>
