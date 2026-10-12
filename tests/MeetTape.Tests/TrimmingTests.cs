@@ -23,7 +23,7 @@ public sealed class TrimmingTests : IDisposable
         string directory = await SessionAsync([(1, 1.5)], [(2.5, 3)]);
         var data = SessionStore.Read(directory);
         byte[] meHash = Hash(directory, "me.mp3"), themHash = Hash(directory, "them.mp3");
-        using var workflow = new PostRecordingWorkflow("ffmpeg", TextWriter.Null);
+        using var workflow = new PostRecordingWorkflow("ffmpeg");
         workflow.Begin(directory, "Выходные: План / Маршрут");
         directory = workflow.SelectedDirectory!;
         await workflow.Completion.WaitAsync(TimeSpan.FromSeconds(10));
@@ -70,11 +70,12 @@ public sealed class TrimmingTests : IDisposable
     public async Task NoActivityAcceptsFullOriginalsWithoutEmptyDerivatives()
     {
         string directory = await SessionAsync([], []);
-        var output = new StringWriter();
-        using var workflow = new PostRecordingWorkflow("ffmpeg", output);
+        var notices = new System.Collections.Concurrent.ConcurrentQueue<OperationNotice>();
+        using var workflow = new PostRecordingWorkflow("ffmpeg");
+        workflow.Notice += notices.Enqueue;
         workflow.Begin(directory);
         await workflow.Completion.WaitAsync(TimeSpan.FromSeconds(10));
-        Assert.Contains("No activity detected", output.ToString());
+        Assert.Contains(notices, notice => notice.Kind == NoticeKind.Warning && notice.Message.Contains("No activity detected"));
         workflow.Choose("accept");
         await workflow.Completion.WaitAsync(TimeSpan.FromSeconds(10));
         var saved = SessionStore.Read(directory);
@@ -87,7 +88,7 @@ public sealed class TrimmingTests : IDisposable
     public async Task ManualBoundsAndSkipPersistChoicesAndRejectInvalidBounds()
     {
         string directory = await SessionAsync([(1, 3)], []);
-        using var workflow = new PostRecordingWorkflow("ffmpeg", TextWriter.Null);
+        using var workflow = new PostRecordingWorkflow("ffmpeg");
         workflow.Begin(directory);
         await workflow.Completion.WaitAsync(TimeSpan.FromSeconds(10));
         byte[] before = File.ReadAllBytes(Path.Combine(directory, "session.json"));
@@ -110,7 +111,7 @@ public sealed class TrimmingTests : IDisposable
     public async Task CancellationBeforeNewCaptureLeavesChoicePendingAndCanResume()
     {
         string directory = await SessionAsync([], []);
-        using var workflow = new PostRecordingWorkflow("ffmpeg", TextWriter.Null);
+        using var workflow = new PostRecordingWorkflow("ffmpeg");
         workflow.Begin(directory);
         workflow.CancelAndWait();
         Assert.True(workflow.Completion.IsCompleted);
@@ -132,8 +133,9 @@ public sealed class TrimmingTests : IDisposable
     public async Task EncoderFailurePausesWithoutSelectingPartialDerivative()
     {
         string directory = await SessionAsync([(1, 3)], []);
-        var output = new StringWriter();
-        using var workflow = new PostRecordingWorkflow("missing-ffmpeg-" + Guid.NewGuid(), output);
+        var notices = new System.Collections.Concurrent.ConcurrentQueue<OperationNotice>();
+        using var workflow = new PostRecordingWorkflow("missing-ffmpeg-" + Guid.NewGuid());
+        workflow.Notice += notices.Enqueue;
         workflow.Begin(directory);
         await workflow.Completion.WaitAsync(TimeSpan.FromSeconds(10));
         Assert.Equal(StageState.Paused, SessionStore.Read(directory).Stages["trim"].Status);
@@ -144,7 +146,7 @@ public sealed class TrimmingTests : IDisposable
         Assert.Equal(StageState.Paused, failed.Stages["trim"].Status);
         Assert.Null(failed.Trim.RelativeDirectory);
         Assert.False(failed.Trim.Applied);
-        Assert.Contains("check originals, FFmpeg", output.ToString());
+        Assert.Contains(notices, notice => notice.Kind == NoticeKind.Warning && notice.Message.Contains("check originals, FFmpeg"));
         Assert.True(File.Exists(Path.Combine(directory, "me.mp3")));
     }
 
@@ -153,8 +155,9 @@ public sealed class TrimmingTests : IDisposable
     {
         string directory = await SessionAsync([], []);
         byte[] original = Hash(directory, "me.mp3");
-        var output = new StringWriter();
-        using var workflow = new PostRecordingWorkflow("ffmpeg", output);
+        var notices = new System.Collections.Concurrent.ConcurrentQueue<OperationNotice>();
+        using var workflow = new PostRecordingWorkflow("ffmpeg");
+        workflow.Notice += notices.Enqueue;
         workflow.Begin(directory);
         await workflow.Completion.WaitAsync(TimeSpan.FromSeconds(10));
         string metadata = Path.Combine(directory, "session.json");
@@ -164,7 +167,7 @@ public sealed class TrimmingTests : IDisposable
         await workflow.Completion.WaitAsync(TimeSpan.FromSeconds(10));
         Assert.Equal(before, File.ReadAllBytes(metadata));
         Assert.Equal(original, Hash(directory, "me.mp3"));
-        Assert.Contains("Could not update session.json", output.ToString());
+        Assert.Contains(notices, notice => notice.Kind == NoticeKind.Warning && notice.Message.Contains("Could not update session.json"));
         Assert.False(Directory.Exists(Path.Combine(directory, "processed")));
     }
 
@@ -188,27 +191,30 @@ public sealed class TrimmingTests : IDisposable
     }
 
     [Fact]
-    public void CliPromptsTitleAndPreparationCommandsAreRejectedDuringCapture()
+    public async Task ControllerNamesStoppedRecordingAndRejectsPreparationDuringCapture()
     {
         string configPath = Path.Combine(root, "config.json");
-        string example = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../config.example.json"));
-        var json = JsonNode.Parse(File.ReadAllText(example))!;
-        json["meetingsRoot"] = root;
+        ConfigurationBootstrap.Initialize(configPath, root);
+        var json = JsonNode.Parse(File.ReadAllText(configPath))!;
         json["stages"]!["trim"] = false;
         json["stages"]!["transcribe"] = false;
         File.WriteAllText(configPath, json.ToJsonString());
         var loaded = ConfigurationLoader.Load(configPath);
-        var output = new StringWriter();
-        int result = Cli.Run(["--config", configPath], new StringReader("start\ntrim 0 1\nstop\nWeekend\nsessions\nexit\n"),
-            output, TextWriter.Null, _ => new Mp3Recorder(loaded, () => new(new Source(), new Source())).Capture);
-        Assert.Equal(0, result);
-        Assert.Contains("Meeting title", output.ToString());
-        Assert.Contains("paused during capture", output.ToString());
-        var saved = Assert.Single(SessionStore.Discover(root));
-        Assert.Equal("Weekend", saved.Data!.Title);
-        Assert.Contains("Weekend", saved.Directory);
+        var capture = new Mp3Recorder(loaded, () => new(new Source(), new Source())).Capture;
+        var controller = new DesktopController(loaded, capture);
+        try
+        {
+            await controller.StartAsync();
+            await Assert.ThrowsAsync<InvalidOperationException>(() => controller.ChooseTrimAsync(TrimDecision.Manual, 0, 1));
+            string directory = (await controller.StopAsync())!;
+            await Assert.ThrowsAsync<InvalidOperationException>(controller.StartAsync);
+            await controller.PrepareAsync(directory, "Weekend");
+            var saved = Assert.Single(SessionStore.Discover(root));
+            Assert.Equal("Weekend", saved.Data!.Title);
+            Assert.Contains("Weekend", saved.Directory);
+        }
+        finally { await controller.ShutdownAsync(); }
     }
-
     [Theory]
     [InlineData("12.5", 12.5)]
     [InlineData("01:23.5", 83.5)]

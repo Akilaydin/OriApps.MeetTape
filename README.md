@@ -4,25 +4,25 @@
 
 ## About
 
-Windows CLI for recording microphone (**Me**) and system playback (**Them**) and producing Markdown transcripts. Audio stays in local session folders; transcription sends audio and optional Summary sends text to your configured API.
+Windows desktop app (Avalonia 12, .NET 10) for recording microphone (**Me**) and system playback (**Them**) and producing Markdown transcripts. Audio stays in local session folders; transcription sends audio and optional Summary sends text to your configured API.
 
 Copyright (C) 2026 OriApps. Licensed under GPL-3.0-only.
 
 ## Workflow
 
-1. With MeetTape on PATH, run `meettape configure`. The interactive wizard creates or edits `%APPDATA%\MeetTape\config.json`, configures the API and accepts an API key for your Windows user environment without echoing it in an interactive console. Enter keeps each current value; existing prompts are not overwritten. Restart MeetTape after changing settings and open a new terminal after changing the key.
-2. Open `meettape`; use `start` → `stop`, enter a title and choose trimming.
-3. Transcription runs in the background. With `stages.summary` enabled, request `summary <session-id>` after transcription completes.
+1. Open **MeetTape** from the Start menu, or run `meettape`. First use opens Settings. Select microphone/playback devices, meetings folder, FFmpeg and API stages. Newly entered API keys are hidden and stored in Windows user environment variables; existing prompts are retained. Exit and reopen after changing settings.
+2. Click **Start recording** → **Stop**. Enter an optional title, then **Continue**. If trimming is enabled, choose **Accept**, **Skip**, or a manual shared interval. Closing the window hides it to the tray and keeps recording; **Exit** finalizes capture and saves background work.
+3. Follow session progress, retry/errors and resume paused work in the window. Open the meeting folder or completed documents. **Request Summary** explicitly starts the optional Summary stage after a complete transcript exists.
 
-On interactive startup, MeetTape shows its current version, the latest public GitHub Release (when reachable), and the `update` command if a newer release is available. Network failures do not block recording.
+The editable transcription prompt targets Russian (`ru`) by default. Enabled transcription uploads audio to your configured API; Summary uploads the completed transcript. The bounded startup GitHub version check does not block recording.
 
-The editable transcription prompt targets Russian (`ru`) by default. Use `help` for commands and `devices` inside MeetTape to list audio device IDs.
+`meettape configure` opens Settings. For terminal automation, use `meettape-cli --help`, `meettape-cli sessions`, `devices`, `check-config`, or `help advanced`. The installed CMD wrapper waits for the WinExe and retains stdout/stderr and exit codes; direct PowerShell invocation of `MeetTape.exe` may return early. `--config <path>` works for the GUI and diagnostic commands. `configure --console` retains the optional diagnostic wizard. The interactive `meettape>` shell is removed.
 
 ## Installation
 
-Download `install.cmd` from [GitHub Releases](https://github.com/Akilaydin/OriApps.MeetTape/releases) and run it. It installs MeetTape and FFmpeg for the current user and adds `meettape` to PATH. Open a new terminal afterward; use `meettape update` for later updates.
+Download `install.cmd` from [GitHub Releases](https://github.com/Akilaydin/OriApps.MeetTape/releases) and run it. It installs MeetTape and FFmpeg for the current user, adds the app directory to PATH and creates a Start menu shortcut. Open a new terminal afterward. For updates, Stop recording and use Exit in every MeetTape window/tray; then use the GUI Update action or `meettape-cli update`. The updater never kills a running recorder or changes user recordings/settings.
 
-To uninstall, close MeetTape. Back up user-owned files in `%LOCALAPPDATA%\Programs\MeetTape` (especially `app\ffmpeg.exe` if `ffmpeg-version.txt` is absent), then delete that folder and remove `%LOCALAPPDATA%\Programs\MeetTape\app` from your user `PATH`. For optional data cleanup, inspect the active config (default `%APPDATA%\MeetTape\config.json`, custom `--config`, or working-directory `config.json`) and its prompt and `meetingsRoot` paths. Back up recordings and delete only MeetTape-specific config/prompt files and session folders (default `%LOCALAPPDATA%\MeetTape\Meetings`), plus any dedicated API-key environment variable. Never delete shared directories or prompt files.
+To uninstall, use Exit in every MeetTape window/tray. Remove the MeetTape Start menu shortcut. Back up user-owned files in `%LOCALAPPDATA%\Programs\MeetTape` (especially `app\ffmpeg.exe` if `ffmpeg-version.txt` is absent), then delete that folder and remove `%LOCALAPPDATA%\Programs\MeetTape\app` from your user `PATH`. For optional data cleanup, inspect the active config (default `%APPDATA%\MeetTape\config.json`, custom `--config`, or working-directory `config.json`) and its prompt and `meetingsRoot` paths. Back up recordings and delete only MeetTape-specific config/prompt files and session folders (default `%LOCALAPPDATA%\MeetTape\Meetings`), plus any dedicated API-key environment variable. Never delete shared directories or prompt files.
 
 ## Output
 

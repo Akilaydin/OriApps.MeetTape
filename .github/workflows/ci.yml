@@ -34,6 +34,29 @@ jobs:
           dotnet test tests/MeetTape.Tests/MeetTape.Tests.csproj --configuration Release --filter 'Category!=Hardware&Category!=LongRunning'
           if ($LASTEXITCODE -ne 0) { throw 'Tests failed.' }
 
+      - name: Run Avalonia Headless scenarios and render snapshots
+        shell: pwsh
+        env:
+          AVALONIA_TELEMETRY_OPTOUT: '1'
+        run: |
+          dotnet test tests/MeetTape.UiTests/MeetTape.UiTests.csproj --configuration Release
+          if ($LASTEXITCODE -ne 0) { throw 'UI tests failed.' }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ui-snapshots
+          path: dist/screenshots/*.png
+
+      - name: Publish and check Windows single-file CLI output
+        shell: pwsh
+        env:
+          AVALONIA_TELEMETRY_OPTOUT: '1'
+        run: |
+          dotnet publish src/MeetTape/MeetTape.csproj --configuration Release --runtime win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false --output dist/publish
+          if ($LASTEXITCODE -ne 0) { throw 'Publish failed.' }
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/Test-Desktop.ps1 -ExecutablePath dist/publish/MeetTape.exe -SkipNativeWindow
+          if ($LASTEXITCODE -ne 0) { throw 'Published executable tests failed.' }
+
   installer-tests:
     runs-on: windows-latest
     env:

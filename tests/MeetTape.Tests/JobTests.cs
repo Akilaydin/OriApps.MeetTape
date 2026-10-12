@@ -40,7 +40,7 @@ public sealed class JobTests : IDisposable
                 { Content = new StringContent(raw, Encoding.UTF8, "application/json") });
         });
         using (var http = new HttpClient(first))
-        using (var jobs = new ProcessingJobs(config, TextWriter.Null, () => false, http, readKey: _ => "test-key"))
+        using (var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key"))
             await jobs.ProcessSessionAsync(directory, canceled.Token);
         byte[] checkpoint = File.ReadAllBytes(ChunkStore.PathFor(directory, 1));
         if (restart)
@@ -50,7 +50,7 @@ public sealed class JobTests : IDisposable
                     "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"[NO_SPEECH]\"}}]}", Encoding.UTF8, "application/json") }
                 : Response()));
             using var http = new HttpClient(remaining);
-            using var jobs = new ProcessingJobs(config, TextWriter.Null, () => false, http, readKey: _ => "test-key");
+            using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key");
             await jobs.ProcessSessionAsync(directory, default);
             Assert.Equal(2, remaining.Calls);
             Assert.Equal(checkpoint, File.ReadAllBytes(ChunkStore.PathFor(directory, 1)));
@@ -81,7 +81,7 @@ public sealed class JobTests : IDisposable
         int passes = 0;
         using var handler = new Handler((_, _) => throw new Exception("Saved chunk must not be uploaded again."));
         using var http = new HttpClient(handler);
-        using var jobs = new ProcessingJobs(config, TextWriter.Null, () => false, http, delay: async (_, token) =>
+        using var jobs = new ProcessingJobs(config, () => false, http, delay: async (_, token) =>
         {
             if (++passes == 1)
             {
@@ -118,7 +118,7 @@ public sealed class JobTests : IDisposable
             return Task.FromResult(Response());
         });
         using (var http = new HttpClient(first))
-        using (var jobs = new ProcessingJobs(config, TextWriter.Null, () => false, http, readKey: _ => "test-key"))
+        using (var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key"))
             await jobs.ProcessSessionAsync(directory, canceled.Token);
         Assert.True(File.Exists(ChunkStore.PathFor(directory, 1)));
         var saved = SessionStore.Read(directory);
@@ -127,7 +127,7 @@ public sealed class JobTests : IDisposable
         byte[] checkpoint = File.ReadAllBytes(ChunkStore.PathFor(directory, 1));
         using var remaining = new Handler((_, _) => Task.FromResult(Response()));
         using var nextHttp = new HttpClient(remaining);
-        using var restarted = new ProcessingJobs(config, TextWriter.Null, () => false, nextHttp, readKey: _ => "test-key");
+        using var restarted = new ProcessingJobs(config, () => false, nextHttp, readKey: _ => "test-key");
         await restarted.ProcessSessionAsync(directory, default);
         Assert.Equal(2, remaining.Calls);
         Assert.Equal(checkpoint, File.ReadAllBytes(ChunkStore.PathFor(directory, 1)));
@@ -142,14 +142,14 @@ public sealed class JobTests : IDisposable
         string metadata = Path.Combine(directory, "session.json");
         using var first = new Handler((_, _) => { File.SetAttributes(metadata, FileAttributes.ReadOnly); return Task.FromResult(Response()); });
         using (var http = new HttpClient(first))
-        using (var jobs = new ProcessingJobs(config, TextWriter.Null, () => false, http, readKey: _ => "test-key"))
+        using (var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key"))
             await jobs.ProcessSessionAsync(directory, default);
         Assert.True(File.Exists(ChunkStore.PathFor(directory, 1)));
         Assert.NotEqual(JobState.Completed, SessionStore.Read(directory).JobState);
         File.SetAttributes(metadata, FileAttributes.Normal);
         using var none = new Handler((_, _) => throw new Exception("Successful chunk must not be sent again"));
         using var nextHttp = new HttpClient(none);
-        using var recovered = new ProcessingJobs(config, TextWriter.Null, () => false, nextHttp, readKey: _ => throw new Exception("No key needed for cached success"));
+        using var recovered = new ProcessingJobs(config, () => false, nextHttp, readKey: _ => throw new Exception("No key needed for cached success"));
         await recovered.ProcessSessionAsync(directory, default);
         Assert.Equal(0, none.Calls);
         Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
@@ -162,7 +162,7 @@ public sealed class JobTests : IDisposable
         var now = DateTimeOffset.UtcNow;
         using var handler = new Handler((call, _) => Task.FromResult(call <= 12 ? Response(503) : Response()));
         using var http = new HttpClient(handler);
-        using var jobs = new ProcessingJobs(config, TextWriter.Null, () => false, http, readKey: _ => "test-key", utcNow: () => now);
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key", utcNow: () => now);
         double[] backoffs = [1, 2, 4, 8, 16, 32, 64, 128, 256, 300, 300, 300];
         for (int attempt = 1; attempt <= backoffs.Length; attempt++)
         {
@@ -196,7 +196,7 @@ public sealed class JobTests : IDisposable
             return Task.FromResult(response);
         });
         using var http = new HttpClient(handler);
-        using (var jobs = new ProcessingJobs(config, TextWriter.Null, () => false, http, readKey: _ => "test-key", utcNow: () => now))
+        using (var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key", utcNow: () => now))
         {
             await jobs.ProcessSessionAsync(directory, default);
             Assert.Equal(0, handler.Calls);
@@ -206,7 +206,7 @@ public sealed class JobTests : IDisposable
         var deferred = Assert.IsType<RetryProgress>(SessionStore.Read(directory).Retry);
         Assert.Equal(9, deferred.Attempts);
         Assert.Equal(300, (deferred.NextAttemptUtc - now).TotalSeconds);
-        using var restarted = new ProcessingJobs(config, TextWriter.Null, () => false, http, readKey: _ => "test-key", utcNow: () => now);
+        using var restarted = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key", utcNow: () => now);
         await restarted.ProcessSessionAsync(directory, default);
         Assert.Equal(1, handler.Calls);
         now = deferred.NextAttemptUtc;
@@ -225,7 +225,7 @@ public sealed class JobTests : IDisposable
         SessionStore.Save(directory, data with { Retry = new(1, 12, now + TimeSpan.FromMinutes(3)) });
         using var handler = new Handler((_, _) => Task.FromResult(Response()));
         using var http = new HttpClient(handler);
-        using var jobs = new ProcessingJobs(config, TextWriter.Null, () => false, http, readKey: _ => "test-key",
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key",
             utcNow: () => now, timestamp: () => monotonic);
         await jobs.ProcessSessionAsync(directory, default);
         Assert.Equal(0, handler.Calls);
@@ -250,7 +250,7 @@ public sealed class JobTests : IDisposable
         SessionStore.Save(directory, data with { Retry = new(chunk.Index, 4, DateTimeOffset.UtcNow + TimeSpan.FromMinutes(5)) });
         using var handler = new Handler((_, _) => throw new Exception("Saved result must not be resent"));
         using var http = new HttpClient(handler);
-        using var jobs = new ProcessingJobs(config, TextWriter.Null, () => false, http, readKey: _ => throw new Exception("No key needed"));
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => throw new Exception("No key needed"));
         await jobs.ProcessSessionAsync(directory, default);
         Assert.Equal(0, handler.Calls);
         Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
@@ -264,7 +264,7 @@ public sealed class JobTests : IDisposable
         var now = DateTimeOffset.UtcNow;
         using var handler = new Handler((call, _) => Task.FromResult(call is 2 or 3 ? Response(503) : Response()));
         using var http = new HttpClient(handler);
-        using var jobs = new ProcessingJobs(config, TextWriter.Null, () => false, http, readKey: _ => "test-key", utcNow: () => now);
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key", utcNow: () => now);
 
         await jobs.ProcessSessionAsync(directory, default);
         Assert.Equal(2, handler.Calls);
@@ -300,7 +300,7 @@ public sealed class JobTests : IDisposable
         string marker = Convert.ToBase64String(readyAudio);
         using var handler = new RoutingHandler(marker);
         using var http = new HttpClient(handler);
-        using var jobs = new ProcessingJobs(config, TextWriter.Null, () => false, http, readKey: _ => "test-key");
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key");
         jobs.Start();
         try
         {
@@ -330,7 +330,7 @@ public sealed class JobTests : IDisposable
         string directory = Session(120);
         using var handler = new Handler((call, _) => Task.FromResult(call == 1 ? Response(status) : Response()));
         using var http = new HttpClient(handler);
-        using var jobs = new ProcessingJobs(config, TextWriter.Null, () => false, http, readKey: _ => "test-key");
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key");
         await jobs.ProcessSessionAsync(directory, default);
         Assert.Equal(JobState.Paused, SessionStore.Read(directory).JobState);
         Assert.Equal(StageState.Paused, SessionStore.Read(directory).Stages["transcribe"].Status);
@@ -352,7 +352,7 @@ public sealed class JobTests : IDisposable
         byte[] checkpoint = File.ReadAllBytes(ChunkStore.PathFor(directory, 1));
         using var handler = new Handler((_, _) => throw new Exception("Invalid cache must pause, not resend"));
         using var http = new HttpClient(handler);
-        using var jobs = new ProcessingJobs(config, TextWriter.Null, () => false, http, readKey: _ => "test-key");
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key");
         await jobs.ProcessSessionAsync(directory, default);
         Assert.Equal(JobState.Paused, SessionStore.Read(directory).JobState);
         Assert.Equal(0, handler.Calls);
@@ -367,7 +367,7 @@ public sealed class JobTests : IDisposable
         using var handler = new Handler((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             { Content = new StringContent("{\"choices\":[{\"finish_reason\":\"length\",\"message\":{\"content\":\"partial\"}}]}") }));
         using var http = new HttpClient(handler);
-        using (var jobs = new ProcessingJobs(config, TextWriter.Null, () => false, http, readKey: _ => "test-key"))
+        using (var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key"))
             await jobs.ProcessSessionAsync(directory, default);
         Assert.Equal(JobState.Paused, SessionStore.Read(directory).JobState);
         Assert.False(File.Exists(ChunkStore.PathFor(directory, 1)));
@@ -375,7 +375,7 @@ public sealed class JobTests : IDisposable
         File.WriteAllText(Path.Combine(second, "chunks"), "filesystem obstruction");
         using var success = new Handler((_, _) => Task.FromResult(Response()));
         using var successHttp = new HttpClient(success);
-        using var failedStore = new ProcessingJobs(config, TextWriter.Null, () => false, successHttp, readKey: _ => "test-key");
+        using var failedStore = new ProcessingJobs(config, () => false, successHttp, readKey: _ => "test-key");
         await failedStore.ProcessSessionAsync(second, default);
         Assert.Equal(JobState.Paused, SessionStore.Read(second).JobState);
         Assert.NotEqual(StageState.Completed, SessionStore.Read(second).Stages["transcribe"].Status);
@@ -398,7 +398,7 @@ public sealed class JobTests : IDisposable
             return Response();
         });
         using var http = new HttpClient(handler);
-        using var jobs = new ProcessingJobs(config, TextWriter.Null, () => active, http, readKey: _ => "test-key");
+        using var jobs = new ProcessingJobs(config, () => active, http, readKey: _ => "test-key");
         jobs.Start();
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
         jobs.PauseAndWait();
@@ -421,7 +421,7 @@ public sealed class JobTests : IDisposable
         byte[] original = SHA256.HashData(File.ReadAllBytes(Path.Combine(directory, "me.mp3")));
         using var handler = new Handler((_, _) => Task.FromResult(Response()));
         using var http = new HttpClient(handler);
-        using var jobs = new ProcessingJobs(config, TextWriter.Null, () => false, http, readKey: _ => "test-key");
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key");
         await jobs.ProcessSessionAsync(directory, default);
         var saved = SessionStore.Read(directory);
         Assert.Equal(JobState.Completed, saved.JobState);

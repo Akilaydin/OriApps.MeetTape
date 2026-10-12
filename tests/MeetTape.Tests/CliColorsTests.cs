@@ -36,48 +36,6 @@ public sealed class CliColorsTests
     }
 
     [Fact]
-    public void InteractivePromptRestoresForegroundBeforeUserInput()
-    {
-        ConsoleColor current = ConsoleColor.Gray;
-        using var text = new ObservingWriter(() => current);
-        using var writer = new CliColorWriter(text, () => true, () => null, () => current, color => current = color);
-
-        CliColors.Write(writer, "meettape>", ConsoleColor.Cyan, " ");
-
-        Assert.Equal("meettape> ", text.ToString());
-        Assert.Equal([ConsoleColor.Cyan, ConsoleColor.Gray], text.ObservedColors);
-        Assert.Equal(ConsoleColor.Gray, current);
-    }
-
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task BackgroundMessagesRestoreInteractivePromptUntilInputIsReceived(bool terminal)
-    {
-        ConsoleColor current = ConsoleColor.Gray;
-        using var text = new StringWriter();
-        using var writer = new CliColorWriter(text, () => terminal, () => null, () => current, color => current = color);
-
-        writer.BeginInteractivePrompt();
-        await Task.Run(() =>
-        {
-            writer.WriteLine("Job: chunk 6/6 saved/validated.");
-            CliColors.WriteLine(writer, "Job: complete transcription.md saved.", ConsoleColor.Green);
-            CliColors.WriteLine(writer, "Them: audio timing moved by 6.396 ms. Recording continues.", ConsoleColor.Yellow);
-        });
-
-        string newline = Environment.NewLine;
-        Assert.Equal($"meettape> {newline}Job: chunk 6/6 saved/validated.{newline}meettape> {newline}" +
-                     $"Job: complete transcription.md saved.{newline}meettape> {newline}" +
-                     $"Them: audio timing moved by 6.396 ms. Recording continues.{newline}meettape> ", text.ToString());
-        Assert.Equal(ConsoleColor.Gray, current);
-
-        writer.EndInteractivePrompt();
-        writer.WriteLine("Idle.");
-        Assert.EndsWith($"meettape> Idle.{newline}", text.ToString());
-    }
-
-    [Fact]
     public void ColorSetterFailureFallsBackToPlainText()
     {
         using var text = new StringWriter();
@@ -121,10 +79,10 @@ public sealed class CliColorsTests
         using var text = new ObservingWriter(() => current);
         using var writer = new CliColorWriter(text, () => true, () => null, () => current, color => current = color);
 
-        CliColors.WriteHelp(writer, "MeetTape — recorder\nAt meettape>:\n  start       Begin recording\n  exit        Quit");
+        CliColors.WriteHelp(writer, "MeetTape — recorder\n  devices     List devices\n  sessions    List recordings");
 
-        Assert.Equal("MeetTape — recorder" + Environment.NewLine + "At meettape>:" + Environment.NewLine +
-                     "  start       Begin recording" + Environment.NewLine + "  exit        Quit" + Environment.NewLine, text.ToString());
+        Assert.Equal("MeetTape — recorder" + Environment.NewLine + "  devices     List devices" + Environment.NewLine +
+                     "  sessions    List recordings" + Environment.NewLine, text.ToString());
         Assert.Contains(ConsoleColor.Cyan, text.ObservedColors);
         Assert.Equal(ConsoleColor.White, current);
     }

@@ -33,7 +33,7 @@ public sealed class EndToEndHardwareTests
             string directory = capture.RecordingDirectory!;
             byte[] original = SHA256.HashData(File.ReadAllBytes(Path.Combine(directory, "me.mp3")));
             byte[] originalThem = SHA256.HashData(File.ReadAllBytes(Path.Combine(directory, "them.mp3")));
-            using var preparation = new PostRecordingWorkflow("ffmpeg", TextWriter.Null);
+            using var preparation = new PostRecordingWorkflow("ffmpeg");
             preparation.Begin(directory, "End-to-end validation");
             await preparation.Completion;
             directory = preparation.SelectedDirectory!;
@@ -41,7 +41,7 @@ public sealed class EndToEndHardwareTests
             await preparation.Completion;
             using var handler = new ControlledProvider(() => capture.Status.IsActive);
             using var http = new HttpClient(handler);
-            using var jobs = new ProcessingJobs(config, TextWriter.Null, () => capture.Status.IsActive, http, readKey: _ => "test-key");
+            using var jobs = new ProcessingJobs(config, () => capture.Status.IsActive, http, readKey: _ => "test-key");
             await jobs.ProcessSessionAsync(directory, default);
             Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
             Assert.True(File.Exists(Path.Combine(directory, "transcription.md")));

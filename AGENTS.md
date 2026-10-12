@@ -1,6 +1,6 @@
 # AGENTS.md
 
-MeetTape is an implemented `net10.0-windows` CLI.
+MeetTape is an implemented `net10.0-windows` desktop app on Avalonia 12, with diagnostic CLI commands.
 
 ## Context
 

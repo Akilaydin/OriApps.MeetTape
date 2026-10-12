@@ -28,3 +28,26 @@ function Remove-MeetTapeLegacyLauncher([string]$launcher) {
     [IO.File]::Delete($launcher)
     return $true
 }
+
+function Write-MeetTapeLaunchers([string]$appDirectory, [string]$shortcutPath) {
+    $executable = Join-Path $appDirectory 'MeetTape.exe'
+    $consoleLauncher = Join-Path $appDirectory 'meettape-cli.cmd'
+    # A batch invocation waits for WinExe; PowerShell's direct GUI invocation may return early.
+    # Never overwrite a pre-existing custom launcher.
+    if (-not [IO.File]::Exists($consoleLauncher)) {
+        [IO.File]::WriteAllText($consoleLauncher, "@echo off`r`n`"%~dp0MeetTape.exe`" %*`r`nexit /b %errorlevel%`r`n", [Text.Encoding]::ASCII)
+    }
+    [IO.Directory]::CreateDirectory((Split-Path -Parent $shortcutPath)) | Out-Null
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $null
+    try {
+        $shortcut = $shell.CreateShortcut($shortcutPath)
+        $shortcut.TargetPath = $executable
+        $shortcut.WorkingDirectory = $appDirectory
+        $shortcut.Description = 'MeetTape meeting recorder'
+        $shortcut.Save()
+    } finally {
+        if ($shortcut) { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shortcut) }
+        [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell)
+    }
+}
