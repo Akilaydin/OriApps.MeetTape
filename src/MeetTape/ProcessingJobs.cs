@@ -8,7 +8,6 @@ namespace MeetTape;
 public sealed class ProcessingJobs : IDisposable
 {
     private readonly LoadedConfiguration config;
-    private readonly TextWriter output;
     private readonly Func<bool> captureActive;
     private readonly HttpClient http;
     private readonly bool ownsHttp;
@@ -24,12 +23,19 @@ public sealed class ProcessingJobs : IDisposable
     private Task operation = Task.CompletedTask;
 
     public Task Completion => operation;
+    public event Action<OperationNotice>? Notice;
 
-    public ProcessingJobs(LoadedConfiguration config, TextWriter output, Func<bool> captureActive,
+    private void Report(string message, NoticeKind kind, Guid? sessionId = null)
+    {
+        try { Notice?.Invoke(new(kind, message, sessionId)); }
+        catch (Exception) { /* Diagnostics cannot change checkpoint/processing outcomes. */ }
+    }
+
+    public ProcessingJobs(LoadedConfiguration config, Func<bool> captureActive,
         HttpClient? http = null, Func<TimeSpan, CancellationToken, Task>? delay = null, Func<ApiSettings, string>? readKey = null,
         Func<DateTimeOffset>? utcNow = null, Func<long>? timestamp = null)
     {
-        this.config = config; this.output = output; this.captureActive = captureActive;
+        this.config = config; this.captureActive = captureActive;
         ownsHttp = http is null;
         this.http = http ?? new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = Timeout.InfiniteTimeSpan };
         this.delay = delay ?? ((duration, token) => Task.Delay(duration, token));
@@ -67,7 +73,7 @@ public sealed class ProcessingJobs : IDisposable
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
-            { CliColors.WriteLine(output, "Processing discovery paused; check meeting root and metadata permissions. Restart or resume after fixing storage.", ConsoleColor.Red); }
+            { Report("Processing discovery paused; check meeting root and metadata permissions. Restart or resume after fixing storage.", NoticeKind.Error); }
         });
     }
 
@@ -98,7 +104,7 @@ public sealed class ProcessingJobs : IDisposable
         blocked.Remove(directory);
         completedSessions.Remove(directory);
         observedRetries.Remove(directory);
-        CliColors.WriteLine(output, "Job resumed with current API settings; successful chunks retained.", ConsoleColor.Green);
+        Report("Job resumed with current API settings; successful chunks retained.", NoticeKind.Information, data.Id);
     }
 
     public void Assemble(string directory)
@@ -133,6 +139,19 @@ public sealed class ProcessingJobs : IDisposable
         completedSessions.Remove(directory);
     }
 
+    internal async Task AssembleLocalAsync(string directory)
+    {
+        PauseAndWait();
+        using var lease = Lease(directory);
+        var data = SessionStore.Read(directory);
+        if (!data.Stages.TryGetValue("transcribe", out var stage) || stage.Status != StageState.Completed)
+            throw new InvalidOperationException("Assembly requires all completed transcription chunks.");
+        string hash = await new TranscriptAssembler().BuildAsync(directory, data, CancellationToken.None);
+        SessionStore.Save(directory, data with { TranscriptSha256 = hash, Error = null, JobState = JobState.NotStarted,
+            Stages = new(data.Stages) { ["assemble"] = new(true, StageState.Completed) } });
+        Report($"Job {data.Id}: local transcription.md rebuilt; no API request made.", NoticeKind.Information, data.Id);
+    }
+
     public async Task ProcessSessionAsync(string directory, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
@@ -141,7 +160,7 @@ public sealed class ProcessingJobs : IDisposable
         try { lease = Lease(directory); }
         catch (IOException ex) when ((ex.HResult & 0xffff) is 32 or 33) { return; }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        { blocked.Add(directory); CliColors.WriteLine(output, "Cannot acquire session lease; processing blocked in this process. Cannot save paused state without an exclusive lease. Check storage permissions.", ConsoleColor.Red); return; }
+        { blocked.Add(directory); Report("Cannot acquire session lease; processing blocked in this process. Cannot save paused state without an exclusive lease. Check storage permissions.", NoticeKind.Error); return; }
         using (lease)
         {
             var data = SessionStore.Read(directory);
@@ -194,7 +213,7 @@ public sealed class ProcessingJobs : IDisposable
                             var backoff = Backoff(attempts, ex.RetryAfter);
                             data = data with { Retry = new(chunk.Index, attempts, utcNow() + backoff), Error = ex.Message };
                             SessionStore.Save(directory, data);
-                            CliColors.WriteLine(output, $"Job {data.Id}: chunk {chunk.Index} transient failure; retry in {backoff.TotalSeconds:F0}s. {ex.Message}", ConsoleColor.Yellow);
+                            Report($"Job {data.Id}: chunk {chunk.Index} transient failure; retry in {backoff.TotalSeconds:F0}s. {ex.Message}", NoticeKind.Warning, data.Id);
                             return; // Leave this session ready for a later pass; process other meetings now.
                         }
                     }
@@ -204,7 +223,7 @@ public sealed class ProcessingJobs : IDisposable
                     data = Update(data with { Retry = remainingRetry, Error = remainingRetry is null ? null : data.Error },
                         stage, StageState.Running, ++completed, chunks.Count);
                     SessionStore.Save(directory, data);
-                    output.WriteLine($"Job {data.Id}: chunk {completed}/{chunks.Count} saved/validated.");
+                    Report($"Job {data.Id}: chunk {completed}/{chunks.Count} saved/validated.", NoticeKind.Information, data.Id);
                 }
                 data = Update(data, stage, StageState.Completed, completed, chunks.Count);
                 SessionStore.Save(directory, data);
@@ -214,7 +233,7 @@ public sealed class ProcessingJobs : IDisposable
                 string hash = await new TranscriptAssembler().BuildAsync(directory, data, token);
                 data = Update(data with { TranscriptSha256 = hash }, stage, StageState.Completed);
                 SessionStore.Save(directory, data);
-                CliColors.WriteLine(output, $"Job {data.Id}: complete transcription.md saved.", ConsoleColor.Green);
+                Report($"Job {data.Id}: complete transcription.md saved.", NoticeKind.Information, data.Id);
                 if (SummaryRequested(data))
                 {
                     stage = "summary";
@@ -222,7 +241,7 @@ public sealed class ProcessingJobs : IDisposable
                     SessionStore.Save(directory, data);
                     if (!await GenerateSummaryAsync(directory, data, token)) return;
                     data = Update(data with { Retry = null, Error = null }, stage, StageState.Completed);
-                    CliColors.WriteLine(output, $"Job {data.Id}: requested summary.md saved.", ConsoleColor.Green);
+                    Report($"Job {data.Id}: requested summary.md saved.", NoticeKind.Information, data.Id);
                 }
                 SessionStore.Save(directory, data with { JobState = JobState.Completed });
             }
@@ -282,7 +301,7 @@ public sealed class ProcessingJobs : IDisposable
             with { JobState = permanent ? JobState.Paused : JobState.NotStarted, Error = diagnostic }); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         { blocked.Add(directory); diagnostic += " Cannot save paused state; prior disk state retained, session blocked in this process."; }
-        CliColors.WriteLine(output, $"Job {data.Id}: {diagnostic}", permanent ? ConsoleColor.Red : ConsoleColor.Yellow);
+        Report($"Job {data.Id}: {diagnostic}", permanent ? NoticeKind.Error : NoticeKind.Warning, data.Id);
     }
 
     private static SessionData Update(SessionData data, string stage, StageState state, int? completed = null, int? total = null)
@@ -326,7 +345,7 @@ public sealed class ProcessingJobs : IDisposable
                 var backoff = Backoff(attempts = Math.Min(attempts + 1, 30), ex.RetryAfter);
                 data = data with { Retry = new(0, attempts, utcNow() + backoff), Error = ex.Message };
                 SessionStore.Save(directory, data);
-                CliColors.WriteLine(output, $"Job {data.Id}: Summary transient failure; retry in {backoff.TotalSeconds:F0}s. {ex.Message}", ConsoleColor.Yellow);
+                Report($"Job {data.Id}: Summary transient failure; retry in {backoff.TotalSeconds:F0}s. {ex.Message}", NoticeKind.Warning, data.Id);
                 return false;
             }
         }

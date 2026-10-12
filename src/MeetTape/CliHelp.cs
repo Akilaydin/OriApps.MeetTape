@@ -2,239 +2,62 @@ namespace MeetTape;
 
 internal static class CliHelp
 {
+    internal static bool IsCommandName(string topic) => Topics.ContainsKey(topic);
     private static readonly Dictionary<string, string> Topics = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["configure"] = """
-            configure — Create or interactively edit settings and Windows user API credentials.
-            PowerShell: meettape configure [--config <path>]
-            Default file: %APPDATA%\MeetTape\config.json (path is printed).
-            Press Enter to keep each value; API key input is hidden in interactive consoles.
-            New keys are stored in Windows user environment variables, never in config.json.
-            Existing prompts and keys are preserved unless you explicitly change them.
-            Restart MeetTape after changing settings; reopen other terminals after changing API keys.
-            """,
-        ["start"] = """
-            start — Begin recording your microphone (Me) and system playback (Them).
-            Interactive shell: start
-            Run 'meettape' in PowerShell first, then enter 'start' at the meettape> prompt.
-            Recording runs in this process until you enter 'stop' or exit. Only one recording can be active.
-            No transcription or API calls run while recording is active.
-            """,
-        ["stop"] = """
-            stop — Finish the active recording and start post-recording preparation.
-            Interactive shell: stop
-            Run 'meettape' in PowerShell first; after 'start', enter 'stop' in that same shell.
-            You will be asked for a title and, if trimming is enabled, offered a silence-trim choice.
-            Transcription proceeds in the background after preparation; source MP3s remain unchanged.
-            """,
-        ["status"] = """
-            status — Show the current process's capture state, duration, byte counts and errors.
-            PowerShell: meettape status [--config <path>]
-            Interactive shell: status
-            Use the interactive command to inspect a live recording. The one-shot command
-            starts another process, which cannot inspect an active capture in another shell.
-            It normally reports Idle and displays an explanatory warning.
-            The one-shot command starts no capture and makes no API requests.
-            """,
-        ["sessions"] = """
-            sessions — List saved sessions, IDs, folders and recording/processing states.
-            PowerShell: meettape sessions [--config <path>]
-            Interactive shell: sessions
-            Copy a session ID from this list when using recovery commands or requesting a summary.
-            Listing sessions does not start transcription or make API requests.
-            """,
-        ["devices"] = """
-            devices — List Windows microphone and playback devices and their IDs.
-            PowerShell: meettape devices
-            Interactive shell: devices
-            Use the IDs in capture.microphoneDeviceId and capture.playbackDeviceId in config.json.
-            Null device IDs select Windows defaults. No recording is started.
-            """,
-        ["check-config"] = """
-            check-config — Validate configuration and enabled-stage API credentials locally.
-            PowerShell: meettape check-config [--config <path>]
-            This does not contact the API. Missing credentials do not prevent recording
-            when the corresponding API stage is disabled.
-            """,
-        ["update"] = """
-            update — Update the installed MeetTape executable and its supporting files from public GitHub Releases.
-            PowerShell: meettape update
-            Interactive shell: update (only when not recording; closes MeetTape after launching updater)
-            Uses built-in Windows PowerShell and public GitHub access; no authentication is needed.
-            The updater opens a separate PowerShell window, waits for MeetTape to exit, then updates.
-            The original terminal returns to its command prompt immediately; progress appears in the new window.
-            The updater window closes on success; on failure it waits for Enter after displaying the error.
-            Configuration, API keys, prompts and recordings are not modified.
-            """,
-        ["accept"] = """
-            accept — Apply the proposed start/end silence-trim interval to both tracks.
-            Interactive shell: accept
-            Use after the trim suggestion appears following 'stop' or 'prepare <session-id>'.
-            The original Me/Them MP3 files are preserved.
-            """,
-        ["skip"] = """
-            skip — Keep both original tracks as the transcription input without trimming.
-            Interactive shell: skip
-            Use after a trim suggestion appears following 'stop' or 'prepare <session-id>'.
-            """,
-        ["trim"] = """
-            trim — Choose a shared manual time interval for both audio tracks.
-            Interactive shell: trim <start> <end>
-            Example: trim 00:12.5 01:30
-            Times are seconds, MM:SS or HH:MM:SS; require 0 <= start < end <= duration.
-            Available after the trim suggestion appears. Originals remain unchanged.
-            """,
-        ["prepare"] = """
-            prepare — Reopen title/trim preparation for a previously recorded session.
-            Interactive shell: prepare <session-id>
-            Find the ID with 'sessions'. Useful if a trim choice was interrupted or deferred.
-            Not available while recording; does not alter original MP3s.
-            """,
-        ["chunks"] = """
-            chunks — Prepare stereo audio chunks for an existing session.
-            Interactive shell: chunks <session-id>
-            Normal processing prepares missing chunks automatically. Use this for diagnostics
-            or manual recovery after finding the ID with 'sessions'. Not while recording.
-            """,
-        ["rechunk"] = """
-            rechunk — Rebuild unfinished audio chunks using the current configured chunkSeconds.
-            Interactive shell: rechunk <session-id>
-            Use to recover from oversized chunks after reducing chunkSeconds and restarting.
-            Verified previously paid transcript checkpoints are reused where possible.
-            Not available while recording.
-            """,
-        ["resume"] = """
-            resume — Retry a paused processing job after resolving its reported error.
-            Interactive shell: resume <session-id>
-            Find the ID with 'sessions'. Fix configuration, credentials or storage first;
-            restart MeetTape to reload changed settings. Completed chunks are retained.
-            Not available while recording.
-            """,
-        ["assemble"] = """
-            assemble — Validate/rebuild a complete transcript from saved chunk results.
-            Interactive shell: assemble <session-id>
-            Uses local checkpoints without uploading audio or repeating paid API requests.
-            Not available while recording. A conflicting existing transcript is not overwritten.
-            """,
-        ["summary"] = """
-            summary — Request an optional AI summary of a completed transcript.
-            Interactive shell: summary <session-id>
-            Requires stages.summary enabled and a complete transcription.md.
-            Uses the configured summary API/prompt. It never runs automatically.
-            """,
-        ["help"] = """
-            help — Explain MeetTape commands.
-            PowerShell: meettape --help | meettape help <command> | meettape <command> --help
-            Interactive shell: help | help <command> | <command> --help
-            Use 'help advanced' for recovery and less frequently used commands.
-            """,
-        ["exit"] = """
-            exit — Leave the interactive shell (alias: quit).
-            Interactive shell: exit
-            If recording is active, exit finalizes and closes the capture.
-            Incomplete background processing resumes at the next interactive startup.
-            """
+        ["configure"] = "configure — Open graphical settings. PowerShell: .\\meettape-cli.cmd configure [--config <path>]. Use configure --console for the diagnostic console wizard. Restart MeetTape after saving. Keys use Windows user environment variables, never config.json; existing prompts are retained.",
+        ["start"] = "start — GUI action: Start recording Me + Them in the MeetTape window or tray. One active capture per process. Processing pauses before capture starts.",
+        ["stop"] = "stop — GUI action: finalize recording, enter an optional title and choose Accept, Skip or manual trim. Originals retained. No blocking audio/API work on the UI thread.",
+        ["status"] = "status — PowerShell: .\\meettape-cli.cmd status [--config <path>]. Describes this process only; cannot inspect another GUI process. Open the running window for live recording status.",
+        ["sessions"] = "sessions — PowerShell: .\\meettape-cli.cmd sessions [--config <path>]. List saved session IDs, folders and states without API calls.",
+        ["devices"] = "devices — PowerShell: .\\meettape-cli.cmd devices. List device IDs. Null configured IDs select Windows defaults. Settings also provides device selection.",
+        ["check-config"] = "check-config — PowerShell: .\\meettape-cli.cmd check-config [--config <path>]. Validate enabled prompts and API credentials locally, without API requests.",
+        ["update"] = "update — GUI action: use Update in the MeetTape window. Stop recording first. Review the current/available versions and confirm Download and restart. No automatic download or installation; saved data retained.",
+        ["prepare"] = "prepare — GUI action: select a finalized session and choose Name / Trim to resume unfinished title/trim selection, including after restart.",
+        ["accept"] = "accept — GUI action: accept the proposed shared trim interval. Originals retained.",
+        ["skip"] = "skip — GUI action: select original tracks, without trimming.",
+        ["trim"] = "trim — GUI action: enter a shared manual interval in seconds, MM:SS or HH:MM:SS. Requires 0 <= start < end <= duration.",
+        ["resume"] = "resume — GUI action: select a paused session and click Resume after fixing its cause. Restart to apply new settings; successful chunks retained.",
+        ["summary"] = "summary — GUI action: Request Summary for a complete published transcription.md. Requires stages.summary enabled. No automatic Summary request.",
+        ["chunks"] = "chunks — PowerShell: .\\meettape-cli.cmd chunks <session-id> [--config <path>]. Prepare missing local stereo chunks. Close the GUI first. No API request.",
+        ["rechunk"] = "rechunk — PowerShell: .\\meettape-cli.cmd rechunk <session-id> [--config <path>]. Recover oversized unfinished chunks using current chunkSeconds; verified checkpoints retained. Close the GUI first. No API request.",
+        ["assemble"] = "assemble — PowerShell: .\\meettape-cli.cmd assemble <session-id> [--config <path>]. Rebuild transcription.md from complete local checkpoints; differing documents retained. Close the GUI first. No API request.",
+        ["exit"] = "exit — GUI action: Exit in the window or tray finalizes capture and joins processing. Window close hides to tray. Saved work resumes on next launch.",
+        ["help"] = "help — PowerShell: .\\meettape-cli.cmd --help | meettape help <command> | meettape-cli.cmd <command> --help. Help does not load settings or access hardware."
     };
-
-    internal static bool IsInteractiveOnly(string topic) =>
-        topic is "start" or "stop" or "accept" or "skip" or "trim" or "prepare" or "chunks" or "rechunk"
-            or "resume" or "assemble" or "summary" or "exit" or "quit";
-
-    internal static bool IsCommandName(string topic) => Topics.ContainsKey(topic);
 
     internal static int? TryWriteCommandLine(IReadOnlyList<string> args, TextWriter output, TextWriter error)
     {
-        if (args.Count == 1 && (args[0] is "--help" or "help"))
-        {
-            WriteOverview(output);
-            return 0;
-        }
-
-        if (args.Count == 2 && args[0] == "help")
-            return WriteTopic(args[1] == "--help" ? "help" : args[1], output, error);
-        if (args.Count == 2 && args[1] == "--help")
-            return WriteTopic(args[0], output, error);
+        if (args.Count == 1 && args[0] is "--help" or "help") { WriteOverview(output); return 0; }
+        if (args.Count == 2 && args[0] == "help") return WriteTopic(args[1] == "--help" ? "help" : args[1], output, error);
+        if (args.Count == 2 && args[1] == "--help") return WriteTopic(args[0], output, error);
         return null;
     }
 
-    internal static bool TryWriteInteractive(string line, TextWriter output)
-    {
-        string[] words = line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (words.Length == 0) return false;
-        if (words.Length == 1 && (words[0].Equals("help", StringComparison.OrdinalIgnoreCase) || words[0] == "--help"))
-        {
-            WriteOverview(output);
-            return true;
-        }
-
-        if (words[0].Equals("help", StringComparison.OrdinalIgnoreCase))
-        {
-            if (words.Length == 2) WriteTopic(words[1] == "--help" ? "help" : words[1], output, output);
-            else CliColors.WriteLine(output, "Usage: help [command|advanced]", ConsoleColor.Yellow);
-            return true;
-        }
-
-        if (words.Length == 2 && words[1] == "--help")
-        {
-            WriteTopic(words[0], output, output);
-            return true;
-        }
-
-        return false;
-    }
-
     internal static void WriteOverview(TextWriter output) => CliColors.WriteHelp(output, """
-        MeetTape — record meetings from an interactive terminal.
-        Setup:       meettape configure  Create or edit settings and API key.
-        PowerShell:  meettape            Open the interactive shell.
-                     meettape update     Update from the public GitHub Release
-
-        At meettape>:
-          start       Begin recording Me + Them
-          stop        Finish recording; name meeting and choose optional trimming
-          status      Show capture status
-          sessions    List meetings and processing states
-          update      Install the latest release and exit (only when not recording)
-          help <cmd>  Explain a command (also: meettape <cmd> --help in PowerShell)
-          exit        Quit
-
-        More commands: meettape help advanced (or help advanced inside the shell)
-        List sessions without opening the shell: meettape sessions
+        MeetTape — Windows meeting recorder with Avalonia UI.
+        MeetTape.exe                Open window and tray (Start / Stop, sessions, trim, Summary)
+        .\meettape-cli.cmd configure          Open Settings
+        .\meettape-cli.cmd --config <path>     Open GUI with explicit configuration
+        .\meettape-cli.cmd update             Show instructions for the GUI Update action
+        .\meettape-cli.cmd devices            List audio devices
+        .\meettape-cli.cmd sessions           List stored sessions
+        .\meettape-cli.cmd check-config       Validate enabled-stage credentials locally
+        .\meettape-cli.cmd help <command>     Explain a command or GUI action
+        .\meettape-cli.cmd help advanced      Support-only recovery commands
+        Close hides the window. Exit finalizes recording and saves background work.
         """);
 
     private static int WriteTopic(string topic, TextWriter output, TextWriter error)
     {
         if (topic.Equals("advanced", StringComparison.OrdinalIgnoreCase))
         {
-            CliColors.WriteHelp(output, """
-                Advanced commands (inside meettape>, when not recording):
-                  summary <id>      Request optional Summary after transcription
-                  prepare <id>      Resume deferred title/trim selection
-                  accept / skip     Choose suggested trimming or original tracks
-                  trim <from> <to>  Set manual trimming boundaries
-                  resume <id>       Restart a paused processing job
-                  rechunk <id>      Recover unfinished oversized chunks
-
-                Support-only recovery (normally automatic, inside meettape>):
-                  chunks <id>       Manually prepare audio chunks
-                  assemble <id>     Rebuild transcript from saved checkpoints
-
-                Audio devices: meettape devices (PowerShell) or devices (inside shell)
-                Configuration: meettape configure, meettape check-config (PowerShell)
-                Update: meettape update (PowerShell) or update (inside shell)
-                Details: help <command> (in shell), meettape <command> --help (PowerShell)
-                """);
+            output.WriteLine("Support-only recovery (close GUI first): chunks <id>, rechunk <id>, assemble <id>. No API calls. Use Name / Trim, Resume and Request Summary in the GUI. Details: meettape-cli.cmd <command> --help.");
             return 0;
         }
-
         if (topic.Equals("quit", StringComparison.OrdinalIgnoreCase)) topic = "exit";
-        if (Topics.TryGetValue(topic, out string? description))
-        {
-            CliColors.WriteHelp(output, description);
-            return 0;
-        }
-
-        CliColors.WriteLine(error, $"Unknown help topic '{topic}'. Use 'help' or 'help advanced' to list commands.", ConsoleColor.Red);
+        if (Topics.TryGetValue(topic, out string? description)) { CliColors.WriteHelp(output, description); return 0; }
+        error.WriteLine($"Unknown help topic '{topic}'. Use 'help' or 'help advanced'.");
         return 2;
     }
 }

@@ -1,0 +1,199 @@
+namespace MeetTape;
+
+public enum NoticeKind { Information, Warning, Error }
+public sealed record OperationNotice(NoticeKind Kind, string Message, Guid? SessionId = null);
+public enum TrimDecision { Accept, Skip, Manual }
+public sealed record DesktopSnapshot(CaptureStatus Capture, IReadOnlyList<StoredSession> Sessions,
+    string? PreparationDirectory, TrimSuggestion? Suggestion, bool Preparing, string? AwaitingTitleDirectory);
+
+public interface IDesktopController
+{
+    event Action<OperationNotice>? Notice;
+    Task<DesktopSnapshot> ReadAsync();
+    Task StartAsync();
+    Task<string?> StopAsync();
+    Task PrepareAsync(string directory, string? title);
+    Task ChooseTrimAsync(TrimDecision decision, double? start = null, double? end = null);
+    Task ResumeAsync(string directory);
+    Task SummaryAsync(string directory);
+    Task ShutdownAsync();
+}
+
+// One gate owns all lifecycle transitions. Blocking capture/FFmpeg joins always run on a worker.
+public sealed class DesktopController : IDesktopController
+{
+    private readonly LoadedConfiguration config;
+    private readonly CaptureCoordinator capture;
+    private readonly PostRecordingWorkflow preparation;
+    private readonly ProcessingJobs jobs;
+    private readonly SemaphoreSlim gate = new(1);
+    private volatile bool closing;
+    private string? awaitingTitle;
+    private Task? shutdown;
+
+    public event Action<OperationNotice>? Notice;
+
+    public DesktopController(LoadedConfiguration config, CaptureCoordinator? capture = null,
+        HttpClient? http = null, Func<ApiSettings, string>? readKey = null)
+    {
+        this.config = config;
+        this.capture = capture ?? new Mp3Recorder(config).Capture;
+        preparation = new(config.Settings.Capture.FfmpegPath);
+        jobs = new(config, () => this.capture.Status.IsActive || Volatile.Read(ref awaitingTitle) is not null,
+            http: http, readKey: readKey);
+        this.capture.Warning += Warn;
+        this.capture.Failed += Fail;
+        this.capture.Finished += Finished;
+        preparation.Notice += Publish;
+        jobs.Notice += Publish;
+    }
+
+    public Task InitializeAsync() => RunAsync(() => jobs.Start());
+
+    public Task<DesktopSnapshot> ReadAsync() => Task.Run(() => new DesktopSnapshot(capture.Status,
+        SessionStore.Discover(config.MeetingsRoot), preparation.SelectedDirectory, preparation.Suggestion,
+        !preparation.Completion.IsCompleted, Volatile.Read(ref awaitingTitle)));
+
+    public Task StartAsync() => RunAsync(() =>
+    {
+        if (awaitingTitle is not null) throw new InvalidOperationException("Finish naming the stopped recording first.");
+        try
+        {
+            jobs.PauseAndWait();
+            preparation.CancelAndWait();
+            capture.Start();
+        }
+        finally { if (!capture.Status.IsActive) jobs.Start(); }
+    });
+
+    public async Task<string?> StopAsync()
+    {
+        string? result = null;
+        await RunAsync(() =>
+        {
+            capture.Stop();
+            if (capture.Status.Error is null) result = awaitingTitle = capture.RecordingDirectory;
+            else Fail(capture.Status.Error);
+            if (awaitingTitle is null) jobs.Start();
+        });
+        return result;
+    }
+
+    public Task PrepareAsync(string directory, string? title) => RunAsync(() =>
+    {
+        RequireIdle();
+        jobs.PauseAndWait();
+        try
+        {
+            preparation.Begin(directory, title);
+            if (awaitingTitle == directory) awaitingTitle = null;
+            capture.RecordingDirectory = preparation.SelectedDirectory;
+        }
+        finally { jobs.Start(); }
+    });
+
+    public Task ChooseTrimAsync(TrimDecision decision, double? start = null, double? end = null) => RunAsync(() =>
+    {
+        RequireIdle();
+        preparation.Choose(decision.ToString().ToLowerInvariant(), start, end);
+        jobs.Start();
+    });
+
+    public Task ResumeAsync(string directory) => JobActionAsync(() => jobs.Resume(directory));
+    public Task SummaryAsync(string directory) => JobActionAsync(() => jobs.RequestSummary(directory));
+
+    public Task RecoverAsync(string directory, string command) => RunAsync(() =>
+    {
+        RequireIdle();
+        jobs.PauseAndWait();
+        preparation.CancelAndWait();
+        switch (command)
+        {
+            case "chunks": preparation.PrepareChunks(directory); break;
+            case "rechunk": preparation.Rechunk(directory, config.Settings.ChunkSeconds, jobs.UnblockRecovered); break;
+            case "assemble": jobs.AssembleLocalAsync(directory).GetAwaiter().GetResult(); break;
+            default: throw new InvalidOperationException("Unknown recovery operation.");
+        }
+        preparation.Completion.GetAwaiter().GetResult();
+    });
+
+    private Task JobActionAsync(Action action) => RunAsync(() =>
+    {
+        RequireIdle();
+        if (awaitingTitle is not null) throw new InvalidOperationException("Finish naming the stopped recording first.");
+        preparation.CancelAndWait();
+        try { action(); }
+        finally { jobs.Start(); }
+    });
+
+    private void RequireIdle()
+    {
+        if (capture.Status.IsActive) throw new InvalidOperationException("Stop recording before processing audio.");
+    }
+
+    private async Task RunAsync(Action action)
+    {
+        await gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (closing) throw new InvalidOperationException("MeetTape is closing.");
+            await Task.Run(action).ConfigureAwait(false);
+        }
+        finally { gate.Release(); }
+    }
+
+    private void Finished(CaptureStatus status)
+    {
+        if (status.Error is null || closing) return;
+        // Finished is raised under the capture lock. Do not take our gate or join jobs there.
+        _ = RestartAfterFailureAsync();
+    }
+
+    private async Task RestartAfterFailureAsync()
+    {
+        try { await RunAsync(() => jobs.Start()).ConfigureAwait(false); }
+        catch (Exception) { if (!closing) Fail("Deferred processing could not restart; restart MeetTape to resume saved jobs."); }
+    }
+
+    private void Warn(string message) => Publish(new(NoticeKind.Warning, message));
+    private void Fail(string message) => Publish(new(NoticeKind.Error, message));
+    private void Publish(OperationNotice notice)
+    {
+        try { Notice?.Invoke(notice); }
+        catch (Exception) { /* UI diagnostics cannot interrupt capture or checkpoint saving. */ }
+    }
+
+    public Task ShutdownAsync()
+    {
+        lock (gate)
+        {
+            if (shutdown is null || shutdown.IsFaulted) shutdown = ShutdownCoreAsync();
+            return shutdown;
+        }
+    }
+
+    private async Task ShutdownCoreAsync()
+    {
+        closing = true;
+        await gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            await Task.Run(() =>
+            {
+                // A failed job join must never skip finalizing the live MP3s.
+                try { jobs.PauseAndWait(); }
+                finally
+                {
+                    try { preparation.CancelAndWait(); }
+                    finally { capture.Dispose(); }
+                }
+                preparation.Dispose();
+                jobs.Dispose();
+                capture.Warning -= Warn;
+                capture.Failed -= Fail;
+                capture.Finished -= Finished;
+            }).ConfigureAwait(false);
+        }
+        finally { gate.Release(); }
+    }
+}

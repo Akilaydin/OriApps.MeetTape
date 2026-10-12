@@ -201,6 +201,20 @@ public sealed class ConfigurationTests : IDisposable
     }
 
     [Fact]
+    public void VelopackDefaultsNeverSelectConfigurationInsideReplaceableCurrentDirectory()
+    {
+        string current = Path.Combine(directory, "OriApps.MeetTape", "current");
+        Directory.CreateDirectory(current);
+        File.WriteAllText(Path.Combine(current, "sq.version"), "fixture manifest");
+        File.WriteAllText(Path.Combine(current, "config.json"), "{}");
+        string userPath = Path.Combine(directory, "user", "config.json");
+        Assert.Equal(userPath, ConfigurationBootstrap.DefaultConfigurationPath(current, userPath, current));
+        ConfigurationBootstrap.Initialize(userPath, Path.Combine(directory, "Meetings"));
+        Assert.Equal(userPath, ConfigurationBootstrap.DefaultConfigurationPath(current, userPath, current));
+        Assert.Equal("{}", File.ReadAllText(Path.Combine(current, "config.json")));
+    }
+
+    [Fact]
     public void CliConfigureWithExplicitPathRetainsExistingSettingsOnEnter()
     {
         string path = Path.Combine(directory, "initialized", "config.json");
@@ -333,13 +347,13 @@ public sealed class ConfigurationTests : IDisposable
     }
 
     [Fact]
-    public void InteractiveStatusDoesNotCreateAudioFiles()
+    public void StatusDoesNotCreateAudioFiles()
     {
         string path = WriteConfig();
         var before = Directory.GetFiles(directory);
-        var result = Run(["--config", path], "status\nexit\n");
+        var result = Run(["--config", path, "status"]);
         Assert.Equal(0, result.Code);
-        Assert.Contains("No recording created", result.Output);
+        Assert.Contains("No capture started", result.Output);
         Assert.Contains("Idle", result.Output);
         Assert.Equal(before, Directory.GetFiles(directory));
         Assert.Empty(result.Error);
@@ -357,7 +371,7 @@ public sealed class ConfigurationTests : IDisposable
     public void InvalidConfigReturnsDiagnosticWithoutPrivateValues()
     {
         json["private-secret-property"] = "private-secret-value";
-        var result = Run(["--config", WriteConfig()]);
+        var result = Run(["--config", WriteConfig(), "status"]);
         Assert.Equal(2, result.Code);
         Assert.Contains("Invalid configuration JSON", result.Error);
         Assert.DoesNotContain("private-secret", result.Error);

@@ -2,7 +2,7 @@ using System.Text;
 
 namespace MeetTape;
 
-public sealed class PostRecordingWorkflow(string ffmpegPath, TextWriter output) : IDisposable
+public sealed class PostRecordingWorkflow(string ffmpegPath) : IDisposable
 {
     private readonly AudioTrimmer trimmer = new(ffmpegPath);
     private readonly object gate = new();
@@ -13,6 +13,8 @@ public sealed class PostRecordingWorkflow(string ffmpegPath, TextWriter output) 
 
     public Task Completion => operation;
     public string? SelectedDirectory => directory;
+    public TrimSuggestion? Suggestion { get { lock (gate) return suggestion; } }
+    public event Action<OperationNotice>? Notice;
 
     public void Begin(string sessionDirectory, string? title = null)
     {
@@ -31,7 +33,7 @@ public sealed class PostRecordingWorkflow(string ffmpegPath, TextWriter output) 
         var session = SessionStore.Read(directory);
         if (!session.Stages.TryGetValue("trim", out var trim) || !trim.Enabled)
         {
-            output.WriteLine("Trimming disabled; original tracks selected.");
+            Report(new(NoticeKind.Information, "Trimming disabled; original tracks selected.", session.Id));
             return;
         }
         string selected = directory;
@@ -43,17 +45,16 @@ public sealed class PostRecordingWorkflow(string ffmpegPath, TextWriter output) 
             token.ThrowIfCancellationRequested();
             SessionStore.Save(selected, Update(data, StageState.AwaitingUser, error: null));
             lock (gate) suggestion = found;
-            CliColors.WriteLine(output, "Trim suggestion:", ConsoleColor.Yellow,
-                FormattableString.Invariant($" {found.StartSeconds:F3} .. {found.EndSeconds:F3} seconds."));
-            if (!found.HasActivity) CliColors.WriteLine(output, "No activity detected; keep the full recording.", ConsoleColor.Yellow);
-            CliColors.WriteLine(output, "Use accept, skip, or trim <start> <end> (seconds / MM:SS / HH:MM:SS). New start cancels preparation.", ConsoleColor.Yellow);
+            Report(new(NoticeKind.Information, "Trim suggestion ready; choose Accept, Skip or a manual interval.", data.Id));
+            if (!found.HasActivity)
+                Report(new(NoticeKind.Warning, "No activity detected; keep the full recording.", data.Id));
         });
-        CliColors.WriteLine(output, "Detecting leading/trailing silence in both tracks. CLI remains available.", ConsoleColor.Yellow);
+        Report(new(NoticeKind.Information, "Detecting leading/trailing silence in both tracks.", session.Id));
     }
 
     public void Choose(string decision, double? start = null, double? end = null)
     {
-        if (directory is null) throw new InvalidOperationException("No session selected; use prepare <session-id> after stopping capture.");
+        if (directory is null) throw new InvalidOperationException("Select a finalized recording before choosing its trim interval.");
         if (!operation.IsCompleted) throw new InvalidOperationException("Audio preparation is still running; start can cancel it.");
         operation.GetAwaiter().GetResult();
         string selected = directory;
@@ -68,14 +69,14 @@ public sealed class PostRecordingWorkflow(string ffmpegPath, TextWriter output) 
             EnsurePending(data);
             SessionStore.Save(selected, Update(data with { Trim = new(0, duration, false) { Decision = "skip" } },
                 StageState.Completed, error: null));
-            CliColors.WriteLine(output, "Trim skipped; original tracks selected.", ConsoleColor.Green);
+            Report(new(NoticeKind.Information, "Trim skipped; original tracks selected.", data.Id));
             return;
         }
         if (decision == "accept")
         {
             TrimSuggestion? found;
             lock (gate) found = suggestion;
-            if (found is null) throw new InvalidOperationException("No suggestion available; use prepare <session-id>, skip, or manual trim.");
+            if (found is null) throw new InvalidOperationException("No suggestion available; reopen trim selection, skip, or choose a manual interval.");
             start = found.StartSeconds; end = found.EndSeconds;
         }
         else if (decision != "manual") throw new ArgumentException("Unknown trim decision.", nameof(decision));
@@ -91,7 +92,7 @@ public sealed class PostRecordingWorkflow(string ffmpegPath, TextWriter output) 
                 await trimmer.ApplyAsync(selected, a, b, duration, decision, token);
             token.ThrowIfCancellationRequested();
             SessionStore.Save(selected, Update(current with { Trim = choice }, StageState.Completed, error: null));
-            CliColors.WriteLine(output, "Trim choice saved; synchronized input selected. Originals retained.", ConsoleColor.Green);
+            Report(new(NoticeKind.Information, "Trim choice saved; originals retained.", current.Id));
         });
     }
 
@@ -119,9 +120,9 @@ public sealed class PostRecordingWorkflow(string ffmpegPath, TextWriter output) 
             var completed = Update(current with { Audio = audio }, StageState.Completed, null, "prepare");
             completed.Stages["prepare"] = completed.Stages["prepare"] with { CompletedChunks = audio.Chunks.Count, TotalChunks = audio.Chunks.Count };
             SessionStore.Save(sessionDirectory, completed);
-            CliColors.WriteLine(output, $"Prepared {audio.Chunks.Count} stereo chunks (L=Me/R=Them); originals retained. Transcription pending.", ConsoleColor.Green);
+            Report(new(NoticeKind.Information, $"Prepared {audio.Chunks.Count} stereo chunks (L=Me/R=Them); originals retained. Transcription pending.", current.Id));
         }, "prepare");
-        CliColors.WriteLine(output, "Preparing stereo chunks with boundary context. New start cancels preparation.", ConsoleColor.Yellow);
+        Report(new(NoticeKind.Information, "Preparing stereo chunks with boundary context. New capture cancels preparation.", data.Id));
     }
 
     public void Rechunk(string sessionDirectory, int chunkSeconds, Action<string>? onCompleted = null)
@@ -184,9 +185,9 @@ public sealed class PostRecordingWorkflow(string ffmpegPath, TextWriter output) 
             AudioChunker.ValidateManifest(updated);
             SessionStore.Save(sessionDirectory, updated);
             onCompleted?.Invoke(sessionDirectory);
-            CliColors.WriteLine(output, $"Rechunked to {replacement.Chunks.Count} stereo chunks; {preserved} paid checkpoints retained. Transcription resumed.", ConsoleColor.Green);
-        }, "prepare", "rechunk");
-        CliColors.WriteLine(output, "Rechunking in the background; original audio and saved results retained.", ConsoleColor.Yellow);
+            Report(new(NoticeKind.Information, $"Rechunked to {replacement.Chunks.Count} stereo chunks; {preserved} paid checkpoints retained. Transcription pending.", current.Id));
+        }, "prepare");
+        Report(new(NoticeKind.Information, "Rechunking in the background; original audio and saved results retained."));
     }
 
     private static async Task<int> VerifiedCheckpointPrefixAsync(string directory, SessionData data, CancellationToken token)
@@ -214,7 +215,7 @@ public sealed class PostRecordingWorkflow(string ffmpegPath, TextWriter output) 
         return preserved;
     }
 
-    private void Start(Func<CancellationToken, Task> work, string stage = "trim", string? resumeCommand = null)
+    private void Start(Func<CancellationToken, Task> work, string stage = "trim")
     {
         cancellation?.Dispose();
         cancellation = new();
@@ -225,7 +226,8 @@ public sealed class PostRecordingWorkflow(string ffmpegPath, TextWriter output) 
             try { await work(token); }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
             {
-                SavePaused(selected, "Audio preparation canceled; use " + (resumeCommand ?? (stage == "trim" ? "prepare" : "chunks")) + " <session-id> to continue.",
+                SavePaused(selected, stage == "trim" ? "Audio preparation canceled; reopen trim selection to continue."
+                    : "Audio preparation canceled; saved audio and checkpoints retained. Retry local recovery to continue.",
                     stage == "trim" ? StageState.AwaitingUser : StageState.Pending, stage);
             }
             catch (Exception ex) when (ex is not AudioPreparationShutdownException && ex is (InvalidDataException or IOException or UnauthorizedAccessException
@@ -247,7 +249,13 @@ public sealed class PostRecordingWorkflow(string ffmpegPath, TextWriter output) 
         }
         catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
         { diagnostic += " Could not update session.json; prior state retained."; }
-        CliColors.WriteLine(output, diagnostic, ConsoleColor.Yellow);
+        Report(new(NoticeKind.Warning, diagnostic));
+    }
+
+    private void Report(OperationNotice notice)
+    {
+        try { Notice?.Invoke(notice); }
+        catch (Exception) { /* Diagnostics must not change preparation outcomes. */ }
     }
 
     public void CancelAndWait()

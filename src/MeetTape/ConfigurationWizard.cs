@@ -95,9 +95,28 @@ internal static class ConfigurationWizard
         string updatedText = changed
             ? json.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) + Environment.NewLine
             : originalText;
+        return Save(path, originalText, updatedText, keysToSave, output, error, setKey);
+    }
+
+    internal static int Save(string path, string originalText, string updatedText,
+        IReadOnlyDictionary<string, string> keysToSave, TextWriter output, TextWriter error,
+        Action<string, string, EnvironmentVariableTarget>? setKey = null)
+    {
+        setKey ??= (name, value, target) => Environment.SetEnvironmentVariable(name, value, target);
+        path = Path.GetFullPath(path);
+        bool changed = !string.Equals(originalText, updatedText, StringComparison.Ordinal);
+        if (keysToSave.Any(pair => !ValidEnvironmentName(pair.Key) || pair.Value.Length > 32767
+            || pair.Value.Any(char.IsControl) || string.IsNullOrWhiteSpace(pair.Value)))
+        {
+            error.WriteLine("Invalid API key or environment variable name. Nothing saved.");
+            return 2;
+        }
         try
         {
-            _ = ConfigurationLoader.Parse(updatedText, path, validatePrompts: true);
+            var candidate = ConfigurationLoader.Parse(updatedText, path, validatePrompts: true);
+            if (!ValidEnvironmentName(candidate.Settings.Transcription.ApiKeyEnvironmentVariable)
+                || !ValidEnvironmentName(candidate.Settings.Summary.ApiKeyEnvironmentVariable))
+                throw new InvalidDataException("Invalid API key environment variable name.");
         }
         catch (InvalidDataException ex)
         {

@@ -71,7 +71,7 @@ public sealed class ChunkingTests : IDisposable
     {
         string directory = await SessionAsync();
         byte[] meHash = Hash(Path.Combine(directory, "me.mp3")), themHash = Hash(Path.Combine(directory, "them.mp3"));
-        using var workflow = new PostRecordingWorkflow("ffmpeg", TextWriter.Null);
+        using var workflow = new PostRecordingWorkflow("ffmpeg");
         workflow.PrepareChunks(directory);
         await workflow.Completion.WaitAsync(TimeSpan.FromSeconds(30));
         var saved = SessionStore.Read(directory);
@@ -105,7 +105,7 @@ public sealed class ChunkingTests : IDisposable
         string selected = Path.Combine(directory, trim.RelativeDirectory!);
         byte[] meHash = Hash(Path.Combine(selected, "me.mp3"));
         SessionStore.Save(directory, data with { Trim = trim });
-        using var workflow = new PostRecordingWorkflow("ffmpeg", TextWriter.Null);
+        using var workflow = new PostRecordingWorkflow("ffmpeg");
         workflow.PrepareChunks(directory);
         await workflow.Completion.WaitAsync(TimeSpan.FromSeconds(30));
         var audio = Assert.IsType<PreparedAudio>(SessionStore.Read(directory).Audio);
@@ -120,14 +120,14 @@ public sealed class ChunkingTests : IDisposable
     public async Task CancellationAndEncoderFailureNeverSelectPartialChunkSets()
     {
         string directory = await SessionAsync();
-        using (var workflow = new PostRecordingWorkflow("ffmpeg", TextWriter.Null))
+        using (var workflow = new PostRecordingWorkflow("ffmpeg"))
         {
             workflow.PrepareChunks(directory);
             workflow.CancelAndWait();
             Assert.Null(SessionStore.Read(directory).Audio);
             Assert.NotEqual(StageState.Completed, SessionStore.Read(directory).Stages["prepare"].Status);
         }
-        using var failed = new PostRecordingWorkflow("missing-ffmpeg-" + Guid.NewGuid(), TextWriter.Null);
+        using var failed = new PostRecordingWorkflow("missing-ffmpeg-" + Guid.NewGuid());
         failed.PrepareChunks(directory);
         await failed.Completion;
         var data = SessionStore.Read(directory);
@@ -145,7 +145,7 @@ public sealed class ChunkingTests : IDisposable
             data with { Trim = new(0, 5, true) { RelativeDirectory = "../outside" } }, default));
         // Metadata requires 6 seconds while both real sources have only 5: no padding hides the loss.
         SessionStore.Save(directory, data with { DurationSeconds = 6 });
-        using var workflow = new PostRecordingWorkflow("ffmpeg", TextWriter.Null);
+        using var workflow = new PostRecordingWorkflow("ffmpeg");
         workflow.PrepareChunks(directory);
         await workflow.Completion.WaitAsync(TimeSpan.FromSeconds(30));
         Assert.Null(SessionStore.Read(directory).Audio);
@@ -158,7 +158,7 @@ public sealed class ChunkingTests : IDisposable
         string directory = await SessionAsync();
         var data = SessionStore.Read(directory);
         SessionStore.Save(directory, data with { Stages = new(data.Stages) { ["trim"] = new(true, StageState.AwaitingUser) } });
-        using var workflow = new PostRecordingWorkflow("ffmpeg", TextWriter.Null);
+        using var workflow = new PostRecordingWorkflow("ffmpeg");
         Assert.Throws<InvalidOperationException>(() => workflow.PrepareChunks(directory));
         SessionStore.Save(directory, data);
         string metadata = Path.Combine(directory, "session.json");
@@ -191,7 +191,7 @@ public sealed class ChunkingTests : IDisposable
                 ["transcribe"] = new(true, StageState.Paused) }, JobState = JobState.Paused
         });
         byte[] original = Hash(Path.Combine(directory, "me.mp3"));
-        using var workflow = new PostRecordingWorkflow("ffmpeg", TextWriter.Null);
+        using var workflow = new PostRecordingWorkflow("ffmpeg");
         workflow.Rechunk(directory, 2);
         await workflow.Completion.WaitAsync(TimeSpan.FromSeconds(30));
         var repaired = SessionStore.Read(directory);
@@ -221,7 +221,7 @@ public sealed class ChunkingTests : IDisposable
         string directory = await SessionAsync();
         byte[] me = Hash(Path.Combine(directory, "me.mp3"));
         byte[] them = Hash(Path.Combine(directory, "them.mp3"));
-        using var workflow = new PostRecordingWorkflow("ffmpeg", TextWriter.Null);
+        using var workflow = new PostRecordingWorkflow("ffmpeg");
         workflow.PrepareChunks(directory);
         await workflow.Completion.WaitAsync(TimeSpan.FromSeconds(30));
         var data = SessionStore.Read(directory);
@@ -267,7 +267,7 @@ public sealed class ChunkingTests : IDisposable
         using var handler = new CountingResponseHandler();
         using var http = new HttpClient(handler);
         var example = ConfigurationLoader.Load(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../config.example.json")));
-        using var jobs = new ProcessingJobs(example, TextWriter.Null, () => false, http, readKey: _ => "test-key");
+        using var jobs = new ProcessingJobs(example, () => false, http, readKey: _ => "test-key");
         await jobs.ProcessSessionAsync(directory, default);
         Assert.Equal(3, handler.Calls);
         Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
@@ -281,7 +281,7 @@ public sealed class ChunkingTests : IDisposable
         var initial = SessionStore.Read(directory);
         var trim = await new AudioTrimmer("ffmpeg").ApplyAsync(directory, 1, 4.5, 5, "manual", default);
         SessionStore.Save(directory, initial with { Trim = trim });
-        using var workflow = new PostRecordingWorkflow("ffmpeg", TextWriter.Null);
+        using var workflow = new PostRecordingWorkflow("ffmpeg");
         workflow.PrepareChunks(directory);
         await workflow.Completion.WaitAsync(TimeSpan.FromSeconds(30));
         var old = SessionStore.Read(directory);
@@ -318,7 +318,7 @@ public sealed class ChunkingTests : IDisposable
     public async Task RechunkRejectsNonPrefixPaidResultsWithoutReplacingFiles()
     {
         string directory = await SessionAsync();
-        using var workflow = new PostRecordingWorkflow("ffmpeg", TextWriter.Null);
+        using var workflow = new PostRecordingWorkflow("ffmpeg");
         workflow.PrepareChunks(directory);
         await workflow.Completion.WaitAsync(TimeSpan.FromSeconds(30));
         var data = SessionStore.Read(directory);
@@ -346,7 +346,7 @@ public sealed class ChunkingTests : IDisposable
     public async Task RechunkDoesNotReprepareAlreadyUploadableChunks()
     {
         string directory = await SessionAsync();
-        using var workflow = new PostRecordingWorkflow("ffmpeg", TextWriter.Null);
+        using var workflow = new PostRecordingWorkflow("ffmpeg");
         workflow.PrepareChunks(directory);
         await workflow.Completion.WaitAsync(TimeSpan.FromSeconds(30));
         byte[] metadata = File.ReadAllBytes(Path.Combine(directory, "session.json"));
@@ -358,7 +358,7 @@ public sealed class ChunkingTests : IDisposable
     public async Task CanceledRechunkDoesNotSignalUnblockOrSelectReplacement()
     {
         string directory = await SessionAsync();
-        using var workflow = new PostRecordingWorkflow("ffmpeg", TextWriter.Null);
+        using var workflow = new PostRecordingWorkflow("ffmpeg");
         workflow.PrepareChunks(directory);
         await workflow.Completion.WaitAsync(TimeSpan.FromSeconds(30));
         var old = SessionStore.Read(directory);
@@ -381,7 +381,7 @@ public sealed class ChunkingTests : IDisposable
     public async Task Oversize413BlockIsClearedOnlyAfterSuccessfulRechunkInSameProcess()
     {
         string directory = await SessionAsync();
-        using var workflow = new PostRecordingWorkflow("ffmpeg", TextWriter.Null);
+        using var workflow = new PostRecordingWorkflow("ffmpeg");
         workflow.PrepareChunks(directory);
         await workflow.Completion.WaitAsync(TimeSpan.FromSeconds(30));
         var data = SessionStore.Read(directory);
@@ -396,7 +396,7 @@ public sealed class ChunkingTests : IDisposable
         using var http = new HttpClient(handler);
         var scans = Channel.CreateUnbounded<bool>();
         using var nextScan = new SemaphoreSlim(0);
-        using var jobs = new ProcessingJobs(config, TextWriter.Null, () => false, http,
+        using var jobs = new ProcessingJobs(config, () => false, http,
             delay: async (_, token) =>
             {
                 scans.Writer.TryWrite(true); // The scanner has finished this pass.

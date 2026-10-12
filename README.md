@@ -4,25 +4,27 @@
 
 ## About
 
-Windows CLI for recording microphone (**Me**) and system playback (**Them**) and producing Markdown transcripts. Audio stays in local session folders; transcription sends audio and optional Summary sends text to your configured API.
+Windows desktop app (Avalonia 12, .NET 10) for recording microphone (**Me**) and system playback (**Them**) and producing Markdown transcripts. Audio stays in local session folders; transcription sends audio and optional Summary sends text to your configured API.
 
 Copyright (C) 2026 OriApps. Licensed under GPL-3.0-only.
 
 ## Workflow
 
-1. With MeetTape on PATH, run `meettape configure`. The interactive wizard creates or edits `%APPDATA%\MeetTape\config.json`, configures the API and accepts an API key for your Windows user environment without echoing it in an interactive console. Enter keeps each current value; existing prompts are not overwritten. Restart MeetTape after changing settings and open a new terminal after changing the key.
-2. Open `meettape`; use `start` → `stop`, enter a title and choose trimming.
-3. Transcription runs in the background. With `stages.summary` enabled, request `summary <session-id>` after transcription completes.
+1. Open **MeetTape** from the Start menu, or run `MeetTape.exe`. First use opens Settings. Select microphone/playback devices, meetings folder, FFmpeg and API stages. Newly entered API keys are hidden and stored in Windows user environment variables; existing prompts are retained. Exit and reopen after changing settings.
+2. Click **Start recording** → **Stop**. Enter an optional title, then **Continue**. If trimming is enabled, choose **Accept**, **Skip**, or a manual shared interval. Closing the window hides it to the tray and keeps recording; **Exit** finalizes capture and saves background work.
+3. Follow session progress, retry/errors and resume paused work in the window. Open the meeting folder or completed documents. **Request Summary** explicitly starts the optional Summary stage after a complete transcript exists.
 
-On interactive startup, MeetTape shows its current version, the latest public GitHub Release (when reachable), and the `update` command if a newer release is available. Network failures do not block recording.
+The editable transcription prompt targets Russian (`ru`) by default. Enabled transcription uploads audio to your configured API; Summary uploads the completed transcript. The bounded startup GitHub version check does not block recording.
 
-The editable transcription prompt targets Russian (`ru`) by default. Use `help` for commands and `devices` inside MeetTape to list audio device IDs.
+`MeetTape.exe configure` opens Settings. For terminal automation, use `meettape-cli.cmd --help`, `meettape-cli.cmd sessions`, `devices`, `check-config`, or `help advanced` from the installed `current` directory (default `%LOCALAPPDATA%\OriApps.MeetTape\current`). The CMD wrapper waits for the WinExe and retains stdout/stderr and exit codes; direct PowerShell invocation of `MeetTape.exe` may return early. The installer does not change PATH. `--config <path>` works for the GUI and diagnostic commands. `configure --console` retains the optional diagnostic wizard. The interactive `meettape>` shell is removed.
 
 ## Installation
 
-Download `install.cmd` from [GitHub Releases](https://github.com/Akilaydin/OriApps.MeetTape/releases) and run it. It installs MeetTape and FFmpeg for the current user and adds `meettape` to PATH. Open a new terminal afterward; use `meettape update` for later updates.
+Download **OriApps.MeetTape-win-Setup.exe** from [GitHub Releases](https://github.com/Akilaydin/OriApps.MeetTape/releases) and run it. Velopack installs for the current user without administrator rights, creates a Start menu shortcut and registers MeetTape in Windows Installed apps. FFmpeg 9.0 and its license are bundled; no separate download is required. Previous installations are not migrated or removed.
 
-To uninstall, close MeetTape. Back up user-owned files in `%LOCALAPPDATA%\Programs\MeetTape` (especially `app\ffmpeg.exe` if `ffmpeg-version.txt` is absent), then delete that folder and remove `%LOCALAPPDATA%\Programs\MeetTape\app` from your user `PATH`. For optional data cleanup, inspect the active config (default `%APPDATA%\MeetTape\config.json`, custom `--config`, or working-directory `config.json`) and its prompt and `meetingsRoot` paths. Back up recordings and delete only MeetTape-specific config/prompt files and session folders (default `%LOCALAPPDATA%\MeetTape\Meetings`), plus any dedicated API-key environment variable. Never delete shared directories or prompt files.
+For updates, stop recording and finish naming the meeting. Click **Update**, review the current/available versions, then explicitly confirm **Download and restart**. Declining or closing the dialog keeps the current version. Downloads never install automatically on the next launch. MeetTape joins preparation/processing and saves checkpoints before restarting. Use Exit in other MeetTape windows/trays first. Updates require an installed build; source/portable builds display instructions instead.
+
+To uninstall, use **Exit** in every MeetTape window/tray, then remove **MeetTape** from Windows **Settings → Apps → Installed apps**. User settings/prompts (`%APPDATA%\MeetTape`), recordings/checkpoints (default `%LOCALAPPDATA%\MeetTape\Meetings`) and named User environment API keys remain. Keep custom config, prompt and meeting paths outside `%LOCALAPPDATA%\OriApps.MeetTape`; its `current` directory is replaced by updates and its installation root is removed on uninstall.
 
 ## Output
 
@@ -44,6 +46,10 @@ To uninstall, close MeetTape. Back up user-owned files in `%LOCALAPPDATA%\Progra
 
 ## Prerequisites
 
-- Windows x64; installation downloads FFmpeg automatically.
+- Windows x64; FFmpeg 9.0 is included in Setup and update packages.
 - For transcription: a Chat Completions API/model supporting MP3 `input_audio`; credentials for enabled API stages.
-- Built-in Windows PowerShell 5.1 for installation; .NET 10 SDK for source builds.
+- .NET 10 SDK for source builds; the installer includes the application runtime.
+
+## Packaging from source
+
+Install the build-only tool with `dotnet tool install vpk --version 1.2.161 --tool-path dist/vpk`, then run `./tools/Build-Package.ps1 -Version <major.minor.patch> -VpkPath ./dist/vpk/vpk.exe` in PowerShell 7. It publishes win-x64, verifies the pinned FFmpeg archive SHA-256 and generates Setup, a full package and `releases.win.json` under `dist/releases`. Full packages provide the supported update fallback; delta generation is disabled. Software/headless tests and two-version package/install/uninstall smoke run on disposable GitHub CI runners. Production publication runs only after a reviewed PR promotes `main` to `release`.
