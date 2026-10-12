@@ -119,6 +119,40 @@ public sealed class WindowTests
     }
 
     [AvaloniaFact]
+    [Trait("Category", "WindowsOnly")]
+    public async Task SecondStartupReopensHiddenWindowWithoutInterruptingExistingRecording()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var model = new MainViewModel(fake);
+        var window = new MainWindow { DataContext = model };
+        string primaryName = @"Local\MeetTape.UiTest." + Guid.NewGuid().ToString("N");
+        using var primary = new DesktopInstance(primaryName);
+        try
+        {
+            window.Show();
+            await model.RefreshAsync();
+            await model.ToggleAsync();
+            Assert.True(model.IsRecording);
+            window.Close();
+            Assert.False(window.IsVisible);
+            primary.Listen(() => Dispatcher.UIThread.Post(window.Show));
+            await Task.Run(() =>
+            {
+                using var second = new DesktopInstance(primaryName);
+                Assert.False(second.IsPrimary);
+                second.ActivateExisting();
+            });
+            await WaitFor(() => window.IsVisible);
+            Assert.True(model.IsRecording);
+            Assert.Equal(1, fake.Starts);
+            Assert.Equal(0, fake.Stops);
+            Assert.Equal(0, fake.Shutdowns);
+        }
+        finally { Close(window, model); }
+    }
+
+    [AvaloniaFact]
     public async Task RetryProgressResumeAndSummaryRequireExplicitActions()
     {
         using var fixture = new Fixture();

@@ -11,6 +11,7 @@ public sealed class App : Application
 {
     internal static string? StartupError { get; set; }
     internal static bool Smoke { get; set; }
+    internal static DesktopInstance? Instance { get; set; }
     private IClassicDesktopStyleApplicationLifetime? desktop;
     private MainWindow? window;
     private MainViewModel model = new();
@@ -38,6 +39,7 @@ public sealed class App : Application
             window.ExitApplication = ExitAsync;
             window.UpdateApplication = UpdateAsync;
             window.Opened += async (_, _) => await InitializeAsync();
+            Instance?.Listen(() => Dispatcher.UIThread.Post(() => { if (!allowShutdown) ShowWindow(); }));
             var menu = new NativeMenu();
             status = new NativeMenuItem(model.CaptureText) { IsEnabled = false };
             var open = new NativeMenuItem("Open MeetTape");
