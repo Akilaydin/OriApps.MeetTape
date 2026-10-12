@@ -49,6 +49,32 @@ public sealed class CliColorsTests
         Assert.Equal(ConsoleColor.Gray, current);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task BackgroundMessagesRestoreInteractivePromptUntilInputIsReceived(bool terminal)
+    {
+        ConsoleColor current = ConsoleColor.Gray;
+        using var text = new StringWriter();
+        using var writer = new CliColorWriter(text, () => terminal, () => null, () => current, color => current = color);
+
+        writer.BeginInteractivePrompt();
+        await Task.Run(() =>
+        {
+            writer.WriteLine("Job: chunk 6/6 saved/validated.");
+            CliColors.WriteLine(writer, "Job: complete transcription.md saved.", ConsoleColor.Green);
+        });
+
+        string newline = Environment.NewLine;
+        Assert.Equal($"meettape> {newline}Job: chunk 6/6 saved/validated.{newline}meettape> {newline}" +
+                     $"Job: complete transcription.md saved.{newline}meettape> ", text.ToString());
+        Assert.Equal(ConsoleColor.Gray, current);
+
+        writer.EndInteractivePrompt();
+        writer.WriteLine("Idle.");
+        Assert.EndsWith($"meettape> Idle.{newline}", text.ToString());
+    }
+
     [Fact]
     public void ColorSetterFailureFallsBackToPlainText()
     {

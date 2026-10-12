@@ -28,7 +28,8 @@ public static class Cli
         Func<LoadedConfiguration, CaptureCoordinator> createCapture, Func<TextWriter, TextWriter, int> launchUpdate,
         Func<IReadOnlyList<AudioDevice>> listDevices, Action<TextWriter> writeStartupNotice)
     {
-        output = CliColorWriter.Wrap(output);
+        var promptOutput = CliColorWriter.Wrap(output);
+        output = promptOutput;
         error = CliColorWriter.Wrap(error, stderr: true);
         string? explicitConfigPath = null;
         var positional = new List<string>();
@@ -138,8 +139,10 @@ public static class Cli
             CliHelp.WriteOverview(output);
             while (true)
             {
-                CliColors.Write(output, "meettape>", ConsoleColor.Cyan, " ");
-                string? line = input.ReadLine();
+                promptOutput.BeginInteractivePrompt();
+                string? line;
+                try { line = input.ReadLine(); }
+                finally { promptOutput.EndInteractivePrompt(); }
                 if (line is null)
                     return 0;
                 if (CliHelp.TryWriteInteractive(line, output))
