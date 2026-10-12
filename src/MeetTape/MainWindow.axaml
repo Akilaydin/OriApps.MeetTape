@@ -63,7 +63,10 @@
       </Border>
     </StackPanel>
     <Grid Grid.Row="3" RowDefinitions="Auto,*,Auto" RowSpacing="8">
-      <TextBlock Text="Meetings" FontSize="18" FontWeight="SemiBold" />
+      <Grid ColumnDefinitions="Auto,*" ColumnSpacing="16">
+        <TextBlock Text="Meetings" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center" />
+        <TextBox Grid.Column="1" Name="MeetingSearch" Text="{Binding SearchText}" PlaceholderText="Search title or date" />
+      </Grid>
       <ListBox Grid.Row="1" Name="SessionList" ItemsSource="{Binding Sessions}" SelectedItem="{Binding SelectedSession}">
         <ListBox.ItemTemplate>
           <DataTemplate x:DataType="local:SessionRow">
