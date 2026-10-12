@@ -57,10 +57,8 @@ public static class ConfigurationLoader
         RespectNullableAnnotations = true
     };
 
-    public static LoadedConfiguration Load(string path) => Load(path, validatePrompts: true);
-
-    internal static LoadedConfiguration Load(string path, bool validatePrompts) =>
-        Parse(File.ReadAllText(Path.GetFullPath(path)), path, validatePrompts);
+    public static LoadedConfiguration Load(string path) =>
+        Parse(File.ReadAllText(Path.GetFullPath(path)), path, validatePrompts: true);
 
     internal static LoadedConfiguration Parse(string json, string path, bool validatePrompts)
     {
