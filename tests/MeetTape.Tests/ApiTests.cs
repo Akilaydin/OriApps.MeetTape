@@ -163,6 +163,33 @@ public sealed class ApiTests : IDisposable
             Task.FromResult<Stream>(new MemoryStream(new byte[2 * 1024 * 1024 + 1]));
     }
 
+    [Theory]
+    [InlineData("endpoint", "https://user:fixture-secret@example.test/api", "endpoint")]
+    [InlineData("model", "", "model")]
+    [InlineData("prompt", "", "prompt")]
+    [InlineData("key", "", "MEETTAPE_API_KEY")]
+    [InlineData("key-error", "fixture-secret", "MEETTAPE_API_KEY")]
+    public async Task LocalValidationNamesTheProblemWithoutLeakingValuesOrMakingRequests(string field, string value, string expected)
+    {
+        using var handler = new Handler((_, _) => throw new Exception("No API request expected"));
+        using var http = new HttpClient(handler);
+        var settings = field == "endpoint" ? Settings with { Endpoint = value } :
+            field == "model" ? Settings with { Model = value } : Settings;
+        var api = new ChatApiClient(http, () => false, _ => field == "key-error"
+            ? throw new InvalidDataException(value) : field == "key" ? value : "fixture-key");
+        foreach (bool summary in new[] { false, true })
+        {
+            string prompt = field == "prompt" ? value : "fixture-prompt";
+            var failure = await Assert.ThrowsAsync<ChatApiException>(() => summary
+                ? api.SummarizeAsync(settings, prompt, "fixture-transcript", default)
+                : api.TranscribeAsync(settings, prompt, path, default));
+            Assert.Equal(ApiFailureKind.Configuration, failure.Kind);
+            Assert.Contains(expected, failure.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("fixture-secret", failure.Message);
+        }
+        Assert.Equal(0, handler.Calls);
+    }
+
     private static HttpResponseMessage Reply(HttpStatusCode status, string raw) => new(status) { Content = new StringContent(raw, Encoding.UTF8, "application/json") };
     private sealed class Handler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send) : HttpMessageHandler
     {

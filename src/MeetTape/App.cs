@@ -93,7 +93,7 @@ public sealed class App : Application
         if (!File.Exists(ConfigPath)) await OpenSettingsAsync();
         try
         {
-            var config = await Task.Run(() => ConfigurationLoader.Load(ConfigPath));
+            var config = await Task.Run(() => ConfigurationLoader.LoadForCapture(ConfigPath));
             controller = new DesktopController(config);
             model.PropertyChanged -= ModelChanged;
             model.Detach();

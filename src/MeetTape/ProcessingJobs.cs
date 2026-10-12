@@ -155,7 +155,7 @@ public sealed class ProcessingJobs : IDisposable
                         _ = await ChunkStore.ReadAsync(directory, data, chunk, token);
                     else
                     {
-                        prompt ??= File.ReadAllText(Path.GetFullPath(data.Processing.Transcription.PromptFile, data.Processing.ConfigurationDirectory));
+                        prompt ??= ReadPrompt(data.Processing.Transcription, data.Processing.ConfigurationDirectory, "transcription");
                         int attempts = data.Retry?.ChunkIndex == chunk.Index ? data.Retry.Attempts : 0;
                         try
                         {
@@ -275,6 +275,13 @@ public sealed class ProcessingJobs : IDisposable
     private static bool SummaryRequested(SessionData data) => data.Stages.TryGetValue("summary", out var stage)
         && stage.Enabled && stage.Status is StageState.Pending or StageState.Running;
 
+    private string ReadPrompt(ApiSettings settings, string directory, string stage)
+    {
+        try { return (config with { Directory = directory }).ReadPrompt(settings, stage); }
+        catch (InvalidDataException ex)
+        { throw new ChatApiException(ApiFailureKind.Configuration, ex.Message + " No request made."); }
+    }
+
     private async Task<bool> GenerateSummaryAsync(string directory, SessionData data, CancellationToken token)
     {
         string checkpoint = Path.Combine(directory, "summary.json");
@@ -289,7 +296,7 @@ public sealed class ProcessingJobs : IDisposable
             if (Convert.ToHexString(SHA256.HashData(bytes)) != data.TranscriptSha256)
                 throw new InvalidDataException("Transcript changed; Summary paused.");
             string transcript = Encoding.UTF8.GetString(bytes);
-            string prompt = File.ReadAllText(Path.GetFullPath(data.Processing.Summary.PromptFile, data.Processing.ConfigurationDirectory));
+            string prompt = ReadPrompt(data.Processing.Summary, data.Processing.ConfigurationDirectory, "summary");
             int attempts = data.Retry?.ChunkIndex == 0 ? data.Retry.Attempts : 0;
             try
             {

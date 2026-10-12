@@ -22,6 +22,8 @@ The default file is `%APPDATA%\MeetTape\config.json`, still directly editable. O
 
 Existing API keys are never loaded into controls. New keys use masked fields and are saved only to the Windows User environment and the current process, never JSON, prompts, logs or session metadata. Empty fields retain existing credentials. These variables are user registry storage, not an encrypted secrets vault. Restart MeetTape to apply changed settings; other running terminals may need reopening to inherit changed variables. Keys are optional for recording; missing or invalid credentials pause API processing without exposing their values.
 
+API requests use the named Process environment key, falling back to the Windows User environment when the Process value is absent. Missing or empty enabled prompt files do not disable recording; they pause the affected processing stage with a safe diagnostic. Fix the prompt file or key, restart after changing configuration settings, then use Resume; completed chunks are retained.
+
 The default transcription prompt targets Russian (`ru`) and remains user-editable. `stages.summary` requires `stages.transcribe`; chunkSeconds accepts 1–340 seconds. Restart also restores eligible saved jobs and presents unfinished trim selection through Name / Trim; no new Summary request is inferred from startup.
 
 ## Trimming and transcription

@@ -39,11 +39,16 @@ public sealed record LoadedConfiguration(Configuration Settings, string Director
 {
     public string MeetingsRoot => Resolve(Settings.MeetingsRoot);
     public string Resolve(string path) => Path.GetFullPath(path, Directory);
-    public string ReadPrompt(ApiSettings api)
+    public string ReadPrompt(ApiSettings api, string stage = "API")
     {
-        string prompt = File.ReadAllText(Resolve(api.PromptFile));
+        string prompt;
+        try { prompt = File.ReadAllText(Resolve(api.PromptFile)); }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        { throw new InvalidDataException($"The {stage} prompt file was not found. Check its path in Settings."); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        { throw new InvalidDataException($"Cannot read the {stage} prompt file. Check its path and permissions in Settings."); }
         if (string.IsNullOrWhiteSpace(prompt))
-            throw new InvalidDataException("Prompt file must not be empty.");
+            throw new InvalidDataException($"The {stage} prompt file is empty. Add instructions to the file configured in Settings.");
         return prompt;
     }
 }
@@ -59,6 +64,9 @@ public static class ConfigurationLoader
 
     public static LoadedConfiguration Load(string path) =>
         Parse(File.ReadAllText(Path.GetFullPath(path)), path, validatePrompts: true);
+
+    internal static LoadedConfiguration LoadForCapture(string path) =>
+        Parse(File.ReadAllText(Path.GetFullPath(path)), path, validatePrompts: false);
 
     internal static LoadedConfiguration Parse(string json, string path, bool validatePrompts)
     {
@@ -97,9 +105,9 @@ public static class ConfigurationLoader
         if (validatePrompts)
         {
             if (settings.Stages.Transcribe)
-                _ = loaded.ReadPrompt(settings.Transcription);
+                _ = loaded.ReadPrompt(settings.Transcription, "transcription");
             if (settings.Stages.Summary)
-                _ = loaded.ReadPrompt(settings.Summary);
+                _ = loaded.ReadPrompt(settings.Summary, "summary");
         }
         return loaded;
     }
@@ -117,9 +125,11 @@ public static class ConfigurationLoader
 
     internal static void ValidateApi(ApiSettings api, string name)
     {
-        if (api is null || string.IsNullOrWhiteSpace(api.Model) || string.IsNullOrWhiteSpace(api.PromptFile)
-            || string.IsNullOrWhiteSpace(api.ApiKeyEnvironmentVariable))
-            throw new InvalidDataException($"{name}: model, promptFile and apiKeyEnvironmentVariable are required.");
+        if (api is null) throw new InvalidDataException($"{name} settings are required.");
+        if (string.IsNullOrWhiteSpace(api.Model)) throw new InvalidDataException($"{name}.model is required.");
+        if (string.IsNullOrWhiteSpace(api.PromptFile)) throw new InvalidDataException($"{name}.promptFile is required.");
+        if (!ApiKeyProvider.ValidEnvironmentName(api.ApiKeyEnvironmentVariable))
+            throw new InvalidDataException($"{name}.apiKeyEnvironmentVariable is missing or invalid.");
         if (!Uri.TryCreate(api.Endpoint, UriKind.Absolute, out var endpoint)
             || (endpoint.Scheme != "https" && !(endpoint.Scheme == "http" && endpoint.IsLoopback))
             || endpoint.UserInfo.Length != 0 || endpoint.Query.Length != 0 || endpoint.Fragment.Length != 0)
@@ -129,11 +139,24 @@ public static class ConfigurationLoader
 
 public static class ApiKeyProvider
 {
-    public static string Get(ApiSettings settings, Func<string, string?>? readEnvironment = null)
+    public static string Get(ApiSettings settings, Func<string, EnvironmentVariableTarget, string?>? readEnvironment = null)
     {
-        string? key = (readEnvironment ?? Environment.GetEnvironmentVariable)(settings.ApiKeyEnvironmentVariable);
+        string variable = settings.ApiKeyEnvironmentVariable;
+        if (!ValidEnvironmentName(variable)) throw new InvalidDataException("API key environment variable name is missing or invalid.");
+        readEnvironment ??= Environment.GetEnvironmentVariable;
+        string? key;
+        try
+        {
+            key = readEnvironment(variable, EnvironmentVariableTarget.Process);
+            if (string.IsNullOrWhiteSpace(key)) key = readEnvironment(variable, EnvironmentVariableTarget.User);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or System.Security.SecurityException or NotSupportedException)
+        { throw new InvalidDataException($"Cannot read API key environment variable '{variable}'. Check the key in Settings."); }
         if (string.IsNullOrWhiteSpace(key) || key.Any(char.IsControl))
-            throw new InvalidDataException("API key environment variable is missing, empty or invalid.");
+            throw new InvalidDataException($"API key environment variable '{variable}' is missing, empty or invalid. Set the key in Settings.");
         return key;
     }
+
+    internal static bool ValidEnvironmentName(string? name) =>
+        !string.IsNullOrWhiteSpace(name) && name.Length <= 32767 && !name.Contains('=') && !name.Any(char.IsControl);
 }
