@@ -113,8 +113,21 @@ public sealed class App : Application
             window!.DataContext = model;
             await controller.InitializeAsync();
             await model.RefreshAsync();
-            timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
-            timer.Tick += async (_, _) => await model.RefreshAsync();
+            int captureTicks = 0;
+            bool readingCapture = false;
+            timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
+            timer.Tick += async (_, _) =>
+            {
+                if (readingCapture) return;
+                readingCapture = true;
+                try
+                {
+                    model.RefreshCapture(await controller.ReadCaptureAsync());
+                    if (++captureTicks == 10) { captureTicks = 0; await model.RefreshAsync(); }
+                }
+                catch (Exception) { model.SetError("Cannot refresh recording status. Check Details and retry the operation."); }
+                finally { readingCapture = false; }
+            };
             timer.Start();
             updates = new AppUpdates();
             model.ReleaseText = await StartupReleaseNotice.GetAsync(updates);

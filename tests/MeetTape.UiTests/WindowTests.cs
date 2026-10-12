@@ -22,6 +22,40 @@ public static class TestApp
 public sealed class WindowTests
 {
     [AvaloniaFact]
+    public async Task AudioLevelBarsUpdateIndependentlyAndResetAcrossStopAndQuickStart()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var model = new MainViewModel(fake);
+        var window = new MainWindow { DataContext = model };
+        window.Show(); await model.RefreshAsync();
+        var levels = window.FindControl<Grid>("AudioLevels")!;
+        var me = window.FindControl<ProgressBar>("MeLevel")!;
+        var them = window.FindControl<ProgressBar>("ThemLevel")!;
+        Assert.False(levels.IsVisible);
+        Click(window, "RecordButton");
+        model.RefreshCapture(fake.Snapshot.Capture with { MeLevel = 0.8, ThemLevel = 0.2 });
+        Assert.True(levels.IsVisible);
+        Assert.Equal(80d, me.Value);
+        Assert.Equal(20d, them.Value);
+        model.RefreshCapture(fake.Snapshot.Capture with { MeLevel = 0, ThemLevel = 0.4 });
+        Assert.Equal(0d, me.Value);
+        Assert.Equal(40d, them.Value);
+        Assert.False(model.HasError);
+        Assert.False(model.HasWarnings);
+        Click(window, "RecordButton");
+        Assert.False(levels.IsVisible);
+        Assert.Equal(0d, me.Value);
+        Assert.Equal(0d, them.Value);
+        Click(window, "StartNextRecording");
+        Assert.True(levels.IsVisible);
+        Assert.Equal(0d, me.Value);
+        Assert.Equal(0d, them.Value);
+        Assert.Equal(2, fake.Starts);
+        Close(window, model);
+    }
+
+    [AvaloniaFact]
     public async Task RecordingStatusStaysCompactWithTimingAndDevicesAvailableInCollapsedDetails()
     {
         using var fixture = new Fixture();

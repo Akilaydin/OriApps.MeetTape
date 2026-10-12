@@ -52,6 +52,7 @@ public sealed class DesktopController : IDesktopController
     }
 
     public Task InitializeAsync() => RunAsync(() => jobs.Start());
+    internal Task<CaptureStatus> ReadCaptureAsync() => Task.Run(() => capture.Status);
 
     public Task<DesktopSnapshot> ReadAsync() => Task.Run(() => new DesktopSnapshot(capture.Status,
         SessionStore.Discover(config.MeetingsRoot), preparation.SelectedDirectory, preparation.Suggestion,

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using NAudio.CoreAudioApi;
 using NAudio.Wave;
 
 namespace MeetTape;
@@ -17,16 +18,22 @@ public sealed record CaptureStatus(bool IsActive, TimeSpan Duration, long MeByte
     public int ClockAdjustments { get; init; }
     public AudioTimingStats MeTiming { get; init; } = new();
     public AudioTimingStats ThemTiming { get; init; } = new();
+    public double MeLevel { get; init; }
+    public double ThemLevel { get; init; }
 }
 
 public sealed class CaptureCoordinator(
     Func<CaptureSources> openSources,
     Action<CaptureChannel, WaveInEventArgs, WaveFormat, long>? consume = null,
     Action<CaptureSources, long>? started = null,
-    Action<long>? stopped = null) : IDisposable
+    Action<long>? stopped = null,
+    Func<long>? levelTimestamp = null) : IDisposable
 {
     private readonly object control = new();
     private readonly object timingGate = new();
+    private readonly Func<long> levelClock = levelTimestamp ?? Stopwatch.GetTimestamp;
+    private float mePeak, themPeak;
+    private long meLevelAt, themLevelAt;
     private AudioTimingStats meTiming = new();
     private AudioTimingStats themTiming = new();
     private int notifiedMe;
@@ -55,14 +62,33 @@ public sealed class CaptureCoordinator(
             lock (control)
             {
                 long end = active is null ? stoppedAt : Stopwatch.GetTimestamp();
+                long levelNow = levelClock();
                 lock (timingGate)
                     return new(active is not null, startedAt == 0 ? TimeSpan.Zero : Stopwatch.GetElapsedTime(startedAt, end),
                         Interlocked.Read(ref meBytes), Interlocked.Read(ref themBytes), Volatile.Read(ref lastError))
                     {
                         RecordingDirectory = RecordingDirectory, AudioFrames = AudioFrames, Discontinuities = Discontinuities,
-                        ClockAdjustments = ClockAdjustments, MeTiming = meTiming, ThemTiming = themTiming
+                        ClockAdjustments = ClockAdjustments, MeTiming = meTiming, ThemTiming = themTiming,
+                        MeLevel = active is null ? 0 : Decay(mePeak, meLevelAt, levelNow),
+                        ThemLevel = active is null ? 0 : Decay(themPeak, themLevelAt, levelNow)
                     };
             }
+        }
+    }
+
+    private static double Decay(float peak, long observedAt, long now) =>
+        peak * Math.Clamp(1 - Stopwatch.GetElapsedTime(observedAt, now).TotalSeconds / 0.3, 0, 1);
+
+    internal void ReportLevel(CaptureChannel channel, AudioPacket packet)
+    {
+        float peak = 0;
+        if (!packet.Flags.HasFlag(AudioClientBufferFlags.Silent))
+            for (int i = 0; i < packet.Frames; i++) peak = Math.Max(peak, Math.Abs(packet.Samples[i]));
+        lock (timingGate)
+        {
+            if (stopping) return;
+            if (channel == CaptureChannel.Me) { mePeak = peak; meLevelAt = levelClock(); }
+            else { themPeak = peak; themLevelAt = levelClock(); }
         }
     }
 
@@ -87,6 +113,8 @@ public sealed class CaptureCoordinator(
                 lock (timingGate)
                 {
                     meTiming = new(); themTiming = new();
+                    mePeak = themPeak = 0;
+                    meLevelAt = themLevelAt = 0;
                     notifiedMe = 0; notifiedThem = 0;
                     Discontinuities = 0; ClockAdjustments = 0;
                 }

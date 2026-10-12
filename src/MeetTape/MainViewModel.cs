@@ -36,6 +36,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public int UpdateProgress { get; private set; }
     public bool IsBusy => busy;
     public bool IsRecording => snapshot.Capture.IsActive;
+    public double MeLevel => IsRecording ? snapshot.Capture.MeLevel * 100 : 0;
+    public double ThemLevel => IsRecording ? snapshot.Capture.ThemLevel * 100 : 0;
     public string WarningText => string.Join(Environment.NewLine, warnings);
     public bool HasWarnings => warnings.Count > 0;
     public bool HasError => ErrorText.Length > 0;
@@ -167,6 +169,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
         catch (Exception) { SetError("Cannot refresh sessions; check meeting folder and metadata permissions."); }
         finally { refreshing = false; }
+    }
+
+    internal void RefreshCapture(CaptureStatus capture)
+    {
+        if (capture == snapshot.Capture) return;
+        snapshot = snapshot with { Capture = capture };
+        if (capture.Error is { } error) ErrorText = error;
+        Changed();
     }
 
     public Task ToggleAsync() => ExecuteAsync(async () =>
