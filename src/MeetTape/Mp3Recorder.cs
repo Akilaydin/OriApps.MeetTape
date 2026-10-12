@@ -95,6 +95,7 @@ public sealed class Mp3Recorder
     private void Consume(CaptureChannel channel, WaveInEventArgs args, WaveFormat format, long received)
     {
         var packet = AudioPacket.Copy(args, format, Mp3Track.To100ns(received));
+        Capture.ReportLevel(channel, packet);
         (channel == CaptureChannel.Me ? me : them)!.Enqueue(packet);
     }
 

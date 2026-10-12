@@ -1,10 +1,57 @@
 using System.Runtime.InteropServices;
+using System.Buffers.Binary;
+using System.Diagnostics;
+using NAudio.CoreAudioApi;
 using NAudio.Wave;
 
 namespace MeetTape.Tests;
 
 public sealed class CaptureTests
 {
+    [Fact]
+    public void PcmActivityIsIndependentIgnoresSilentBuffersDecaysAndResetsForNextCapture()
+    {
+        long now = Stopwatch.Frequency * 10;
+        int opened = 0;
+        using var capture = new CaptureCoordinator(() =>
+        {
+            opened++;
+            return new(new FakeSource(), new FakeSource());
+        }, levelTimestamp: () => now);
+        static AudioPacket Packet(float amplitude, AudioClientBufferFlags flags = 0)
+        {
+            byte[] bytes = new byte[320];
+            for (int i = 0; i < bytes.Length; i += sizeof(float)) BinaryPrimitives.WriteSingleLittleEndian(bytes.AsSpan(i), amplitude);
+            return AudioPacket.Copy(new WasapiPacketEventArgs(bytes, bytes.Length, 0, 0, flags), WaveFormat.CreateIeeeFloatWaveFormat(16000, 1));
+        }
+        using var me = Packet(0.5f);
+        using var them = Packet(-0.25f);
+        using var silent = Packet(0.75f, AudioClientBufferFlags.Silent);
+        capture.Start();
+        capture.ReportLevel(CaptureChannel.Me, me);
+        Assert.Equal(0.5, capture.Status.MeLevel);
+        Assert.Equal(0d, capture.Status.ThemLevel);
+        capture.ReportLevel(CaptureChannel.Them, them);
+        Assert.Equal(0.25, capture.Status.ThemLevel);
+        now += Stopwatch.Frequency / 10;
+        Assert.Equal(1d / 3, capture.Status.MeLevel, 5);
+        Assert.Equal(1d / 6, capture.Status.ThemLevel, 5);
+        capture.ReportLevel(CaptureChannel.Me, silent);
+        Assert.Equal(0d, capture.Status.MeLevel);
+        Assert.True(capture.Status.ThemLevel > 0);
+        now += Stopwatch.Frequency;
+        Assert.Equal(0d, capture.Status.ThemLevel);
+        capture.ReportLevel(CaptureChannel.Me, me);
+        capture.Stop();
+        Assert.Equal(0d, capture.Status.MeLevel);
+        Assert.Equal(0d, capture.Status.ThemLevel);
+        capture.Start();
+        Assert.Equal(0d, capture.Status.MeLevel);
+        Assert.Equal(0d, capture.Status.ThemLevel);
+        Assert.Equal(2, opened);
+        Assert.Null(capture.Status.Error);
+    }
+
     [Fact]
     public void BothSourcesStartAndStopAndSecondCaptureIsRejected()
     {

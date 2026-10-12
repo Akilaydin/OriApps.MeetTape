@@ -20,6 +20,12 @@
           <Button Grid.Column="1" Name="RecordButton" Content="{Binding RecordLabel}" IsEnabled="{Binding CanRecord}" Click="RecordClick" />
         </Grid>
         <TextBlock Text="Me: microphone · Them: system playback" Opacity="0.65" />
+        <Grid Name="AudioLevels" ColumnDefinitions="Auto,*,Auto,*" ColumnSpacing="8" IsVisible="{Binding IsRecording}">
+          <TextBlock Text="Me" VerticalAlignment="Center" />
+          <ProgressBar Grid.Column="1" Name="MeLevel" Value="{Binding MeLevel}" Height="6" VerticalAlignment="Center" />
+          <TextBlock Grid.Column="2" Text="Them" VerticalAlignment="Center" />
+          <ProgressBar Grid.Column="3" Name="ThemLevel" Value="{Binding ThemLevel}" Height="6" VerticalAlignment="Center" />
+        </Grid>
         <TextBlock Name="Warnings" Text="{Binding WarningSummary}" IsVisible="{Binding HasWarnings}" TextWrapping="Wrap" Foreground="DarkOrange" />
         <TextBlock Name="ErrorMessage" Text="{Binding ErrorSummary}" IsVisible="{Binding HasError}" TextWrapping="Wrap" Foreground="IndianRed" />
         <TextBlock Text="{Binding PreparationText}" IsVisible="{Binding IsPreparing}" TextWrapping="Wrap" />
