@@ -19,12 +19,17 @@
           <TextBlock Name="CaptureStatus" Text="{Binding CaptureText}" FontSize="20" VerticalAlignment="Center" />
           <Button Grid.Column="1" Name="RecordButton" Content="{Binding RecordLabel}" IsEnabled="{Binding CanRecord}" Click="RecordClick" />
         </Grid>
-        <TextBlock Text="{Binding DevicesText}" TextWrapping="Wrap" Opacity="0.75" />
-        <TextBlock Text="{Binding TimingText}" IsVisible="{Binding HasTiming}" TextWrapping="Wrap" />
-        <TextBlock Name="Warnings" Text="{Binding WarningText}" IsVisible="{Binding HasWarnings}" TextWrapping="Wrap" Foreground="DarkOrange" />
-        <TextBlock Name="ErrorMessage" Text="{Binding ErrorText}" IsVisible="{Binding HasError}" TextWrapping="Wrap" Foreground="IndianRed" />
+        <TextBlock Text="Me: microphone · Them: system playback" Opacity="0.65" />
+        <TextBlock Name="Warnings" Text="{Binding WarningSummary}" IsVisible="{Binding HasWarnings}" TextWrapping="Wrap" Foreground="DarkOrange" />
+        <TextBlock Name="ErrorMessage" Text="{Binding ErrorSummary}" IsVisible="{Binding HasError}" TextWrapping="Wrap" Foreground="IndianRed" />
         <TextBlock Text="{Binding PreparationText}" IsVisible="{Binding IsPreparing}" TextWrapping="Wrap" />
         <ProgressBar Name="UpdateProgress" Value="{Binding UpdateProgress}" IsVisible="{Binding IsUpdating}" Height="6" />
+        <Expander Name="DiagnosticsExpander" Header="Details" HorizontalAlignment="Stretch">
+          <StackPanel Spacing="8">
+            <TextBox Name="DiagnosticDetails" Text="{Binding DiagnosticText, Mode=OneWay}" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" MaxHeight="160" />
+            <Button Name="CopyDiagnostics" Content="Copy details" Click="CopyDiagnosticsClick" HorizontalAlignment="Left" />
+          </StackPanel>
+        </Expander>
       </StackPanel>
     </Border>
     <StackPanel Grid.Row="2" Spacing="12">
@@ -67,7 +72,8 @@
         </ListBox.ItemTemplate>
       </ListBox>
       <StackPanel Grid.Row="2" Spacing="8">
-        <TextBlock Text="{Binding SelectedDiagnostic}" TextWrapping="Wrap" Foreground="IndianRed" />
+        <TextBlock Name="ProcessingIssues" Text="{Binding ProcessingIssueSummary}" IsVisible="{Binding HasProcessingIssues}" TextWrapping="Wrap" Foreground="IndianRed" />
+        <TextBlock Text="{Binding SelectedDiagnosticSummary}" TextWrapping="Wrap" Foreground="IndianRed" />
         <WrapPanel>
           <Button Content="Open folder" IsEnabled="{Binding CanOpen}" Click="FolderClick" Margin="0,0,8,8" />
           <Button Content="Transcript" IsEnabled="{Binding CanOpenTranscript}" Click="TranscriptClick" Margin="0,0,8,8" />

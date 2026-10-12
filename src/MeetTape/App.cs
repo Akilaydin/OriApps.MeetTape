@@ -86,7 +86,16 @@ public sealed class App : Application
             timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
             timer.Tick += async (_, _) =>
             {
-                if (++tick == 3) ShowWindow();
+                if (++tick == 3)
+                {
+                    ShowWindow();
+                    model.SetError("Smoke recording diagnostic. Original fixture detail retained for copying.");
+                    window!.FindControl<Expander>("DiagnosticsExpander")!.IsExpanded = true;
+                    var details = window!.FindControl<TextBox>("DiagnosticDetails")!;
+                    details.SelectAll();
+                    if (details.SelectedText != model.DiagnosticText)
+                    { timer.Stop(); desktop!.Shutdown(1); return; }
+                }
                 if (tick == 5) { timer.Stop(); await ExitAsync(); }
             };
             timer.Start();

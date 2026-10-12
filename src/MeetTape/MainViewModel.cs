@@ -9,6 +9,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 {
     private readonly IDesktopController? controller;
     private readonly Queue<string> warnings = new();
+    private readonly Queue<OperationNotice> processingIssues = new();
     private DesktopSnapshot snapshot = new(new(false, TimeSpan.Zero, 0, 0, null), [], null, null, false, null);
     private bool refreshing;
     private bool busy;
@@ -38,6 +39,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string WarningText => string.Join(Environment.NewLine, warnings);
     public bool HasWarnings => warnings.Count > 0;
     public bool HasError => ErrorText.Length > 0;
+    public string ErrorSummary => Brief(ErrorText);
+    public string WarningSummary => IsRecording ? "Recording continues with warnings. See Details." : "Recording or preparation reported warnings. See Details.";
+    public bool HasProcessingIssues => processingIssues.Count > 0;
+    public string ProcessingIssueSummary => processingIssues.Any(n => n.Kind == NoticeKind.Error)
+        ? "Background processing reported an error. Select a meeting or open Details."
+        : "Background processing reported warnings. Select a meeting or open Details.";
     public bool HasTiming => TimingText.Length > 0;
     public bool IsPreparing => snapshot.Preparing;
     public string ErrorText { get; private set; } = "";
@@ -45,6 +52,26 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private string releaseText = "";
     public string ReleaseText { get => releaseText; set { releaseText = value; Changed(); } }
     public string SelectedDiagnostic => selected?.Diagnostic ?? "";
+    public string SelectedDiagnosticSummary => Brief(SelectedDiagnostic);
+    public string DiagnosticText => string.Join(Environment.NewLine + Environment.NewLine, new[]
+    {
+        DevicesText,
+        HasError ? "Current operation / recording:" + Environment.NewLine + ErrorText : "",
+        HasWarnings ? "Recording / preparation warnings:" + Environment.NewLine + WarningText : "",
+        TimingText,
+        HasProcessingIssues ? "Background processing (latest issues):" + Environment.NewLine +
+            string.Join(Environment.NewLine, processingIssues.Select(n => n.Message)) : "",
+        SelectedDiagnostic.Length > 0 ? "Selected meeting:" + Environment.NewLine + SelectedDiagnostic : ""
+    }.Where(text => text.Length > 0));
+
+    private static string Brief(string text)
+    {
+        int end = text.IndexOfAny(['\r', '\n']);
+        string first = end < 0 ? text : text[..end];
+        int sentence = first.IndexOf(". ", StringComparison.Ordinal);
+        if (sentence >= 0) first = first[..(sentence + 1)];
+        return first.Length <= 180 ? first : first[..180] + "…";
+    }
     public string DevicesText
     {
         get
@@ -92,9 +119,17 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     private void OnNotice(OperationNotice notice) => Dispatcher.UIThread.Post(() =>
     {
-        if (notice.Kind == NoticeKind.Error) ErrorText = notice.Message;
+        if (notice.SessionId is not null)
+        {
+            if (notice.Kind == NoticeKind.Information) return;
+            if (processingIssues.Contains(notice)) return;
+            if (processingIssues.Count == 8) processingIssues.Dequeue();
+            processingIssues.Enqueue(notice);
+        }
+        else if (notice.Kind == NoticeKind.Error) ErrorText = notice.Message;
         else if (notice.Kind == NoticeKind.Warning)
         {
+            if (warnings.Contains(notice.Message)) return;
             if (warnings.Count == 8) warnings.Dequeue();
             warnings.Enqueue(notice.Message);
         }

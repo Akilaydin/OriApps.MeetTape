@@ -1,5 +1,6 @@
 using Avalonia.Controls;
 using Avalonia.Interactivity;
+using Avalonia.Input.Platform;
 using Avalonia.Markup.Xaml;
 using System.Diagnostics;
 
@@ -29,6 +30,16 @@ public sealed partial class MainWindow : Window
     private async void SettingsClick(object? sender, RoutedEventArgs e) { if (OpenSettings is not null) await OpenSettings(); }
     private async void ExitClick(object? sender, RoutedEventArgs e) { if (ExitApplication is not null) await ExitApplication(); }
     private async void UpdateClick(object? sender, RoutedEventArgs e) { if (UpdateApplication is not null) await UpdateApplication(); }
+    private async void CopyDiagnosticsClick(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var clipboard = Clipboard ?? throw new InvalidOperationException();
+            await clipboard.SetTextAsync(Model.DiagnosticText);
+            Model.SetInfo("Details copied.");
+        }
+        catch (Exception) { Model.SetError("Cannot copy details. Select the text in Details and press Ctrl+C."); }
+    }
     private void FolderClick(object? sender, RoutedEventArgs e) => OpenSelected(null);
     private void TranscriptClick(object? sender, RoutedEventArgs e) => OpenSelected("transcription.md");
     private void SummaryFileClick(object? sender, RoutedEventArgs e) => OpenSelected("summary.md");

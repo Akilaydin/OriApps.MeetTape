@@ -21,7 +21,7 @@ if ($SkipNativeWindow) {
     try {
         if (-not $smoke.WaitForExit(20000)) { throw 'Published GUI did not complete its startup/lifetime/Exit smoke.' }
         if ($smoke.ExitCode -ne 0) { throw 'Published GUI smoke failed.' }
-        Write-Output 'Published WinExe: isolated GUI startup, desktop lifetime and explicit Exit passed.'
+        Write-Output 'Published WinExe: isolated GUI startup, full diagnostic text selection, desktop lifetime and explicit Exit passed.'
     } finally {
         if (-not $smoke.HasExited) { $smoke.Kill(); [void]$smoke.WaitForExit(5000) }
         $smoke.Dispose()
@@ -69,7 +69,7 @@ public static class MeetTapeWindowProbe {
         if (-not $smoke.WaitForExit(15000)) { throw 'Explicit native shutdown did not finish.' }
         $smoke.Refresh()
         if ($smoke.ExitCode -ne 0) { throw 'Native smoke exited with failure.' }
-        Write-Output "Native Windows window: creation, hide, reopen and Exit passed. Screenshot: $testRoot\native-window.png"
+        Write-Output "Native Windows window: creation, hide, reopen, full diagnostic text selection and Exit passed. Screenshot: $testRoot\native-window.png"
         Write-Output 'TrayIcon created by native host; shell icon/menu clicks remain a manual check.'
     } finally {
         if (-not $smoke.HasExited) { $smoke.Kill(); [void]$smoke.WaitForExit(5000) }
