@@ -1,4 +1,6 @@
 using System.Runtime.InteropServices;
+using System.Text.Json.Nodes;
+using System.Threading.Channels;
 using NAudio.Wave;
 
 namespace MeetTape.Tests;
@@ -121,6 +123,76 @@ public sealed class CaptureTests
         Assert.Contains("already active", output.ToString());
         Assert.Contains("Capturing", output.ToString());
         Assert.True(me.Disposed && them.Disposed);
+    }
+
+    [Fact]
+    public async Task AsynchronousCaptureFailureRestartsDeferredJobsWithoutRequiringStop()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "MeetTapeAutoResume-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var input = new QueuedReader();
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var me = new FakeSource();
+        var them = new FakeSource();
+        CaptureCoordinator? capture = null;
+        string example = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../config.example.json"));
+        string projectRoot = Path.GetDirectoryName(example)!;
+        string configPath = Path.Combine(root, "config.json");
+        var config = JsonNode.Parse(File.ReadAllText(example))!;
+        config["meetingsRoot"] = Path.Combine(root, "meetings");
+        config["transcription"]!["promptFile"] = Path.Combine(projectRoot, "prompts", "transcription.md");
+        config["summary"]!["promptFile"] = Path.Combine(projectRoot, "prompts", "summary.md");
+        File.WriteAllText(configPath, config.ToJsonString());
+        Task<int>? cli = null;
+        try
+        {
+            cli = Task.Run(() => Cli.Run(["--config", configPath], input, output, error,
+                _ => capture = new CaptureCoordinator(() => new(me, them)),
+                (_, _) => 0, () => [], _ => { }));
+            input.Post("start");
+            Assert.True(SpinWait.SpinUntil(() => capture?.Status.IsActive == true, TimeSpan.FromSeconds(5)));
+
+            var loaded = ConfigurationLoader.Load(configPath);
+            var session = new SessionData
+            {
+                Id = Guid.NewGuid(), StartedAtUtc = DateTimeOffset.UtcNow, DurationSeconds = 1,
+                RecordingState = RecordingState.Recorded,
+                Capture = new(null, null, new(48000, 32, 1, "float"), new(48000, 32, 1, "float")),
+                Processing = new(120, loaded.Settings.Transcription, loaded.Settings.Summary, loaded.Directory),
+                Stages = new()
+                {
+                    ["trim"] = new(true, StageState.Completed),
+                    ["prepare"] = new(true, StageState.Pending),
+                    ["transcribe"] = new(true, StageState.Pending),
+                    ["assemble"] = new(true, StageState.Pending),
+                    ["summary"] = new(false, StageState.Disabled)
+                }
+            };
+            var created = SessionStore.Create(loaded.MeetingsRoot, session);
+            created.Lease.Dispose();
+            // Missing originals force the resumed job into a recoverable pause; no provider call is possible.
+            me.Fail(new IOException("Simulated device failure"));
+            Assert.True(SpinWait.SpinUntil(() =>
+            {
+                try { return SessionStore.Read(created.Directory).JobState == JobState.Paused; }
+                catch (IOException) { return false; }
+            }, TimeSpan.FromSeconds(5)), "The deferred runner did not restart after capture failed.");
+            Assert.False(capture!.Status.IsActive);
+        }
+        finally
+        {
+            input.Post("exit");
+            if (cli is not null) Assert.Equal(0, await cli.WaitAsync(TimeSpan.FromSeconds(10)));
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private sealed class QueuedReader : TextReader
+    {
+        private readonly Channel<string> messages = Channel.CreateUnbounded<string>();
+        public void Post(string text) => messages.Writer.TryWrite(text);
+        public override string? ReadLine() => messages.Reader.ReadAsync().AsTask().GetAwaiter().GetResult();
     }
 
     private sealed class FakeSource : IWaveIn

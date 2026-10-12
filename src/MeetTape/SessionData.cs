@@ -50,6 +50,7 @@ public sealed record SessionData
     public string? TranscriptSha256 { get; init; }
     public required Dictionary<string, StageProgress> Stages { get; init; }
     public int Discontinuities { get; init; }
+    public int ClockAdjustments { get; init; }
     public string? Error { get; init; }
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? AdditionalData { get; init; }

@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Diagnostics;
+using NAudio.Wave;
 using Xunit.Abstractions;
 
 namespace MeetTape.Tests;
@@ -54,6 +55,74 @@ public sealed class EncodingTests : IDisposable
     }
 
     [Fact]
+    public async Task CaptureFailureFlushesAlreadyEncodedAudioBeforeClosingFfmpeg()
+    {
+        string path = Path.Combine(directory, "partial.mp3");
+        var failure = new TaskCompletionSource<RecordingException>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var track = new Mp3Track("ffmpeg", path, 0, error => failure.TrySetResult(error));
+        for (int i = 0; i < 10; i++)
+            track.Enqueue(Tone(48000, 480, i * 100_000L));
+        track.Enqueue(Tone(48000, 480, 0)); // One whole packet arrives behind 100 ms of committed audio.
+        track.Enqueue(Tone(48000, 480, 1_100_000));
+
+        var error = await failure.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Contains("Audio arrived after its timeline was committed", error.Message);
+        await Assert.ThrowsAsync<RecordingException>(() => track.CompleteAsync(10_000_000));
+        float[] decoded = await DecodeAsync(path);
+        Assert.Equal(4800, decoded.Length); // All 100 ms of accepted audio must survive FFmpeg's final flush.
+    }
+
+    [Fact]
+    public async Task ImmediateSecondSessionUsesNewSourcesAndProducesIndependentSynchronizedTracks()
+    {
+        string example = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../config.example.json"));
+        var loaded = ConfigurationLoader.Load(example);
+        var config = loaded with { Settings = loaded.Settings with { MeetingsRoot = directory } };
+        var sources = new List<(SyntheticSource Me, SyntheticSource Them)>();
+        using var capture = new Mp3Recorder(config, () =>
+        {
+            var pair = (new SyntheticSource(), new SyntheticSource());
+            sources.Add(pair);
+            return new CaptureSources(pair.Item1, pair.Item2);
+        }).Capture;
+
+        var folders = new List<string>();
+        for (int i = 0; i < 2; i++)
+        {
+            capture.Start();
+            sources[i].Me.Emit();
+            sources[i].Them.Emit();
+            await Task.Delay(30);
+            capture.Stop();
+            Assert.Null(capture.Status.Error);
+            Assert.Equal(RecordingState.Recorded, SessionStore.Read(capture.RecordingDirectory!).RecordingState);
+            folders.Add(capture.RecordingDirectory!);
+            float[] me = await DecodeAsync(Path.Combine(folders[i], "me.mp3"));
+            float[] them = await DecodeAsync(Path.Combine(folders[i], "them.mp3"));
+            Assert.Equal(me.Length, them.Length);
+            Assert.True(me.Length > 0);
+        }
+        Assert.NotEqual(folders[0], folders[1]);
+        Assert.Equal(2, sources.Count);
+    }
+
+    private sealed class SyntheticSource : IWaveIn
+    {
+        public WaveFormat WaveFormat { get; set; } = WaveFormat.CreateIeeeFloatWaveFormat(48000, 1);
+        public event EventHandler<WaveInEventArgs>? DataAvailable;
+        public event EventHandler<StoppedEventArgs>? RecordingStopped;
+        public void StartRecording() { }
+        public void StopRecording() => RecordingStopped?.Invoke(this, new StoppedEventArgs());
+        public void Emit()
+        {
+            var bytes = new byte[480 * sizeof(float)];
+            DataAvailable?.Invoke(this, new WasapiPacketEventArgs(bytes, bytes.Length, 0,
+                Mp3Track.To100ns(Stopwatch.GetTimestamp()), 0));
+        }
+        public void Dispose() { }
+    }
+
+    [Fact]
     public void MissingEncoderGivesSafeDiagnostic()
     {
         var error = Assert.Throws<RecordingException>(() => new FfmpegEncoder("missing-ffmpeg-" + Guid.NewGuid(), Path.Combine(directory, "me.mp3")));
@@ -98,7 +167,12 @@ public sealed class EncodingTests : IDisposable
         return Math.Sqrt(sum / (b - a));
     }
 
-    public void Dispose() => Directory.Delete(directory, recursive: true);
+    public void Dispose()
+    {
+        foreach (string path in Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories))
+            File.SetAttributes(path, FileAttributes.Normal);
+        Directory.Delete(directory, recursive: true);
+    }
 }
 
 [Collection("Hardware")]

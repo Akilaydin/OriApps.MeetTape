@@ -23,6 +23,7 @@ public sealed class Mp3Recorder
     private void Start(CaptureSources sources, long origin)
     {
         Capture.Discontinuities = 0;
+        Capture.ClockAdjustments = 0;
         try
         {
             var stages = configuration.Settings.Stages;
@@ -71,7 +72,7 @@ public sealed class Mp3Recorder
                 RecordingState = error is null ? RecordingState.Recorded : RecordingState.Failed,
                 JobState = error is null ? JobState.NotStarted : JobState.Paused,
                 Trim = session.Trim with { EndSeconds = status.Duration.TotalSeconds },
-                Discontinuities = status.Discontinuities, Error = error
+                Discontinuities = status.Discontinuities, ClockAdjustments = status.ClockAdjustments, Error = error
             };
             SessionStore.ProtectOriginals(status.RecordingDirectory);
             SessionStore.Save(status.RecordingDirectory, session);
@@ -85,7 +86,7 @@ public sealed class Mp3Recorder
 
     private void Consume(CaptureChannel channel, WaveInEventArgs args, WaveFormat format, long received)
     {
-        var packet = AudioPacket.Copy(args, format);
+        var packet = AudioPacket.Copy(args, format, Mp3Track.To100ns(received));
         (channel == CaptureChannel.Me ? me : them)!.Enqueue(packet);
     }
 
@@ -98,6 +99,7 @@ public sealed class Mp3Recorder
         finally
         {
             Capture.Discontinuities = (me?.Discontinuities ?? 0) + (them?.Discontinuities ?? 0);
+            Capture.ClockAdjustments = (me?.ClockAdjustments ?? 0) + (them?.ClockAdjustments ?? 0);
             me = null; them = null;
         }
     }

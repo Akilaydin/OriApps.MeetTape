@@ -7,6 +7,7 @@ public sealed record CaptureStatus(bool IsActive, TimeSpan Duration, long MeByte
 {
     public string? RecordingDirectory { get; init; }
     public int Discontinuities { get; init; }
+    public int ClockAdjustments { get; init; }
 }
 
 public sealed class CaptureCoordinator(
@@ -29,6 +30,7 @@ public sealed class CaptureCoordinator(
     public event Action<CaptureStatus>? Finished;
     public string? RecordingDirectory { get; internal set; }
     public int Discontinuities { get; internal set; }
+    public int ClockAdjustments { get; internal set; }
 
     public CaptureStatus Status
     {
@@ -39,7 +41,7 @@ public sealed class CaptureCoordinator(
                 long end = active is null ? stoppedAt : Stopwatch.GetTimestamp();
                 return new(active is not null, startedAt == 0 ? TimeSpan.Zero : Stopwatch.GetElapsedTime(startedAt, end),
                     Interlocked.Read(ref meBytes), Interlocked.Read(ref themBytes), Volatile.Read(ref lastError))
-                { RecordingDirectory = RecordingDirectory, Discontinuities = Discontinuities };
+                { RecordingDirectory = RecordingDirectory, Discontinuities = Discontinuities, ClockAdjustments = ClockAdjustments };
             }
         }
     }

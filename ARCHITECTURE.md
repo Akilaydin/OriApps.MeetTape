@@ -16,9 +16,9 @@ AudioDevices → WasapiPacketCapture → CaptureCoordinator
 
 `AudioDevices` selects microphone/render endpoints. `WasapiPacketCapture` uses NAudio WASAPI clients to preserve native device positions, QPC timestamps and discontinuity flags. `CaptureCoordinator` owns the two-source lifecycle and reports failures. `Mp3Recorder` creates and finalizes the session.
 
-Each `Mp3Track` has a bounded 100-packet queue of pooled mono samples and a streaming FFmpeg encoder. `PcmTimeline` maps device timing onto a shared 48 kHz grid, estimates rate from adjacent anchors, interpolates samples and represents gaps as silence. A 500 ms horizon allows packet delivery before silence is committed. Normal stop uses a common end frame. Originals are mono 96 kbps MP3; queue exhaustion or late data stops capture with surviving audio retained.
+Each `Mp3Track` has a bounded 100-packet queue of pooled mono samples and a streaming FFmpeg encoder. `PcmTimeline` maps device timing onto a shared 48 kHz grid, estimates rate from adjacent anchors, interpolates samples and represents gaps as silence. Implausibly compressed QPC intervals are not used as packet boundaries; up to 20 ms of overlap is repaired by shifting the whole packet forward without discarding its audio. Larger conflicts stop capture and attach up to 12 recent WASAPI packet-metadata records to the diagnostic. The 500 ms horizon protects silence commitment; normal adjacent audio is still streamed promptly. Normal stop uses a common end frame. Originals are mono 96 kbps MP3; queue exhaustion or late data stops capture with surviving audio retained. After recording faults, FFmpeg receives a bounded opportunity to flush accepted audio before disposal.
 
-Capture ownership is process-local. CLI commands cancel and join preparation/API jobs before starting capture; an unconfirmed shutdown blocks the start. An asynchronous capture failure reports diagnostics but does not restart the canceled job runner by itself.
+Capture ownership is process-local. CLI commands cancel and join preparation/API jobs before starting capture; an unconfirmed shutdown blocks the start. An asynchronous capture failure restarts the canceled job runner after capture finalization, under the same synchronization gate as interactive job commands.
 
 ## Processing
 

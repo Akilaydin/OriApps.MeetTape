@@ -14,6 +14,7 @@ public sealed class Mp3Track
     private long end100ns = -1;
     private RecordingException? failure;
     public int Discontinuities { get; private set; }
+    public int ClockAdjustments { get; private set; }
 
     public Mp3Track(string executable, string outputPath, long origin100ns, Action<RecordingException> failed)
     {
@@ -50,6 +51,7 @@ public sealed class Mp3Track
         AudioPacket? pending = null;
         var timeline = new PcmTimeline(encoder.Input, origin100ns);
         using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(20));
+        bool completionAttempted = false;
         try
         {
             while (true)
@@ -80,7 +82,7 @@ public sealed class Mp3Track
                     break;
                 await timer.WaitForNextTickAsync();
             }
-            Discontinuities = timeline.Discontinuities;
+            completionAttempted = true;
             await encoder.CompleteAsync();
         }
         catch (Exception ex)
@@ -88,10 +90,19 @@ public sealed class Mp3Track
             var error = ex as RecordingException ?? new RecordingException(
                 "MP3 write/encoder failed or stalled; check output permissions, disk space and FFmpeg. Partial originals retained.");
             Volatile.Write(ref failure, error);
+            // Close FFmpeg's stdin and let it flush the already written PCM before any forced disposal.
+            // If the encoder itself failed, preserve the initial error and let Dispose kill a stalled process.
+            if (!completionAttempted)
+            {
+                try { await encoder.CompleteAsync(); }
+                catch (Exception) { }
+            }
             failed(error);
         }
         finally
         {
+            Discontinuities = timeline.Discontinuities;
+            ClockAdjustments = timeline.ClockAdjustments;
             packets.Writer.TryComplete();
             pending?.Dispose();
             while (packets.Reader.TryRead(out var packet))
