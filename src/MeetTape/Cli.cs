@@ -28,7 +28,8 @@ public static class Cli
         Func<LoadedConfiguration, CaptureCoordinator> createCapture, Func<TextWriter, TextWriter, int> launchUpdate,
         Func<IReadOnlyList<AudioDevice>> listDevices, Action<TextWriter> writeStartupNotice)
     {
-        output = CliColorWriter.Wrap(output);
+        var promptOutput = CliColorWriter.Wrap(output);
+        output = promptOutput;
         error = CliColorWriter.Wrap(error, stderr: true);
         string? explicitConfigPath = null;
         var positional = new List<string>();
@@ -85,6 +86,7 @@ public static class Cli
             var config = ConfigurationLoader.Load(configPath, validatePrompts: command is not ("sessions" or "status"));
             using var capture = createCapture(config);
             capture.Failed += message => CliColors.WriteLine(output, message, ConsoleColor.Red);
+            capture.Warning += message => CliColors.WriteLine(output, message, ConsoleColor.Yellow);
             if (command == "check-config")
             {
                 if (config.Settings.Stages.Transcribe)
@@ -112,12 +114,35 @@ public static class Cli
             writeStartupNotice(output);
             using var preparation = new PostRecordingWorkflow(config.Settings.Capture.FfmpegPath, output);
             using var jobs = new ProcessingJobs(config, output, () => capture.Status.IsActive);
-            jobs.Start();
+            var jobsGate = new object();
+            bool closing = false;
+            void StartJobs()
+            {
+                lock (jobsGate)
+                    if (!closing) jobs.Start();
+            }
+            void ResumeAfterFailure(CaptureStatus status)
+            {
+                if (status.Error is null) return;
+                // Finished is raised under the capture lock; never join or restart the job runner there.
+                ThreadPool.QueueUserWorkItem(_ =>
+                {
+                    try { StartJobs(); }
+                    catch (Exception)
+                    { CliColors.WriteLine(output, "Deferred processing could not restart; restart MeetTape to resume saved jobs.", ConsoleColor.Red); }
+                });
+            }
+            capture.Finished += ResumeAfterFailure;
+            try
+            {
+            StartJobs();
             CliHelp.WriteOverview(output);
             while (true)
             {
-                CliColors.Write(output, "meettape>", ConsoleColor.Cyan, " ");
-                string? line = input.ReadLine();
+                promptOutput.BeginInteractivePrompt();
+                string? line;
+                try { line = input.ReadLine(); }
+                finally { promptOutput.EndInteractivePrompt(); }
                 if (line is null)
                     return 0;
                 if (CliHelp.TryWriteInteractive(line, output))
@@ -136,14 +161,17 @@ public static class Cli
                     case "start":
                         try
                         {
-                            jobs.PauseAndWait();
-                            preparation.CancelAndWait();
-                            capture.Start();
+                            lock (jobsGate)
+                            {
+                                jobs.PauseAndWait();
+                                preparation.CancelAndWait();
+                                capture.Start();
+                            }
                             CliColors.WriteLine(output, "Capture started (Me + Them).", ConsoleColor.Green,
                                 $" {capture.RecordingDirectory ?? "No encoder attached."}");
                         }
                         catch (InvalidOperationException ex) { CliColors.WriteLine(output, ex.Message, ConsoleColor.Yellow); }
-                        finally { if (!capture.Status.IsActive) jobs.Start(); }
+                        finally { if (!capture.Status.IsActive) StartJobs(); }
                         break;
                     case "stop":
                         try
@@ -156,7 +184,7 @@ public static class Cli
                         catch (InvalidOperationException ex) { CliColors.WriteLine(output, ex.Message, ConsoleColor.Yellow); }
                         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                         { CliColors.WriteLine(output, "Cannot save title/start preparation; originals retained. Check session.json, paths and permissions.", ConsoleColor.Red); }
-                        finally { if (!capture.Status.IsActive) jobs.Start(); }
+                        finally { if (!capture.Status.IsActive) StartJobs(); }
                         break;
                     case "status":
                         WriteStatus(output, capture.Status);
@@ -182,7 +210,7 @@ public static class Cli
                             {
                                 case ["prepare", var id] when Guid.TryParse(id, out var sessionId):
                                 {
-                                    jobs.PauseAndWait();
+                                    lock (jobsGate) jobs.PauseAndWait();
                                     var selected = SessionStore.Discover(config.MeetingsRoot).SingleOrDefault(s => s.Data?.Id == sessionId)
                                         ?? throw new InvalidOperationException("Session ID not found; use sessions.");
                                     PromptAndPrepare(selected.Directory, preparation, input, output);
@@ -190,7 +218,7 @@ public static class Cli
                                 }
                                 case ["chunks", var chunkId] when Guid.TryParse(chunkId, out var chunkSessionId):
                                 {
-                                    jobs.PauseAndWait();
+                                    lock (jobsGate) jobs.PauseAndWait();
                                     var selected = SessionStore.Discover(config.MeetingsRoot).SingleOrDefault(s => s.Data?.Id == chunkSessionId)
                                         ?? throw new InvalidOperationException("Session ID not found; use sessions.");
                                     preparation.PrepareChunks(selected.Directory);
@@ -198,7 +226,7 @@ public static class Cli
                                 }
                                 case ["rechunk", var rechunkId] when Guid.TryParse(rechunkId, out var rechunkSessionId):
                                 {
-                                    jobs.PauseAndWait();
+                                    lock (jobsGate) jobs.PauseAndWait();
                                     var selected = SessionStore.Discover(config.MeetingsRoot).SingleOrDefault(s => s.Data?.Id == rechunkSessionId)
                                         ?? throw new InvalidOperationException("Session ID not found; use sessions.");
                                     preparation.Rechunk(selected.Directory, config.Settings.ChunkSeconds, jobs.UnblockRecovered);
@@ -209,7 +237,7 @@ public static class Cli
                                     preparation.CancelAndWait();
                                     var selected = SessionStore.Discover(config.MeetingsRoot).SingleOrDefault(s => s.Data?.Id == resumeSessionId)
                                         ?? throw new InvalidOperationException("Session ID not found; use sessions.");
-                                    jobs.Resume(selected.Directory);
+                                    lock (jobsGate) jobs.Resume(selected.Directory);
                                     break;
                                 }
                                 case ["assemble", var assembleId] when Guid.TryParse(assembleId, out var assembleSessionId):
@@ -217,7 +245,7 @@ public static class Cli
                                     preparation.CancelAndWait();
                                     var selected = SessionStore.Discover(config.MeetingsRoot).SingleOrDefault(s => s.Data?.Id == assembleSessionId)
                                         ?? throw new InvalidOperationException("Session ID not found; use sessions.");
-                                    jobs.Assemble(selected.Directory);
+                                    lock (jobsGate) jobs.Assemble(selected.Directory);
                                     break;
                                 }
                                 case ["summary", var summaryId] when Guid.TryParse(summaryId, out var summarySessionId):
@@ -225,7 +253,7 @@ public static class Cli
                                     preparation.CancelAndWait();
                                     var selected = SessionStore.Discover(config.MeetingsRoot).SingleOrDefault(s => s.Data?.Id == summarySessionId)
                                         ?? throw new InvalidOperationException("Session ID not found; use sessions.");
-                                    jobs.RequestSummary(selected.Directory);
+                                    lock (jobsGate) jobs.RequestSummary(selected.Directory);
                                     break;
                                 }
                                 case ["accept"]: preparation.Choose("accept"); break;
@@ -240,9 +268,15 @@ public static class Cli
                         catch (InvalidOperationException ex) { CliColors.WriteLine(output, ex.Message, ConsoleColor.Yellow); }
                         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                         { CliColors.WriteLine(output, "Cannot update preparation; originals retained. Check session.json and permissions.", ConsoleColor.Red); }
-                        finally { if (!capture.Status.IsActive) jobs.Start(); }
+                        finally { if (!capture.Status.IsActive) StartJobs(); }
                         break;
                 }
+            }
+            }
+            finally
+            {
+                capture.Finished -= ResumeAfterFailure;
+                lock (jobsGate) closing = true;
             }
         }
         catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException
@@ -267,6 +301,16 @@ public static class Cli
             CliColors.WriteLine(output, status.Error, ConsoleColor.Red);
         if (status.Discontinuities > 0)
             CliColors.WriteLine(output, $"WASAPI marked {status.Discontinuities} discontinuities (including possible startup flags); timeline gaps were preserved as silence.", ConsoleColor.Yellow);
+        if (status.ClockAdjustments > 0)
+            CliColors.WriteLine(output, "WASAPI timing corrections: ", ConsoleColor.Yellow,
+                $"Me {status.MeTiming.Corrections} (unreliable timestamps {status.MeTiming.InvalidTimestamps}, " +
+                $"largest shift {status.MeTiming.LargestShiftFrames * 1000d / PcmTimeline.SampleRate:F3} ms); " +
+                $"Them {status.ThemTiming.Corrections} (unreliable timestamps {status.ThemTiming.InvalidTimestamps}, " +
+                $"largest shift {status.ThemTiming.LargestShiftFrames * 1000d / PcmTimeline.SampleRate:F3} ms). " +
+                (status.IsActive ? "Recording continues." : "Recording retained."));
+        if (!status.IsActive && status.AudioFrames > Math.Round(status.Duration.TotalSeconds * PcmTimeline.SampleRate))
+            CliColors.WriteLine(output, "Recovered audio extends beyond the wall-clock stop time: ", ConsoleColor.Yellow,
+                $"{status.AudioFrames / (double)PcmTimeline.SampleRate:F3}s saved, {status.Duration.TotalSeconds:F3}s elapsed. Both tracks retained at the same length.");
     }
 
     private static void WriteDevices(TextWriter output, IReadOnlyList<AudioDevice> devices)

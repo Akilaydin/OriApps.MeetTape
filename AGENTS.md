@@ -20,3 +20,20 @@ Run relevant software tests and `git diff --check`; inspect the diff for secrets
 ## Delivery
 
 Follow [CONTRIBUTING.md](CONTRIBUTING.md) for branches, PRs, checks and Codex review. Never push directly to `main`; push to `release` only when publication is explicitly requested.
+
+## Automatic Code Review Rules
+
+Report only high-confidence P0/P1 issues that:
+- Cause significant functional regressions.
+- Introduce security vulnerabilities or data loss.
+- Can cause serious production failures.
+
+Do not report:
+- Style or formatting issues.
+- Minor improvements or refactoring suggestions.
+- Speculative edge cases.
+- Low-impact bugs.
+- Missing tests unless they expose a serious risk.
+
+Every finding must describe a concrete failure scenario.
+If no qualifying issues exist, report no findings.

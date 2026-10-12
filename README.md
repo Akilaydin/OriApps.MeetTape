@@ -1,3 +1,5 @@
+![MeetTape](assets/MeetTape.png)
+
 # MeetTape
 
 ## About
