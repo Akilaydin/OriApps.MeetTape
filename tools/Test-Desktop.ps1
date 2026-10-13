@@ -64,10 +64,11 @@ if ($IconOnly) { return }
 
 # Exact test-only startup skips real settings, devices, processing and release checks.
 if ($SkipNativeWindow) {
-    $smoke = Start-Process -FilePath $executable -ArgumentList '--ui-smoke' -WorkingDirectory $testRoot -PassThru -WindowStyle Hidden
+    $smokeError = Join-Path $testRoot 'startup-stderr.txt'
+    $smoke = Start-Process -FilePath $executable -ArgumentList '--ui-smoke' -WorkingDirectory $testRoot -PassThru -WindowStyle Hidden -RedirectStandardError $smokeError
     try {
         if (-not $smoke.WaitForExit(20000)) { throw 'Published GUI did not complete its startup/lifetime/Exit smoke.' }
-        if ($smoke.ExitCode -ne 0) { throw 'Published GUI smoke failed.' }
+        if ($smoke.ExitCode -ne 0) { Get-Content -LiteralPath $smokeError; throw 'Published GUI smoke failed.' }
         Write-Output 'Published WinExe: isolated GUI startup, full diagnostic text selection, desktop lifetime and explicit Exit passed.'
     } finally {
         if (-not $smoke.HasExited) { $smoke.Kill(); [void]$smoke.WaitForExit(5000) }

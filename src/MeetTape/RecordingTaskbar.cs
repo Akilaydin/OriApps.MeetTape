@@ -47,7 +47,11 @@ internal sealed class RecordingTaskbar : IDisposable
     private void Apply()
     {
         try { set(state == true); Applied = true; }
-        catch (Exception) { Applied = false; /* Shell availability must not interrupt capture. Retry when the taskbar is recreated. */ }
+        catch (Exception error)
+        {
+            Applied = false;
+            if (App.Smoke) Console.Error.WriteLine($"Taskbar overlay failed: {error.GetType().Name}, HRESULT 0x{error.HResult:X8}.");
+        }
     }
 
     public void Dispose()

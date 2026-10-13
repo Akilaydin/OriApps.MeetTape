@@ -206,7 +206,11 @@ public sealed class App : Application
             Win32Properties.AddWndProcHookCallback(window, TaskbarMessage);
             taskbar.Update(model.IsRecording);
         }
-        catch (Exception) { taskbar?.Dispose(); taskbar = null; }
+        catch (Exception error)
+        {
+            taskbar?.Dispose(); taskbar = null;
+            if (Smoke) Console.Error.WriteLine($"Taskbar initialization failed: {error.GetType().Name}, HRESULT 0x{error.HResult:X8}.");
+        }
     }
 
     private nint TaskbarMessage(nint handle, uint message, nint wParam, nint lParam, ref bool handled)
