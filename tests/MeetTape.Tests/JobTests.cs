@@ -8,6 +8,81 @@ namespace MeetTape.Tests;
 public sealed class JobTests : IDisposable
 {
     [Fact]
+    public async Task RecycledStorageFailureDoesNotLeaveReplacementBlockedInTheScheduler()
+    {
+        string directory = Session();
+        bool fail = true;
+        using var handler = new Handler((_, _) =>
+        {
+            if (fail)
+            {
+                File.SetAttributes(Path.Combine(directory, "session.json"), FileAttributes.ReadOnly);
+                return Task.FromResult(Response(400));
+            }
+            return Task.FromResult(Response());
+        });
+        using var http = new HttpClient(handler);
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "fixture-key");
+        await jobs.ProcessSessionAsync(directory, default);
+        File.SetAttributes(Path.Combine(directory, "session.json"), FileAttributes.Normal);
+        jobs.Cancel(directory);
+        string bin = Path.Combine(root, "Fixture bin"); Directory.CreateDirectory(bin);
+        jobs.RemoveInactiveSession(directory, () => Directory.Move(directory, Path.Combine(bin, "removed")));
+        string replacement = Session(); Directory.Move(replacement, directory);
+        fail = false; jobs.Start();
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        while (SessionStore.Read(directory).JobState != JobState.Completed)
+        {
+            Assert.True(DateTimeOffset.UtcNow < deadline, "A removed session's storage failure must not block a new identity at its old path.");
+            await Task.Delay(10);
+        }
+        jobs.PauseAndWait();
+        Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
+    }
+
+    [Fact]
+    public async Task RemovalExcludesActiveJobsAndStaleSchedulerSnapshotsWithoutBlockingOtherMeetings()
+    {
+        string directory = Session(), other = Session();
+        Guid removedId = SessionStore.Read(directory).Id;
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        bool hold = true;
+        using var handler = new Handler(async (_, token) =>
+        {
+            if (hold) { entered.TrySetResult(); await Task.Delay(Timeout.Infinite, token); }
+            return Response();
+        });
+        using var http = new HttpClient(handler);
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "fixture-key");
+        Task running = jobs.ProcessSessionAsync(directory, default);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Throws<InvalidOperationException>(() => jobs.RemoveInactiveSession(directory, () => throw new Exception("Must not remove active job")));
+        jobs.Cancel(directory); await running;
+        Assert.Throws<IOException>(() => jobs.RemoveInactiveSession(directory, () => throw new IOException("Fixture bin refused")));
+        string bin = Path.Combine(root, "Fixture bin"); Directory.CreateDirectory(bin);
+        jobs.RemoveInactiveSession(directory, () => Directory.Move(directory, Path.Combine(bin, "removed")));
+        await jobs.ProcessSessionAsync(directory, default, removedId);
+        string replacement = Session(); Directory.Move(replacement, directory);
+        await jobs.ProcessSessionAsync(directory, default, removedId);
+        Assert.Equal(JobState.NotStarted, SessionStore.Read(directory).JobState);
+        Assert.Equal(1, handler.Calls);
+        hold = false;
+        jobs.Start();
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        while (SessionStore.Read(directory).JobState != JobState.Completed || SessionStore.Read(other).JobState != JobState.Completed)
+        {
+            Assert.True(DateTimeOffset.UtcNow < deadline, "New session and unrelated meeting must remain schedulable after path reuse.");
+            await Task.Delay(10);
+        }
+        jobs.PauseAndWait();
+        Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
+        Assert.Equal(JobState.Completed, SessionStore.Read(other).JobState);
+        bool secondRemoval = false;
+        jobs.RemoveInactiveSession(directory, () => secondRemoval = true);
+        Assert.True(secondRemoval);
+    }
+
+    [Fact]
     public async Task RenamedPausedMeetingCanResumeAndPublishTranscriptFromItsExistingRelativeChunks()
     {
         string directory = Session(120);
