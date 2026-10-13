@@ -50,7 +50,7 @@ public sealed class CaptureCoordinator(
     public event Action<string>? Failed;
     internal event Action<string>? Warning;
     public event Action<CaptureStatus>? Finished;
-    internal event Action<CaptureStatus>? Started;
+    internal event Action<CaptureStatus>? StateChanged;
     public string? RecordingDirectory { get; internal set; }
     public long AudioFrames { get; internal set; }
     public int Discontinuities { get; internal set; }
@@ -125,8 +125,7 @@ public sealed class CaptureCoordinator(
                 Volatile.Write(ref active, sources);
                 sources.Me.StartRecording();
                 sources.Them.StartRecording();
-                try { Started?.Invoke(Status); }
-                catch (Exception) { /* Status notifications cannot affect capture. */ }
+                NotifyStateChanged();
             }
             catch (Exception ex)
             {
@@ -152,6 +151,13 @@ public sealed class CaptureCoordinator(
         {
             Volatile.Write(ref lastError, ex is RecordingException ? ex.Message : "Cannot finalize session metadata; originals retained. Check permissions and disk space.");
         }
+        NotifyStateChanged();
+    }
+
+    private void NotifyStateChanged()
+    {
+        try { StateChanged?.Invoke(Status); }
+        catch (Exception) { /* Status notifications cannot affect capture or saved data. */ }
     }
 
     public void Stop()

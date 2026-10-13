@@ -24,6 +24,31 @@ public static class TestApp
 public sealed class WindowTests
 {
     [AvaloniaFact]
+    public async Task FinalizedMetadataFailureStillNotifiesInterruptionThroughActualController()
+    {
+        using var fixture = new Fixture();
+        using var capture = new CaptureCoordinator(() => new(new CaptureSource(), new CaptureSource()));
+        capture.Finished += _ => throw new IOException("Fixture session.json failure");
+        using var http = new HttpClient(new NoRequests());
+        var controller = new DesktopController(ConfigurationLoader.Load(fixture.ConfigPath), capture, http);
+        var notices = new List<OperationNotice>();
+        var model = new MainViewModel(controller, notices.Add);
+        try
+        {
+            await model.RefreshAsync(); await model.ToggleFromHotkeyAsync();
+            Dispatcher.UIThread.RunJobs();
+            Assert.Equal("Recording started", Assert.Single(notices).Message);
+            await model.ToggleFromHotkeyAsync(); Dispatcher.UIThread.RunJobs();
+            Assert.False(capture.Status.IsActive); Assert.NotNull(capture.Status.Error);
+            Assert.Equal(2, notices.Count);
+            Assert.Equal("Recording interrupted", notices[1].Message);
+            Assert.Equal(NoticeKind.Error, notices[1].Kind);
+            Assert.DoesNotContain("session.json", notices[1].Message);
+        }
+        finally { await controller.ShutdownAsync(); model.Detach(); }
+    }
+
+    [AvaloniaFact]
     public async Task HotkeySharesTogglePathAndWaitsForSuccessfulStartAndStopWhileHidden()
     {
         using var fixture = new Fixture();

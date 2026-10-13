@@ -21,8 +21,11 @@ public sealed class CaptureTests
             if (finalizationFails) throw new IOException("Fixture encoder failure");
         });
         var transitions = new List<CaptureStatus>();
-        capture.Started += status => { Assert.True(me.Running && them.Running); transitions.Add(status); };
-        capture.Finished += status => { Assert.True(finalized); transitions.Add(status); };
+        capture.StateChanged += status =>
+        {
+            if (status.IsActive) Assert.True(me.Running && them.Running); else Assert.True(finalized);
+            transitions.Add(status);
+        };
         capture.Start(); capture.Stop();
         Assert.Equal(2, transitions.Count);
         Assert.True(transitions[0].IsActive); Assert.Null(transitions[0].Error);
@@ -35,10 +38,10 @@ public sealed class CaptureTests
     {
         using var failing = new CaptureCoordinator(() => new(new FakeSource(), new FakeSource { FailStart = true }));
         int starts = 0;
-        failing.Started += _ => starts++;
+        failing.StateChanged += status => { if (status.IsActive) starts++; };
         Assert.Throws<InvalidOperationException>(() => failing.Start()); Assert.Equal(0, starts);
         using var capture = new CaptureCoordinator(() => new(new FakeSource(), new FakeSource()));
-        capture.Started += _ => throw new IOException("Fixture notifier failure");
+        capture.StateChanged += _ => throw new IOException("Fixture notifier failure");
         capture.Start(); Assert.True(capture.Status.IsActive); Assert.Null(capture.Status.Error);
         capture.Stop(); Assert.Null(capture.Status.Error);
     }

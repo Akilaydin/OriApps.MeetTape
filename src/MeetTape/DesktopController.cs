@@ -56,7 +56,7 @@ public sealed class DesktopController : IDesktopController
         this.capture.Warning += Warn;
         this.capture.Failed += Fail;
         this.capture.Finished += Finished;
-        this.capture.Started += PublishRecording;
+        this.capture.StateChanged += PublishRecording;
         preparation.Notice += Publish;
         jobs.Notice += Publish;
     }
@@ -150,7 +150,6 @@ public sealed class DesktopController : IDesktopController
 
     private void Finished(CaptureStatus status)
     {
-        PublishRecording(status);
         if (status.Error is null || closing) return;
         // Finished is raised under the capture lock. Do not take our gate or join jobs there.
         _ = RestartAfterFailureAsync();
@@ -204,7 +203,7 @@ public sealed class DesktopController : IDesktopController
                 capture.Warning -= Warn;
                 capture.Failed -= Fail;
                 capture.Finished -= Finished;
-                capture.Started -= PublishRecording;
+                capture.StateChanged -= PublishRecording;
             }).ConfigureAwait(false);
         }
         finally { gate.Release(); }
