@@ -9,9 +9,10 @@ internal sealed class RecordingTaskbar : IDisposable
     private readonly nint icon;
     private bool? state;
     private bool disposed;
+    private bool ready;
     internal bool Applied { get; private set; }
 
-    internal RecordingTaskbar(Action<bool> set) => this.set = set;
+    internal RecordingTaskbar(Action<bool> set) { this.set = set; ready = true; }
 
     internal RecordingTaskbar(nint window)
     {
@@ -19,7 +20,6 @@ internal sealed class RecordingTaskbar : IDisposable
             new Guid("56FDF344-FD6D-11D0-958A-006097C9A090"), true)!)!;
         try
         {
-            native.HrInit();
             byte[] pixels = new byte[16 * 16 * 4];
             for (int y = 0; y < 16; y++) for (int x = 0; x < 16; x++)
             {
@@ -31,7 +31,12 @@ internal sealed class RecordingTaskbar : IDisposable
             }
             icon = CreateIcon(0, 16, 16, 1, 32, new byte[32], pixels);
             if (icon == 0) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
-            set = active => native.SetOverlayIcon(window, active ? icon : 0, active ? "Recording" : "");
+            bool initialized = false;
+            set = active =>
+            {
+                if (!initialized) { native.HrInit(); initialized = true; }
+                native.SetOverlayIcon(window, active ? icon : 0, active ? "Recording" : "");
+            };
         }
         catch { Marshal.FinalReleaseComObject(native); throw; }
     }
@@ -40,10 +45,10 @@ internal sealed class RecordingTaskbar : IDisposable
     {
         if (disposed || state == active) return;
         state = active;
-        Apply();
+        if (ready) Apply();
     }
 
-    internal void Restore() { if (!disposed && state.HasValue) Apply(); }
+    internal void Restore() { ready = true; if (!disposed && state.HasValue) Apply(); }
     private void Apply()
     {
         try { set(state == true); Applied = true; }
@@ -66,7 +71,7 @@ internal sealed class RecordingTaskbar : IDisposable
     private static extern nint CreateIcon(nint instance, int width, int height, byte planes, byte bits, byte[] mask, byte[] pixels);
     [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool DestroyIcon(nint icon);
 
-    [ComImport, Guid("EA1AFB91-9E28-4B86-90E9-9E9F8A5EEA84"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    [ComImport, Guid("EA1AFB91-9E28-4B86-90E9-9E9F8A5EEFAF"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     private interface ITaskbarList3
     {
         void HrInit();

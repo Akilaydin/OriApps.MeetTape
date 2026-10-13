@@ -76,6 +76,7 @@ public sealed class App : Application
             tray.Clicked += (_, _) => ShowWindow();
             TrayIcon.SetIcons(this, [tray]);
             model.PropertyChanged += ModelChanged;
+            InitializeTaskbar();
             desktop.ShutdownRequested += (_, e) =>
             {
                 if (allowShutdown) return;
