@@ -1,6 +1,7 @@
 using Avalonia.Controls;
 using Avalonia.Headless.XUnit;
 using Avalonia.Interactivity;
+using Avalonia.LogicalTree;
 using System.Text;
 using System.Text.Json.Nodes;
 
@@ -256,13 +257,15 @@ public sealed class SettingsTests : IDisposable
         window.Close();
         Assert.True(window.IsVisible);
         var confirmation = Assert.Single(window.OwnedWindows);
-        confirmation.FindControl<Button>("KeepEditingSettings")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        confirmation.GetLogicalDescendants().OfType<Button>().Single(button => button.Name == "KeepEditingSettings")
+            .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         await Task.Delay(10);
         Assert.True(window.IsVisible);
         Assert.True(model.HasUnsavedChanges);
         window.Close();
         confirmation = Assert.Single(window.OwnedWindows);
-        confirmation.FindControl<Button>("DiscardSettings")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        confirmation.GetLogicalDescendants().OfType<Button>().Single(button => button.Name == "DiscardSettings")
+            .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         for (int i = 0; i < 100 && window.IsVisible; i++) await Task.Delay(10);
         Assert.False(window.IsVisible);
     }
