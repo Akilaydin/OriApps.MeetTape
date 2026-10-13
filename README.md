@@ -12,9 +12,11 @@ Copyright (C) 2026 OriApps. Licensed under GPL-3.0-only.
 
 1. Open **MeetTape** from the Start menu, or run `MeetTape.exe`. First use opens Settings. Select microphone/playback devices, meetings folder, FFmpeg and API stages. Newly entered API keys are hidden and stored in Windows user environment variables; prompts can be edited under **API & prompts**. Save applies settings without restarting; active capture keeps its streams and the next recording uses the changes.
 2. Click **Start recording** → **Stop**. Enter an optional title, then **Continue** or **Start next recording** to immediately record another meeting. Unfinished trimming remains available through **Name / Trim** afterward. If trimming is enabled, choose **Accept**, **Skip**, or a manual shared interval. Closing the window hides it to the tray and keeps recording; **Exit** finalizes capture and saves background work.
-3. Follow session progress, retry/errors and resume paused work in the window. Open the meeting folder or completed documents. **Request Summary** explicitly starts the optional Summary stage after a complete transcript exists.
+3. Follow session progress, retry/errors and resume paused work in the window. **Cancel processing** skips Name / Trim after Stop or stops processing the selected meeting, retaining its audio and checkpoints. Canceled work stays stopped after restart; use **Resume processing** or unfinished **Name / Trim** to continue explicitly. Open the meeting folder or completed documents. **Request Summary** explicitly starts the optional Summary stage after a complete transcript exists.
 
 Launching MeetTape again reopens its existing window and keeps that instance's recording or processing running.
+
+**Ctrl+Shift+F9** toggles Start/Stop while MeetTape runs, including when hidden in the tray. Finish Name / Trim after Stop before starting again. Windows notifications confirm actual recording transitions without focusing the window; status remains available in the window/tray if notifications are suppressed. If the shortcut is occupied, use the buttons or tray.
 
 Shipped UI text and prompt instructions are in English. The editable transcription prompt still targets Russian (`ru`), and the default Summary still requests Russian output; translating instructions does not translate your meeting content. Updates preserve custom prompts and existing documents. Enabled transcription uploads audio to your configured API; Summary uploads the completed transcript. The bounded startup GitHub version check does not block recording.
 
@@ -27,6 +29,8 @@ For updates, stop recording and finish naming the meeting. Click **Update**, rev
 To uninstall, use **Exit** in every MeetTape window/tray, then remove **MeetTape** from Windows **Settings → Apps → Installed apps**. User settings/prompts (`%APPDATA%\MeetTape`), recordings/checkpoints (default `%LOCALAPPDATA%\MeetTape\Meetings`) and named User environment API keys remain. Keep prompt and meeting paths outside `%LOCALAPPDATA%\OriApps.MeetTape`; its `current` directory is replaced by updates and its installation root is removed on uninstall.
 
 ## Output
+
+Final folders use `Weekly sync_13.10.2026 10-30 01h25m`: title, local start time and audio duration in whole hours/minutes. Empty titles use `Unnamed meeting`; an existing destination is never overwritten or given an automatic suffix. The session UUID stays in `session.json`.
 
 ```text
 <session-folder>/

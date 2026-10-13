@@ -180,7 +180,7 @@ public sealed class TrimmingTests : IDisposable
         directory = PostRecordingWorkflow.SetTitle(directory, title);
         Assert.Equal(title, SessionStore.Read(directory).Title);
         Assert.DoesNotContain('\uFFFD', Path.GetFileName(directory));
-        string collision = Path.Combine(root, $"{data.StartedAtUtc.ToLocalTime():yyyy-MM-dd_HHmmss}_collision_{data.Id:N}");
+        string collision = Path.Combine(root, $"collision_{data.StartedAtUtc.ToLocalTime():dd.MM.yyyy HH-mm} 00h00m");
         Directory.CreateDirectory(collision);
         File.WriteAllText(Path.Combine(collision, "keep.txt"), "untouched");
         byte[] before = File.ReadAllBytes(Path.Combine(directory, "session.json"));
@@ -207,14 +207,166 @@ public sealed class TrimmingTests : IDisposable
             await controller.StartAsync();
             await Assert.ThrowsAsync<InvalidOperationException>(() => controller.ChooseTrimAsync(TrimDecision.Manual, 0, 1));
             string directory = (await controller.StopAsync())!;
+            var stopped = SessionStore.Read(directory);
+            Assert.StartsWith("Unnamed meeting_", Path.GetFileName(directory));
+            Assert.Equal(directory, (await controller.ReadAsync()).AwaitingTitleDirectory);
+            Assert.Equal(directory, capture.Status.RecordingDirectory);
             await Assert.ThrowsAsync<InvalidOperationException>(controller.StartAsync);
             await controller.PrepareAsync(directory, "Weekend");
             var saved = Assert.Single(SessionStore.Discover(root));
             Assert.Equal("Weekend", saved.Data!.Title);
             Assert.Contains("Weekend", saved.Directory);
+            Assert.DoesNotContain(stopped.Id.ToString("N"), Path.GetFileName(saved.Directory));
+            Assert.Equal(stopped.Id, saved.Data.Id);
+            Assert.Equal(saved.Directory, capture.Status.RecordingDirectory);
+            Assert.Null((await controller.ReadAsync()).AwaitingTitleDirectory);
         }
         finally { await controller.ShutdownAsync(); }
     }
+    [Fact]
+    public async Task ExitFinalizesANewUnnamedFolderWithoutStartingPreparationOrTranscription()
+    {
+        var controller = new DesktopController(RecordingConfiguration(), openSources: _ => new(new Source(), new Source()));
+        try
+        {
+            await controller.StartAsync();
+            var initial = (await controller.ReadAsync()).Sessions.Single().Data!;
+            await controller.ShutdownAsync();
+            var saved = Assert.Single(SessionStore.Discover(root));
+            Assert.StartsWith("Unnamed meeting_", Path.GetFileName(saved.Directory));
+            Assert.DoesNotContain(initial.Id.ToString("N"), Path.GetFileName(saved.Directory));
+            Assert.Equal(initial.Id, saved.Data!.Id);
+            Assert.True(saved.MePresent && saved.ThemPresent);
+            Assert.False((await controller.ReadAsync()).Capture.IsActive);
+            Assert.False(Directory.Exists(Path.Combine(saved.Directory, "processed")));
+            Assert.False(File.Exists(Path.Combine(saved.Directory, "transcription.md")));
+        }
+        finally { await controller.ShutdownAsync(); }
+    }
+
+    [Fact]
+    public async Task DefaultNameCollisionRetainsAudioAndNamingGateAndCanRecoverWithChosenTitle()
+    {
+        var controller = new DesktopController(RecordingConfiguration(), openSources: _ => new(new Source(), new Source()));
+        try
+        {
+            await controller.StartAsync();
+            var initial = (await controller.ReadAsync()).Sessions.Single();
+            string collision = Path.Combine(root, $"Unnamed meeting_{initial.Data!.StartedAtUtc.ToLocalTime():dd.MM.yyyy HH-mm} 00h00m");
+            Directory.CreateDirectory(collision); File.WriteAllText(Path.Combine(collision, "keep.txt"), "Untouched");
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(controller.StopAsync);
+            Assert.Contains("already exists", error.Message);
+            Assert.True(Directory.Exists(initial.Directory));
+            Assert.Equal("Untouched", File.ReadAllText(Path.Combine(collision, "keep.txt")));
+            var stopped = await controller.ReadAsync();
+            Assert.False(stopped.Capture.IsActive); Assert.Null(stopped.Capture.Error);
+            Assert.Equal(initial.Directory, stopped.AwaitingTitleDirectory);
+            Assert.True(File.Exists(Path.Combine(initial.Directory, "me.mp3")));
+            Assert.True(File.Exists(Path.Combine(initial.Directory, "them.mp3")));
+            await Assert.ThrowsAsync<InvalidOperationException>(controller.StartAsync);
+            await controller.PrepareAsync(initial.Directory, "Different title");
+            var named = Assert.Single(SessionStore.Discover(root));
+            Assert.StartsWith("Different title_", Path.GetFileName(named.Directory));
+            Assert.Equal(initial.Data.Id, named.Data!.Id);
+            Assert.Equal(named.Directory, (await controller.ReadAsync()).Capture.RecordingDirectory);
+            Assert.Null((await controller.ReadAsync()).AwaitingTitleDirectory);
+        }
+        finally { await controller.ShutdownAsync(); }
+    }
+
+    private LoadedConfiguration RecordingConfiguration() => config with
+    {
+        Settings = config.Settings with { MeetingsRoot = root, Stages = new() { Trim = false, Transcribe = false, Summary = false } }
+    };
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ExitAfterDefaultNameCollisionStillCompletesAndRetainsFinalizedSource(bool stopFirst)
+    {
+        var controller = new DesktopController(RecordingConfiguration(), openSources: _ => new(new Source(), new Source()));
+        var notices = new List<OperationNotice>();
+        controller.Notice += notices.Add;
+        await controller.StartAsync();
+        var initial = (await controller.ReadAsync()).Sessions.Single();
+        string collision = Path.Combine(root, $"Unnamed meeting_{initial.Data!.StartedAtUtc.ToLocalTime():dd.MM.yyyy HH-mm} 00h00m");
+        Directory.CreateDirectory(collision); File.WriteAllText(Path.Combine(collision, "keep.txt"), "Untouched");
+        if (stopFirst) await Assert.ThrowsAsync<InvalidOperationException>(controller.StopAsync);
+        byte[]? audio = stopFirst ? File.ReadAllBytes(Path.Combine(initial.Directory, "me.mp3")) : null;
+        await controller.ShutdownAsync();
+        await controller.ShutdownAsync();
+        var saved = Assert.Single(SessionStore.Discover(root));
+        Assert.Equal(initial.Directory, saved.Directory);
+        Assert.Equal(initial.Data.Id, saved.Data!.Id);
+        Assert.Equal(RecordingState.Recorded, saved.Data.RecordingState);
+        if (audio is not null) Assert.Equal(audio, File.ReadAllBytes(Path.Combine(saved.Directory, "me.mp3")));
+        Assert.True(saved.MePresent && saved.ThemPresent);
+        Assert.Equal("Untouched", File.ReadAllText(Path.Combine(collision, "keep.txt")));
+        Assert.Contains(notices, n => n.Kind == NoticeKind.Error);
+    }
+
+    [Fact]
+    public async Task CancelBeforeNamingPersistsDecisionAndAllowsNextCaptureWithoutApi()
+    {
+        string configPath = Path.Combine(root, "config.json");
+        ConfigurationBootstrap.Initialize(configPath, root);
+        var loaded = ConfigurationLoader.Load(configPath);
+        var capture = new Mp3Recorder(loaded, () => new(new Source(), new Source())).Capture;
+        var controller = new DesktopController(loaded, capture, readKey: _ => throw new Exception("Cancellation must not send requests"));
+        try
+        {
+            await controller.StartAsync();
+            await Task.Delay(30);
+            string directory = (await controller.StopAsync())!;
+            byte[] original = File.ReadAllBytes(Path.Combine(directory, "me.mp3"));
+            await controller.CancelProcessingAsync(directory);
+            var canceled = SessionStore.Read(directory);
+            Assert.Equal(JobState.Canceled, canceled.JobState);
+            Assert.Null(canceled.Title);
+            Assert.Null((await controller.ReadAsync()).AwaitingTitleDirectory);
+            Assert.Equal(original, File.ReadAllBytes(Path.Combine(directory, "me.mp3")));
+            await controller.StartAsync();
+            Assert.True((await controller.ReadAsync()).Capture.IsActive);
+            Assert.Equal(JobState.Canceled, SessionStore.Read(directory).JobState);
+            string? next;
+            try { next = await controller.StopAsync(); }
+            catch (InvalidOperationException error) when (error.Message == "Named session directory already exists; refusing to overwrite.")
+            { next = (await controller.ReadAsync()).AwaitingTitleDirectory; }
+            Assert.NotNull(next);
+            await controller.PrepareAsync(next, "Next meeting");
+        }
+        finally { await controller.ShutdownAsync(); }
+    }
+
+    [Fact]
+    public async Task CancelTrimPreparationRetainsOriginalsAndExplicitNameTrimClearsCancellation()
+    {
+        string directory = await SessionAsync([], []);
+        byte[] original = Hash(directory, "me.mp3");
+        var loaded = config with { Settings = config.Settings with { MeetingsRoot = root } };
+        using var capture = new CaptureCoordinator(() => new(new Source(), new Source()));
+        var controller = new DesktopController(loaded, capture);
+        try
+        {
+            await controller.PrepareAsync(directory, null);
+            await controller.CancelProcessingAsync(directory);
+            Assert.Equal(JobState.Canceled, SessionStore.Read(directory).JobState);
+            Assert.False((await controller.ReadAsync()).Preparing);
+            Assert.Equal(original, Hash(directory, "me.mp3"));
+            await controller.PrepareAsync(directory, null);
+            var deadline = DateTimeOffset.UtcNow.AddSeconds(10);
+            while ((await controller.ReadAsync()).Preparing)
+            {
+                Assert.True(DateTimeOffset.UtcNow < deadline);
+                await Task.Delay(25);
+            }
+            Assert.NotEqual(JobState.Canceled, SessionStore.Read(directory).JobState);
+            Assert.Equal(StageState.AwaitingUser, SessionStore.Read(directory).Stages["trim"].Status);
+            Assert.Equal(original, Hash(directory, "me.mp3"));
+        }
+        finally { await controller.ShutdownAsync(); }
+    }
+
     [Theory]
     [InlineData("12.5", 12.5)]
     [InlineData("01:23.5", 83.5)]

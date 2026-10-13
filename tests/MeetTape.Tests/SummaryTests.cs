@@ -5,6 +5,27 @@ namespace MeetTape.Tests;
 
 public sealed class SummaryTests : IDisposable
 {
+    [Fact]
+    public async Task RenamedMeetingCanRequestSummaryWithoutChangingTranscriptOrIdentity()
+    {
+        var (directory, config) = await SessionAsync();
+        var data = SessionStore.Read(directory);
+        byte[] transcript = File.ReadAllBytes(Path.Combine(directory, "transcription.md"));
+        string named = PostRecordingWorkflow.SetTitle(directory, data.Title ?? "");
+        config = config with { Settings = config.Settings with { Summary = config.Settings.Summary with
+            { PromptFile = Path.Combine(named, "summary-prompt.md") } } };
+        using var handler = new Handler((_, _) => Task.FromResult(Reply()));
+        using var http = new HttpClient(handler);
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "fixture-key");
+        jobs.RequestSummary(named);
+        await jobs.ProcessSessionAsync(named, default);
+        Assert.Equal(1, handler.Calls);
+        Assert.True(File.Exists(Path.Combine(named, "summary.md")));
+        Assert.Equal(transcript, File.ReadAllBytes(Path.Combine(named, "transcription.md")));
+        Assert.Equal(data.Id, SessionStore.Read(named).Id);
+        Assert.False(Directory.Exists(directory));
+    }
+
     private readonly TranscriptTests fixture = new();
     private static HttpResponseMessage Reply(int status = 200) => new((HttpStatusCode)status)
         { Content = new StringContent(status == 200 ? "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"# Decisions\\n- Retry after 300 seconds.\"}}]}" : "private error") };
@@ -147,6 +168,42 @@ public sealed class SummaryTests : IDisposable
         Assert.Equal(1, incomplete.Calls);
         Assert.Equal(StageState.Paused, SessionStore.Read(directory).Stages["summary"].Status);
         Assert.False(File.Exists(Path.Combine(directory, "summary.md")));
+    }
+
+    [Fact]
+    public async Task CancelSummaryStopsOnlyItsRequestAndResumeKeepsPublishedTranscript()
+    {
+        var (directory, config) = await SessionAsync();
+        byte[] transcript = File.ReadAllBytes(Path.Combine(directory, "transcription.md"));
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var handler = new Handler(async (_, token) =>
+        {
+            entered.TrySetResult();
+            await Task.Delay(Timeout.Infinite, token);
+            return Reply();
+        });
+        using var http = new HttpClient(handler);
+        using (var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key"))
+        {
+            jobs.RequestSummary(directory);
+            Task operation = jobs.ProcessSessionAsync(directory, default);
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await Task.Run(() => jobs.Cancel(directory));
+            await operation;
+            Assert.Equal(JobState.Canceled, SessionStore.Read(directory).JobState);
+            Assert.True(ProcessingJobs.CanResume(SessionStore.Read(directory)));
+            Assert.Equal(transcript, File.ReadAllBytes(Path.Combine(directory, "transcription.md")));
+        }
+        using var remaining = new Handler((_, _) => Task.FromResult(Reply()));
+        using var nextHttp = new HttpClient(remaining);
+        using var restarted = new ProcessingJobs(config, () => false, nextHttp, readKey: _ => "test-key");
+        await restarted.ProcessSessionAsync(directory, default);
+        Assert.Equal(0, remaining.Calls);
+        restarted.Resume(directory);
+        await restarted.ProcessSessionAsync(directory, default);
+        Assert.Equal(1, remaining.Calls);
+        Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
+        Assert.Equal(transcript, File.ReadAllBytes(Path.Combine(directory, "transcription.md")));
     }
 
     private async Task<(string Directory, LoadedConfiguration Config)> SessionAsync()

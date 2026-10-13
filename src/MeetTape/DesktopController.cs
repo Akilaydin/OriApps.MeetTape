@@ -12,12 +12,14 @@ public sealed record DesktopSnapshot(CaptureStatus Capture, IReadOnlyList<Stored
 public interface IDesktopController
 {
     event Action<OperationNotice>? Notice;
+    event Action<CaptureStatus>? RecordingChanged;
     Task<DesktopSnapshot> ReadAsync();
     Task StartAsync();
     Task<string?> StopAsync();
     Task PrepareAsync(string directory, string? title);
     Task ChooseTrimAsync(TrimDecision decision, double? start = null, double? end = null);
     Task ResumeAsync(string directory);
+    Task CancelProcessingAsync(string directory);
     Task SummaryAsync(string directory);
     Task ShutdownAsync();
 }
@@ -36,6 +38,7 @@ public sealed class DesktopController : IDesktopController
     private Task? shutdown;
 
     public event Action<OperationNotice>? Notice;
+    public event Action<CaptureStatus>? RecordingChanged;
 
     public DesktopController(LoadedConfiguration config, CaptureCoordinator? capture = null,
         HttpClient? http = null, Func<ApiSettings, string>? readKey = null,
@@ -54,6 +57,7 @@ public sealed class DesktopController : IDesktopController
         this.capture.Warning += Warn;
         this.capture.Failed += Fail;
         this.capture.Finished += Finished;
+        this.capture.StateChanged += PublishRecording;
         preparation.Notice += Publish;
         jobs.Notice += Publish;
     }
@@ -90,11 +94,27 @@ public sealed class DesktopController : IDesktopController
         await RunAsync(() =>
         {
             capture.Stop();
-            if (capture.Status.Error is null) result = awaitingTitle = capture.RecordingDirectory;
+            if (capture.Status.Error is null)
+            {
+                awaitingTitle = capture.RecordingDirectory;
+                result = awaitingTitle = FinalizeFolderName();
+            }
             else Fail(capture.Status.Error);
             if (awaitingTitle is null) jobs.Start();
         });
         return result;
+    }
+
+    private string? FinalizeFolderName()
+    {
+        if (capture.RecordingDirectory is not { } directory) return null;
+        try
+        {
+            var data = SessionStore.Read(directory);
+            capture.RecordingDirectory = PostRecordingWorkflow.SetTitle(directory, data.Title ?? "");
+            return capture.RecordingDirectory;
+        }
+        catch (RecordingException error) { throw new InvalidOperationException(error.Message); }
     }
 
     public Task PrepareAsync(string directory, string? title) => RunAsync(() =>
@@ -119,6 +139,17 @@ public sealed class DesktopController : IDesktopController
 
     public Task ResumeAsync(string directory) => JobActionAsync(() => jobs.Resume(directory));
     public Task SummaryAsync(string directory) => JobActionAsync(() => jobs.RequestSummary(directory));
+
+    public Task CancelProcessingAsync(string directory) => RunAsync(() =>
+    {
+        if (capture.Status.IsActive && string.Equals(capture.RecordingDirectory, directory, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Stop this recording before canceling its processing.");
+        if (string.Equals(preparation.SelectedDirectory, directory, StringComparison.OrdinalIgnoreCase))
+            preparation.CancelAndWait();
+        jobs.Cancel(directory);
+        if (string.Equals(awaitingTitle, directory, StringComparison.OrdinalIgnoreCase)) awaitingTitle = null;
+        jobs.Start();
+    });
 
     private Task JobActionAsync(Action action) => RunAsync(() =>
     {
@@ -159,6 +190,11 @@ public sealed class DesktopController : IDesktopController
     }
 
     private void Warn(string message) => Publish(new(NoticeKind.Warning, message));
+    private void PublishRecording(CaptureStatus status)
+    {
+        try { RecordingChanged?.Invoke(status); }
+        catch (Exception) { /* Notifications cannot affect capture or finalization. */ }
+    }
     private void Fail(string message) => Publish(new(NoticeKind.Error, message));
     private void Publish(OperationNotice notice)
     {
@@ -188,13 +224,25 @@ public sealed class DesktopController : IDesktopController
                 finally
                 {
                     try { preparation.CancelAndWait(); }
-                    finally { capture.Dispose(); }
+                    finally
+                    {
+                        bool recording = capture.Status.IsActive;
+                        capture.Dispose();
+                        if (capture.Status.Error is null && (recording || awaitingTitle is not null))
+                        {
+                            awaitingTitle = capture.RecordingDirectory;
+                            try { _ = FinalizeFolderName(); awaitingTitle = null; }
+                            catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidOperationException)
+                            { Fail("Cannot apply readable folder name; finalized recording kept in its original folder. Check collisions and permissions."); }
+                        }
+                    }
                 }
                 preparation.Dispose();
                 jobs.Dispose();
                 capture.Warning -= Warn;
                 capture.Failed -= Fail;
                 capture.Finished -= Finished;
+                capture.StateChanged -= PublishRecording;
             }).ConfigureAwait(false);
         }
         finally { gate.Release(); }
