@@ -208,7 +208,8 @@ public sealed class SessionTests : IDisposable
         var saved = SessionStore.Read(capture.RecordingDirectory!);
         Assert.Equal(RecordingState.Failed, saved.RecordingState);
         Assert.Equal(JobState.Paused, saved.JobState);
-        Assert.Contains("88890004", saved.Error!);
+        Assert.Contains("disconnected", saved.Error!);
+        Assert.DoesNotContain("88890004", saved.Error!);
         Assert.DoesNotContain("private content", saved.Error!);
     }
 

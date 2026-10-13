@@ -11,6 +11,7 @@ internal static class ConfigurationStore
         IReadOnlyList<PromptDocument>? promptEdits = null)
     {
         setKey ??= (name, value, target) => Environment.SetEnvironmentVariable(name, value, target);
+        foreach (string key in keysToSave.Values) AppDiagnostics.ProtectSecret(key);
         path = Path.GetFullPath(path);
         bool changed = !string.Equals(originalText, updatedText, StringComparison.Ordinal);
         if (keysToSave.Any(pair => !ApiKeyProvider.ValidEnvironmentName(pair.Key) || pair.Value.Length > 32767
@@ -33,11 +34,13 @@ internal static class ConfigurationStore
         }
         catch (InvalidDataException ex)
         {
+            AppDiagnostics.Error("settings", "Validate", ex);
             return $"Invalid configuration: {ex.Message} Nothing saved.";
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            return "Cannot read an enabled prompt file. Check prompt paths and permissions; nothing saved.";
+            AppDiagnostics.Error("settings", "Read enabled prompt", ex);
+            return AppDiagnostics.UserMessage(ex, "Cannot read an enabled prompt file. Check prompt paths and permissions; nothing saved.");
         }
         // Serialize the final compare, replacement and environment update across
         // Settings saves; a comparison alone permits concurrent lost updates.
@@ -82,6 +85,7 @@ internal static class ConfigurationStore
                 catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException
                     or System.Security.SecurityException or NotSupportedException)
                 {
+                    AppDiagnostics.Error("settings", "Save key environment", ex);
                     return "Cannot save API key in the Windows user environment. Configuration settings may have been saved.";
                 }
             }
@@ -91,6 +95,7 @@ internal static class ConfigurationStore
             mutex.ReleaseMutex();
         }
 
+        AppDiagnostics.Info("settings", "Configuration/prompts saved");
         return null;
     }
 

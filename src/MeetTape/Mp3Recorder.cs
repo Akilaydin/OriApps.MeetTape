@@ -58,7 +58,8 @@ public sealed class Mp3Recorder
         }
         catch (Exception ex)
         {
-            throw ex as RecordingException ?? new RecordingException("Cannot create recording output; check meetingsRoot permissions and free space.");
+            AppDiagnostics.Error("recording", "Create output", ex);
+            throw ex as RecordingException ?? new RecordingException(AppDiagnostics.UserMessage(ex, "Cannot create recording output; check meetingsRoot permissions and free space."));
         }
     }
 
@@ -89,7 +90,8 @@ public sealed class Mp3Recorder
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            throw new RecordingException("Cannot finalize session.json or protect originals; audio retained. Check output permissions and disk space.");
+            AppDiagnostics.Error("recording", "Finalize session", ex);
+            throw new RecordingException(AppDiagnostics.UserMessage(ex, "Cannot finalize session.json or protect originals; audio retained. Check output permissions and disk space."));
         }
         finally { lease.Dispose(); lease = null; }
     }

@@ -125,12 +125,14 @@ public sealed class CaptureCoordinator(
                 Volatile.Write(ref active, sources);
                 sources.Me.StartRecording();
                 sources.Them.StartRecording();
+                AppDiagnostics.Info("capture", "Me/Them capture started");
                 NotifyStateChanged();
             }
             catch (Exception ex)
             {
+                AppDiagnostics.Error("capture", "Start Me/Them", ex);
                 string diagnostic = ex is RecordingException ? ex.Message :
-                    $"Cannot start capture (0x{ex.HResult:X8}). Check microphone permissions and selected active devices.";
+                    AppDiagnostics.UserMessage(ex, "Cannot start capture. Check microphone permissions and selected active devices.");
                 Volatile.Write(ref lastError, diagnostic);
                 stopping = true;
                 try { sources?.Dispose(); }
@@ -149,8 +151,10 @@ public sealed class CaptureCoordinator(
         try { Finished?.Invoke(Status); }
         catch (Exception ex)
         {
-            Volatile.Write(ref lastError, ex is RecordingException ? ex.Message : "Cannot finalize session metadata; originals retained. Check permissions and disk space.");
+            AppDiagnostics.Error("capture", "Finalize metadata", ex);
+            Volatile.Write(ref lastError, AppDiagnostics.UserMessage(ex, "Cannot finalize session metadata; originals retained. Check permissions and disk space."));
         }
+        AppDiagnostics.Info("capture", "Me/Them capture finalized");
         NotifyStateChanged();
     }
 
@@ -197,8 +201,10 @@ public sealed class CaptureCoordinator(
 
     private void QueueFailure(CaptureSources sources, CaptureChannel channel, Exception? error)
     {
+        if (error is not null) AppDiagnostics.Error("capture", channel + " stopped", error);
         string diagnostic = error is RecordingException ? $"{channel}: {error.Message}" :
-            $"{channel} capture stopped unexpectedly (0x{(error?.HResult ?? 0):X8}). Check the device connection and permissions.";
+            error is null ? $"{channel} capture stopped unexpectedly. Check the device connection and permissions." :
+            AppDiagnostics.UserMessage(error, $"{channel} capture stopped unexpectedly. Check the device connection and permissions.");
         if (Interlocked.CompareExchange(ref lastError, diagnostic, null) is not null)
             return;
         // Never dispose/join a WASAPI thread from its own data/stopped callback.
@@ -283,7 +289,8 @@ public sealed class CaptureCoordinator(
         }
         catch (Exception ex)
         {
-            Interlocked.CompareExchange(ref lastError, $"Capture stop failed (0x{ex.HResult:X8}). Check device connection.", null);
+            AppDiagnostics.Error("capture", "Stop devices", ex);
+            Interlocked.CompareExchange(ref lastError, AppDiagnostics.UserMessage(ex, "Capture stop failed. Check device connection."), null);
         }
         finally
         {
@@ -298,8 +305,8 @@ public sealed class CaptureCoordinator(
             }
             catch (Exception ex)
             {
-                Interlocked.CompareExchange(ref lastError, ex is RecordingException ? ex.Message :
-                    $"Capture cleanup failed (0x{ex.HResult:X8}). Check device connection.", null);
+                AppDiagnostics.Error("capture", "Cleanup/finalize", ex);
+                Interlocked.CompareExchange(ref lastError, AppDiagnostics.UserMessage(ex, "Capture cleanup failed. Check device connection."), null);
             }
         }
         NotifyFinished();
