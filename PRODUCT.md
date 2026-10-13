@@ -38,6 +38,8 @@ All shipped UI messages and prompt instructions are in English. The default tran
 
 ## Trimming and transcription
 
+Failed or canceled trim/chunk attempts discard only their unselected derivative directory after FFmpeg has stopped. Original recordings, selected successful derivatives and checkpoints remain. Failed selection persistence also discards the unselected attempt. If FFmpeg cannot be confirmed stopped, metadata cannot safely identify the selected set, or cleanup storage/links are unsafe, files remain and technical diagnostics are logged.
+
 Edge-silence detection considers activity in both tracks. Choose Accept, Skip or Apply interval in the window; manual times accept seconds, `MM:SS` or `HH:MM:SS` and require `0 <= start < end <= duration`. Both tracks use one shared interval; interior silence remains. No detected activity keeps the full recording. Name / Trim reopens unfinished preparation. Originals remain unchanged; selected derivatives are saved only after successful preparation.
 
 After a saved trim choice, or with trimming disabled, enabled transcription runs serially in the background and resumes eligible unfinished jobs at GUI startup. Each chunk uses stereo MP3 with Me on the left and Them on the right, with boundary context. Successful results are saved before progress advances; only a complete set produces `transcription.md`.
