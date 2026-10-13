@@ -232,8 +232,11 @@ public sealed class ProcessingJobs : IDisposable
                 foreach (var chunk in chunks)
                 {
                     token.ThrowIfCancellationRequested();
-                    if (File.Exists(ChunkStore.PathFor(directory, chunk.Index)))
-                        _ = await ChunkStore.ReadAsync(directory, data, chunk, token);
+                    string checkpoint = ChunkStore.PathFor(directory, chunk.Index);
+                    bool saved = File.Exists(checkpoint);
+                    ChunkResult result;
+                    if (saved)
+                        result = await ChunkStore.ReadAsync(directory, data, chunk, token);
                     else
                     {
                         prompt ??= ReadPrompt(data.Processing.Transcription, data.Processing.ConfigurationDirectory, "transcription");
@@ -243,8 +246,8 @@ public sealed class ProcessingJobs : IDisposable
                             token.ThrowIfCancellationRequested();
                             var reply = await api.TranscribeAsync(data.Processing.Transcription, prompt,
                                 AudioChunker.ResolveProcessed(directory, chunk.RelativePath), token);
-                            ChunkStore.Save(directory, new(data.Id, chunk, reply.AudioSha256, data.Processing.Transcription.Model,
-                                Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(prompt + ChatApiClient.SourceInstruction))), reply.Text));
+                            result = new(data.Id, chunk, reply.AudioSha256, data.Processing.Transcription.Model,
+                                Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(prompt + ChatApiClient.SourceInstruction))), reply.Text);
                         }
                         catch (ChatApiException ex) when (ex.Kind == ApiFailureKind.Transient)
                         {
@@ -257,6 +260,17 @@ public sealed class ProcessingJobs : IDisposable
                             return; // Leave this session ready for a later pass; process other meetings now.
                         }
                     }
+                    try { TranscriptAssembler.ValidateChunk(result.Text, chunk); }
+                    catch (InvalidDataException ex)
+                    {
+                        string rejected = Path.Combine(directory, "chunks", $"{chunk.Index:D4}.rejected-{Guid.NewGuid():N}.json");
+                        if (saved) File.Move(checkpoint, rejected, overwrite: false);
+                        else ChunkStore.SaveFile(rejected, result);
+                        throw new ChatApiException(ApiFailureKind.InvalidResponse,
+                            $"Chunk {chunk.Index} has invalid timed text. {ex.Message} " +
+                            "Response retained in chunks/*.rejected-*.json. Check the transcription prompt/settings, then Resume to retry this chunk; valid earlier chunks are retained.");
+                    }
+                    if (!saved) ChunkStore.Save(directory, result);
                     // The flushed chunk checkpoint is authoritative if a crash happens before this metadata save.
                     // Checkpoints before the failing chunk must not reset its accumulated backoff.
                     var remainingRetry = data.Retry is { } retry && retry.ChunkIndex != chunk.Index ? retry : null;

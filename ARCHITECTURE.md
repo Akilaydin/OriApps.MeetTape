@@ -45,7 +45,7 @@ Explicit Summary request → ChatApiClient → ChunkStore → summary.md
 
 `ChatApiClient` sends non-streaming Chat Completions requests with base64 MP3 `input_audio`, or text-only Summary messages. Provider requests disable redirects and use a five-minute deadline, 8 MiB audio cap and 2 MiB response/Summary-input caps. Timeout, temporary connection and HTTP 408/429/5xx failures retry indefinitely with backoff capped at five minutes; invalid responses and permanent/configuration/filesystem faults pause.
 
-`TranscriptAssembler` validates saved timed text or the exact `[NO_SPEECH]` marker, maps chunk timestamps to the original timeline and conservatively reconciles repeated same-source context. Only a complete checkpoint set publishes a transcript. Summary requires an explicit persisted request and the completed transcript; its saved result is tied to the transcript hash. Source labels and model timestamps remain estimates; no acoustic echo cancellation is implemented.
+`ProcessingJobs` uses the `TranscriptAssembler` parser to validate timed text or the exact `[NO_SPEECH]` marker before accepting each checkpoint or uploading the next chunk. Rejected timed replies, including existing invalid timed checkpoints, are retained separately from successful checkpoints so Resume can retry them. `TranscriptAssembler` maps chunk timestamps to the original timeline and conservatively reconciles repeated same-source context. Only a complete checkpoint set publishes a transcript. Summary requires an explicit persisted request and the completed transcript; its saved result is tied to the transcript hash. Source labels and model timestamps remain estimates; no acoustic echo cancellation is implemented.
 
 ## Persistence
 

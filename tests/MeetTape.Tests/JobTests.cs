@@ -191,6 +191,71 @@ public sealed class JobTests : IDisposable
         Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
     }
 
+    [Theory]
+    [InlineData(1, "Text without timestamps")]
+    [InlineData(2, "Text without timestamps")]
+    [InlineData(1, "[00:10] Me: Outside the chunk")]
+    [InlineData(1, "```markdown\n```")]
+    public async Task InvalidTimedReplyStopsBeforeNextUploadAndResumeRetainsValidChunks(int invalidIndex, string invalidText)
+    {
+        string directory = Session();
+        using var first = new Handler((call, _) => Task.FromResult(call == invalidIndex
+            ? new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(
+                System.Text.Json.JsonSerializer.Serialize(new
+                { choices = new[] { new { finish_reason = "stop", message = new { content = invalidText } } } }),
+                Encoding.UTF8, "application/json") }
+            : Response()));
+        using (var http = new HttpClient(first))
+        using (var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key"))
+            await jobs.ProcessSessionAsync(directory, default);
+
+        Assert.Equal(invalidIndex, first.Calls);
+        var paused = SessionStore.Read(directory);
+        Assert.Equal(JobState.Paused, paused.JobState);
+        Assert.Equal(StageState.Paused, paused.Stages["transcribe"].Status);
+        Assert.Contains("Resume", paused.Error);
+        Assert.Equal(invalidIndex - 1, paused.Stages["transcribe"].CompletedChunks);
+        Assert.False(File.Exists(ChunkStore.PathFor(directory, invalidIndex)));
+        Assert.False(File.Exists(Path.Combine(directory, "transcription.md")));
+        string rejected = Assert.Single(Directory.GetFiles(Path.Combine(directory, "chunks"), "*.rejected-*.json"));
+        Assert.Contains(invalidText, (await ChunkStore.ReadFileAsync<ChunkResult>(rejected, default))!.Text);
+        byte[]? retained = invalidIndex > 1 ? File.ReadAllBytes(ChunkStore.PathFor(directory, 1)) : null;
+
+        using var next = new Handler((_, _) => Task.FromResult(Response()));
+        using var client = new HttpClient(next);
+        using var resumed = new ProcessingJobs(config, () => false, client, readKey: _ => "test-key");
+        resumed.Resume(directory);
+        await resumed.ProcessSessionAsync(directory, default);
+        Assert.Equal(4 - invalidIndex, next.Calls);
+        Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
+        if (retained is not null) Assert.Equal(retained, File.ReadAllBytes(ChunkStore.PathFor(directory, 1)));
+        Assert.True(File.Exists(rejected));
+    }
+
+    [Fact]
+    public async Task InvalidTimedCheckpointIsRetainedForDiagnosisAndCanBeRetriedThroughResume()
+    {
+        string directory = Session();
+        var data = SessionStore.Read(directory);
+        var chunk = data.Audio!.Chunks[0];
+        string hash = await TranscriptAssembler.HashAsync(Path.Combine(directory, chunk.RelativePath), default);
+        ChunkStore.Save(directory, new(data.Id, chunk, hash, "fixture-model", "fixture-prompt", "Untimed old response"));
+        byte[] rejected = File.ReadAllBytes(ChunkStore.PathFor(directory, 1));
+        using var handler = new Handler((_, _) => Task.FromResult(Response()));
+        using var http = new HttpClient(handler);
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key");
+        await jobs.ProcessSessionAsync(directory, default);
+        Assert.Equal(0, handler.Calls);
+        Assert.Equal(JobState.Paused, SessionStore.Read(directory).JobState);
+        Assert.False(File.Exists(ChunkStore.PathFor(directory, 1)));
+        string diagnosis = Assert.Single(Directory.GetFiles(Path.Combine(directory, "chunks"), "*.rejected-*.json"));
+        Assert.Equal(rejected, File.ReadAllBytes(diagnosis));
+        jobs.Resume(directory);
+        await jobs.ProcessSessionAsync(directory, default);
+        Assert.Equal(3, handler.Calls);
+        Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
+    }
+
     [Fact]
     public async Task ResultIsCommittedBeforeMetadataAndRecoveredAfterMetadataWriteFailure()
     {

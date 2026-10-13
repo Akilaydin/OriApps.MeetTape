@@ -42,7 +42,7 @@ Cancel processing is available immediately after Stop and for a selected meeting
 
 The transcript has approximate timestamps relative to the original recording and Me/Them/Unknown source labels. Unsupported labels become Unknown. Repeated same-source boundary context is reconciled conservatively. Source labels are model estimates, not guaranteed individual identities; microphone audio can contain playback echo. Recognition accuracy and exact deduplication are not guaranteed.
 
-An exact `[NO_SPEECH]` response adds no utterances, allowing silent chunks to complete. Empty, malformed or truncated responses pause processing. Each audio upload is limited to 8 MiB, each API response to 2 MiB, and each request to five minutes.
+An exact `[NO_SPEECH]` response adds no utterances, allowing silent chunks to complete. Each chunk's timed text is checked before the next upload. Invalid timed replies pause processing and remain in `chunks/*.rejected-*.json` for diagnosis; Resume retries the rejected chunk while retaining earlier valid checkpoints. Empty, malformed or truncated responses also pause processing. Each audio upload is limited to 8 MiB, each API response to 2 MiB, and each request to five minutes.
 
 ## Summary
 
