@@ -125,7 +125,7 @@ public sealed class App : Application
         if (Smoke)
         {
             int tick = 0;
-            timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+            timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
             timer.Tick += async (_, _) =>
             {
                 tick++;
