@@ -46,7 +46,10 @@ public sealed class ChatApiClient(HttpClient client, Func<bool> captureActive,
             await file.ReadExactlyAsync(audio, token);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        { throw new ChatApiException(ApiFailureKind.FileSystem, "Cannot read audio chunk; check selected files and permissions."); }
+        {
+            AppDiagnostics.Error("api", "Read transcription audio", ex);
+            throw new ChatApiException(ApiFailureKind.FileSystem, AppDiagnostics.UserMessage(ex, "Cannot read audio chunk; check selected files and permissions."));
+        }
         string audioHash = Convert.ToHexString(SHA256.HashData(audio));
         byte[] body = CreateBody(settings.Model, prompt + SourceInstruction, audio);
         return new(await SendAsync(settings, key, body, token), audioHash);
@@ -81,6 +84,7 @@ public sealed class ChatApiClient(HttpClient client, Func<bool> captureActive,
         if (string.IsNullOrWhiteSpace(key) || key.Any(char.IsControl))
             throw new ChatApiException(ApiFailureKind.Configuration,
                 $"The {stage} API key in environment variable '{settings.ApiKeyEnvironmentVariable}' is missing or invalid. Set the key in Settings; no request made.");
+        AppDiagnostics.ProtectSecret(key);
         return key;
     }
 
@@ -95,7 +99,9 @@ public sealed class ChatApiClient(HttpClient client, Func<bool> captureActive,
         deadline.CancelAfter(timeout ?? TimeSpan.FromMinutes(5));
         try
         {
+            AppDiagnostics.Info("api", "Request started");
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token);
+            AppDiagnostics.Info("api", $"Response HTTP {(int)response.StatusCode}");
             if (!response.IsSuccessStatusCode)
             {
                 var after = response.Headers.RetryAfter;
@@ -118,13 +124,22 @@ public sealed class ChatApiClient(HttpClient client, Func<bool> captureActive,
             token.ThrowIfCancellationRequested();
             return ParseText(content.ToArray());
         }
-        catch (OperationCanceledException) when (!token.IsCancellationRequested)
-        { throw new ChatApiException(ApiFailureKind.Transient, "API request timed out; transcription not accepted."); }
+        catch (OperationCanceledException ex) when (!token.IsCancellationRequested)
+        {
+            AppDiagnostics.Error("api", "Request timeout", ex);
+            throw new ChatApiException(ApiFailureKind.Transient, "API request timed out; transcription not accepted.");
+        }
         catch (HttpRequestException ex)
-        { throw new ChatApiException(ex.StatusCode is { } status ? Classify(status) : ApiFailureKind.Transient,
-            "API connection failed; transcription not accepted.", ex.StatusCode); }
-        catch (IOException)
-        { throw new ChatApiException(ApiFailureKind.Transient, "API response connection interrupted; transcription not accepted."); }
+        {
+            AppDiagnostics.Error("api", "Request connection", ex);
+            throw new ChatApiException(ex.StatusCode is { } status ? Classify(status) : ApiFailureKind.Transient,
+                AppDiagnostics.UserMessage(ex, "API connection failed; transcription not accepted."), ex.StatusCode);
+        }
+        catch (IOException ex)
+        {
+            AppDiagnostics.Error("api", "Read response connection", ex);
+            throw new ChatApiException(ApiFailureKind.Transient, "API response connection interrupted; transcription not accepted.");
+        }
     }
 
     private void EnsureIdle(CancellationToken token)

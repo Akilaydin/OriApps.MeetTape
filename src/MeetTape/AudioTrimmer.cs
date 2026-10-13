@@ -118,15 +118,28 @@ public sealed class AudioTrimmer(string ffmpegPath)
         foreach (string argument in arguments) start.ArgumentList.Add(argument);
         using var process = new Process { StartInfo = start };
         try { process.Start(); }
-        catch (System.ComponentModel.Win32Exception)
-        { throw new RecordingException("Cannot start FFmpeg; check capture.ffmpegPath. Originals retained."); }
+        catch (System.ComponentModel.Win32Exception ex)
+        {
+            AppDiagnostics.Error("ffmpeg", "Start preparation", ex);
+            throw new RecordingException(AppDiagnostics.UserMessage(ex, "Cannot start FFmpeg; check capture.ffmpegPath. Originals retained."));
+        }
+        AppDiagnostics.Info("ffmpeg", "Preparation started");
         var output = process.StandardOutput.BaseStream.CopyToAsync(Stream.Null, cancellationToken);
-        var errors = ReadLinesAsync(process.StandardError, inspectLine, cancellationToken);
+        var details = new System.Text.StringBuilder();
+        var errors = ReadLinesAsync(process.StandardError, line =>
+        {
+            inspectLine?.Invoke(line);
+            if (details.Length < 4096) details.AppendLine(line[..Math.Min(line.Length, 4096 - details.Length)]);
+        }, cancellationToken);
         try
         {
             await Task.WhenAll(process.WaitForExitAsync(cancellationToken), output, errors);
             if (process.ExitCode != 0)
+            {
+                AppDiagnostics.Error("ffmpeg", $"Preparation exit {process.ExitCode}", new IOException(details.ToString()));
                 throw new RecordingException("FFmpeg audio preparation failed; check source files, permissions and free space. Originals retained.");
+            }
+            AppDiagnostics.Info("ffmpeg", "Preparation completed");
         }
         finally
         {
@@ -136,7 +149,7 @@ public sealed class AudioTrimmer(string ffmpegPath)
                 await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
             }
             catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or TimeoutException)
-            { throw new AudioPreparationShutdownException("Cannot confirm FFmpeg stopped; capture remains blocked. Close the stalled FFmpeg process before restarting MeetTape."); }
+            { AppDiagnostics.Error("ffmpeg", "Join preparation", ex); throw new AudioPreparationShutdownException("Cannot confirm FFmpeg stopped; capture remains blocked. Close the stalled FFmpeg process before restarting MeetTape."); }
             // Observe canceled/faulted readers before disposing their streams.
             try { await Task.WhenAll(output, errors).WaitAsync(TimeSpan.FromSeconds(5)); }
             catch (OperationCanceledException) { }

@@ -18,6 +18,8 @@ The Meetings context menu offers Delete recording for a selected finalized meeti
 
 ## Updates
 
+Significant failures show a readable cause and an available recovery action. Technical exception context and workflow transitions are saved in `%LOCALAPPDATA%\MeetTape\Logs`, retained after restart and bounded to five 1 MiB files. Logs are accessed directly through the filesystem, with no log-view UI. API keys, prompts, transcripts and audio payloads are not logged; credential values and URL credentials are redacted. Logging is nonblocking for capture and best-effort when storage is unavailable.
+
 GUI startup displays the installed version and checks the public Velopack GitHub feed with a bounded two-second wait. Failures do not block capture; source/portable builds skip the check. Update requires idle capture and no unfinished naming/current operation. It shows current/available versions and asks for explicit consent before downloading. Decline/close leaves the UI usable; even a previously downloaded package never auto-applies on startup. After download, capture is checked again and local work is joined before applying/restarting. Failed joins block apply. Use Exit in other MeetTape windows/trays first.
 
 ## Configuration

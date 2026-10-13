@@ -109,8 +109,9 @@ public sealed class Mp3Track
         }
         catch (Exception ex)
         {
+            AppDiagnostics.Error("recording", "MP3 write/encoder", ex);
             var error = ex as RecordingException ?? new RecordingException(
-                "MP3 write/encoder failed or stalled; check output permissions, disk space and FFmpeg. Partial originals retained.");
+                AppDiagnostics.UserMessage(ex, "MP3 write/encoder failed or stalled; check output permissions, disk space and FFmpeg. Partial originals retained."));
             Volatile.Write(ref failure, error);
             drained.TrySetException(error);
             // Close FFmpeg's stdin and let it flush the already written PCM before any forced disposal.

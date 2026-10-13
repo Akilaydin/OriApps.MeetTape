@@ -15,8 +15,21 @@ internal static class Program
             ? null : new DesktopInstance(@"Local\OriApps.MeetTape.Desktop");
         if (instance is { IsPrimary: false }) { instance.ActivateExisting(); return 0; }
         App.Instance = instance;
+        using var diagnostics = App.Smoke || App.StartupError is not null ? null : new FileDiagnostics(AppDiagnostics.DirectoryPath);
+        AppDiagnostics.ProcessLog = diagnostics;
+        void Unhandled(object sender, UnhandledExceptionEventArgs e)
+        { if (e.ExceptionObject is Exception error) AppDiagnostics.Error("startup", "Unhandled exception", error); }
+        AppDomain.CurrentDomain.UnhandledException += Unhandled;
+        AppDiagnostics.Info("startup", "Desktop starting");
         try { return BuildAvaloniaApp().StartWithClassicDesktopLifetime(args); }
-        finally { App.Instance = null; }
+        catch (Exception error) { AppDiagnostics.Error("startup", "Desktop failed", error); throw; }
+        finally
+        {
+            AppDiagnostics.Info("startup", "Desktop exiting");
+            AppDomain.CurrentDomain.UnhandledException -= Unhandled;
+            AppDiagnostics.ProcessLog = null;
+            App.Instance = null;
+        }
     }
 
     internal static void ConfigureStartup(string[] args)

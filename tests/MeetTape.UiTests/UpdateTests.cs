@@ -102,6 +102,7 @@ public sealed class UpdateTests
         Assert.False(await model.UpdateAsync(updates, (_, _) => Task.FromResult(true)));
         Assert.Equal(0, updates.Applies);
         Assert.DoesNotContain("private-secret", model.ErrorText);
+        Assert.Contains(failure == "check" ? "connection" : "storage", model.ErrorText, StringComparison.OrdinalIgnoreCase);
         if (failure is "check" or "download") Assert.True(model.CanRecord);
         else Assert.False(model.CanRecord);
         model.Detach();
@@ -121,6 +122,35 @@ public sealed class UpdateTests
             Assert.Equal(0, updates.Downloads); Assert.Equal(0, controller.Shutdowns);
             Assert.True(model.CanRecord); model.Detach();
         }
+    }
+
+    [AvaloniaFact]
+    public async Task UpdaterAndFileOperationFailuresShowReasonsAndKeepRedactedLogsAfterRestart()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "MeetTapeUiDiagnostics-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            using (var log = new FileDiagnostics(directory))
+            using (AppDiagnostics.Use(log))
+            {
+                AppDiagnostics.ProtectSecret("private-secret");
+                var model = new MainViewModel(new Controller()); await model.RefreshAsync();
+                var updates = new Updates { Failure = "check" };
+                Assert.False(await model.UpdateAsync(updates, (_, _) => Task.FromResult(true)));
+                Assert.Contains("connection", model.ErrorText);
+                string notice = await StartupReleaseNotice.GetAsync(updates);
+                Assert.Contains("connection", notice);
+                await model.ExecuteAsync(() => throw new UnauthorizedAccessException("private-secret"));
+                Assert.Contains("Access denied", model.ErrorText);
+                Assert.DoesNotContain("private-secret", model.ErrorText);
+                Assert.True(model.CanRecord); model.Detach();
+            }
+            using (var restarted = new FileDiagnostics(directory)) restarted.Write("Information", "startup", "Restarted fixture");
+            string text = File.ReadAllText(Path.Combine(directory, "meettape.log"));
+            Assert.Contains("HttpRequestException", text); Assert.Contains("UnauthorizedAccessException", text);
+            Assert.Contains("Restarted fixture", text); Assert.DoesNotContain("private-secret", text);
+        }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
     }
 
     private static void Click(Window window, string name) => window.GetLogicalDescendants().OfType<Button>().Single(b => b.Name == name).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));

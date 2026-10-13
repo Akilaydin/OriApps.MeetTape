@@ -191,7 +191,11 @@ public sealed class App : Application
                     model.RefreshCapture(await controller.ReadCaptureAsync());
                     if (++captureTicks == 10) { captureTicks = 0; await model.RefreshAsync(); }
                 }
-                catch (Exception) { model.SetError("Cannot refresh recording status. Check Details and retry the operation."); }
+                catch (Exception error)
+                {
+                    AppDiagnostics.Error("ui", "Refresh capture", error);
+                    model.SetError(AppDiagnostics.UserMessage(error, "Cannot refresh recording status. Check Details and retry the operation."));
+                }
                 finally { readingCapture = false; }
             };
             timer.Start();
@@ -199,8 +203,11 @@ public sealed class App : Application
             model.ReleaseText = await StartupReleaseNotice.GetAsync(updates);
             model.SetInfo("Close hides the window. Use Exit to stop MeetTape.");
         }
-        catch (Exception ex) { model.SetError(ex is InvalidDataException ? ex.Message :
-            "Cannot load settings or prompts. Open Settings; check configuration paths and permissions."); }
+        catch (Exception error)
+        {
+            AppDiagnostics.Error("startup", "Initialize settings/controller", error);
+            model.SetError(AppDiagnostics.UserMessage(error, "Cannot load settings or prompts. Open Settings; check configuration paths and permissions."));
+        }
         finally { initializingController = false; }
     }
 
@@ -220,6 +227,7 @@ public sealed class App : Application
         }
         catch (Exception error)
         {
+            AppDiagnostics.Error("taskbar", "Initialize", error);
             taskbar?.Dispose(); taskbar = null;
             if (Smoke) Console.Error.WriteLine($"Taskbar initialization failed: {error.GetType().Name}, HRESULT 0x{error.HResult:X8}.");
         }
@@ -252,8 +260,9 @@ public sealed class App : Application
         {
             hotkey = CreateHotkey(model.RecordingShortcut, RecordingHotkey.Id);
         }
-        catch (Exception)
+        catch (Exception error)
         {
+            AppDiagnostics.Error("hotkey", "Register", error);
             hotkey?.Dispose(); hotkey = null;
             model.SetInfo($"{model.RecordingShortcut} is unavailable or already in use. Start/Stop buttons and tray remain available.");
         }
@@ -306,14 +315,22 @@ public sealed class App : Application
             await Task.Run(() => ConfigurationBootstrap.Initialize(ConfigPath, ConfigurationBootstrap.UserMeetingsRoot));
             IReadOnlyList<AudioDevice> devices;
             try { devices = await Task.Run(AudioDevices.List); }
-            catch (Exception) { devices = []; model.SetError("Cannot enumerate devices. Check Windows Audio service and permissions."); }
+            catch (Exception error)
+            {
+                AppDiagnostics.Error("devices", "Enumerate", error);
+                devices = []; model.SetError(AppDiagnostics.UserMessage(error, "Cannot enumerate devices. Check Windows Audio service and permissions."));
+            }
             var settings = await Task.Run(() => new SettingsViewModel(ConfigPath, devices, applySettings: ApplySettingsAsync, prepareHotkey: PrepareHotkey));
             var dialog = new SettingsWindow { DataContext = settings, Icon = window.Icon };
             ShowWindow();
             await dialog.ShowDialog(window);
             if (settings.Saved) model.SetInfo(settings.Message);
         }
-        catch (Exception ex) { model.SetError(ex is InvalidDataException ? ex.Message : "Cannot open settings; check config.json and permissions."); }
+        catch (Exception error)
+        {
+            AppDiagnostics.Error("settings", "Open", error);
+            model.SetError(AppDiagnostics.UserMessage(error, "Cannot open settings; check config.json and permissions."));
+        }
         finally { openingSettings = false; }
     }
 

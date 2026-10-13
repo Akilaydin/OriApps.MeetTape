@@ -99,7 +99,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         { Message = "Unsaved prompt edits retained. Save them, or Close and explicitly Discard before loading a different file."; Changed(); return; }
         try { document = new(Path.GetFullPath(path, Path.GetDirectoryName(ConfigurationPath)!), document.Stage); }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException)
-        { Message = "Cannot load prompt; check its path. Existing text retained."; }
+        { AppDiagnostics.Error("settings", "Load prompt", ex); Message = AppDiagnostics.UserMessage(ex, "Cannot load prompt; check its path. Existing text retained."); }
         Changed();
     }
 
@@ -171,9 +171,13 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
                     await applySettings(ConfigurationLoader.Parse(updated, ConfigurationPath, validatePrompts: false));
             }
         }
-        catch (InvalidDataException ex) { Message = ex.Message; }
-        catch (Exception) { Message = Saved ? "Settings saved, but could not be applied to the running app. Reopen Settings and Save to retry; current recording retained." :
-            "Cannot save all settings or prompts. Check paths and permissions; remaining edits are retained. Some files may already have been saved; secrets are not logged."; }
+        catch (InvalidDataException ex) { AppDiagnostics.Error("settings", "Save", ex); Message = ex.Message; }
+        catch (Exception error)
+        {
+            AppDiagnostics.Error("settings", "Save/apply", error);
+            Message = AppDiagnostics.UserMessage(error, Saved ? "Settings saved, but could not be applied to the running app. Reopen Settings and Save to retry; current recording retained." :
+                "Cannot save all settings or prompts. Check paths and permissions; remaining edits are retained. Some files may already have been saved; secrets are not logged.");
+        }
         finally { finishHotkey?.Invoke(false); CanSave = true; Changed(); }
     }
 

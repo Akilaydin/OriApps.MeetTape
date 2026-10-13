@@ -98,7 +98,8 @@ public static class SessionStore
         try { directories = (enumerateDirectories ?? Directory.EnumerateDirectories)(root).ToArray(); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            return [new(root, null, false, false, "Cannot read this meetings folder. Check its availability and permissions; other folders remain available.")];
+            AppDiagnostics.Error("sessions", "Discover root", ex);
+            return [new(root, null, false, false, AppDiagnostics.UserMessage(ex, "Cannot read this meetings folder. Check its availability and permissions; other folders remain available."))];
         }
         var seen = completed is null ? null : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var result = new List<StoredSession>();
@@ -148,7 +149,8 @@ public static class SessionStore
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidDataException)
             {
-                result.Add(new(directory, null, me, them, "Cannot read/update session.json; check metadata, permissions and free space. Original audio retained."));
+                AppDiagnostics.Error("sessions", "Read/update metadata", ex);
+                result.Add(new(directory, null, me, them, AppDiagnostics.UserMessage(ex, "Cannot read/update session.json; check metadata, permissions and free space. Original audio retained.")));
             }
         }
         if (completed is not null)

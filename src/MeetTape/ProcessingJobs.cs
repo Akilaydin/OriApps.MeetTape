@@ -31,6 +31,7 @@ public sealed class ProcessingJobs : IDisposable
 
     private void Report(string message, NoticeKind kind, Guid? sessionId = null)
     {
+        AppDiagnostics.Info("processing", message);
         try { Notice?.Invoke(new(kind, message, sessionId)); }
         catch (Exception) { /* Diagnostics cannot change checkpoint/processing outcomes. */ }
     }
@@ -83,7 +84,10 @@ public sealed class ProcessingJobs : IDisposable
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
-            { Report("Processing discovery paused; check meeting root and metadata permissions. Restart or resume after fixing storage.", NoticeKind.Error); }
+            {
+                AppDiagnostics.Error("processing", "Discovery", ex);
+                Report(AppDiagnostics.UserMessage(ex, "Processing discovery paused; check meeting root and metadata permissions. Restart or resume after fixing storage."), NoticeKind.Error);
+            }
         });
     }
 
@@ -205,7 +209,10 @@ public sealed class ProcessingJobs : IDisposable
         catch (DirectoryNotFoundException) { return; }
         catch (IOException ex) when ((ex.HResult & 0xffff) is 32 or 33) { return; }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        { lock (sessionGate) blocked.Add(directory); Report("Cannot acquire session lease; processing blocked in this process. Cannot save paused state without an exclusive lease. Check storage permissions.", NoticeKind.Error); return; }
+        {
+            AppDiagnostics.Error("processing", "Acquire lease", ex);
+            lock (sessionGate) blocked.Add(directory); Report(AppDiagnostics.UserMessage(ex, "Cannot acquire session lease; processing blocked in this process. Cannot save paused state without an exclusive lease. Check storage permissions."), NoticeKind.Error); return;
+        }
         using (lease)
         {
             var data = SessionStore.Read(directory);
@@ -251,6 +258,7 @@ public sealed class ProcessingJobs : IDisposable
                         }
                         catch (ChatApiException ex) when (ex.Kind == ApiFailureKind.Transient)
                         {
+                            AppDiagnostics.Error("processing", $"Transcribe chunk {chunk.Index}; retry", ex);
                             token.ThrowIfCancellationRequested();
                             attempts = Math.Min(attempts + 1, 30);
                             var backoff = Backoff(attempts, ex.RetryAfter);
@@ -306,9 +314,10 @@ public sealed class ProcessingJobs : IDisposable
             catch (Exception ex) when (ex is ChatApiException or InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException
                 || ex is InvalidOperationException and not AudioPreparationShutdownException)
             {
+                AppDiagnostics.Error("processing", $"Session {data.Id}; {stage}", ex);
                 lock (sessionGate) blocked.Add(directory);
                 SavePause(directory, data, stage, StageState.Paused,
-                    ex is ChatApiException apiError ? apiError.Message : "Processing paused; check selected audio, saved chunks, FFmpeg, metadata and filesystem.", permanent: true);
+                    AppDiagnostics.UserMessage(ex, "Processing paused; check selected audio, saved chunks, FFmpeg, metadata and filesystem."), permanent: true);
             }
         }
     }
@@ -368,7 +377,10 @@ public sealed class ProcessingJobs : IDisposable
         try { SessionStore.Save(directory, (data.Stages.ContainsKey(stage) ? Update(data, stage, state) : data)
             with { JobState = permanent ? JobState.Paused : JobState.NotStarted, Error = diagnostic }); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        { lock (sessionGate) blocked.Add(directory); diagnostic += " Cannot save paused state; prior disk state retained, session blocked in this process."; }
+        {
+            AppDiagnostics.Error("processing", "Save paused checkpoint", ex);
+            lock (sessionGate) blocked.Add(directory); diagnostic += " Cannot save paused state; prior disk state retained, session blocked in this process.";
+        }
         Report($"Job {data.Id}: {diagnostic}", permanent ? NoticeKind.Error : NoticeKind.Warning, data.Id);
     }
 
@@ -415,6 +427,7 @@ public sealed class ProcessingJobs : IDisposable
             }
             catch (ChatApiException ex) when (ex.Kind == ApiFailureKind.Transient)
             {
+                AppDiagnostics.Error("processing", $"Session {data.Id}; Summary retry", ex);
                 token.ThrowIfCancellationRequested();
                 var backoff = Backoff(attempts = Math.Min(attempts + 1, 30), ex.RetryAfter);
                 data = data with { Retry = new(0, attempts, utcNow() + backoff), Error = ex.Message };

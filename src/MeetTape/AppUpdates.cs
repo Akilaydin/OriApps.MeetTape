@@ -29,20 +29,27 @@ public sealed class AppUpdates : IAppUpdates
         this.manager = manager;
     }
 
-    public Task<UpdateInfo?> CheckAsync() => manager.CheckForUpdatesAsync();
+    public async Task<UpdateInfo?> CheckAsync()
+    {
+        AppDiagnostics.Info("updater", "Feed check started");
+        try { return await manager.CheckForUpdatesAsync().ConfigureAwait(false); }
+        catch (Exception error) { AppDiagnostics.Error("updater", "Feed check", error); throw; }
+    }
 
     public async Task DownloadAsync(UpdateInfo update, Action<int> progress)
     {
         RequireSingleInstance();
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(15));
-        await manager.DownloadUpdatesAsync(update, progress, deadline.Token).ConfigureAwait(false);
+        try { await manager.DownloadUpdatesAsync(update, progress, deadline.Token).ConfigureAwait(false); }
+        catch (Exception error) { AppDiagnostics.Error("updater", "Package download", error); throw; }
     }
 
     public void ApplyAndRestart(UpdateInfo update)
     {
         RequireSingleInstance();
         // The controller has already joined capture/preparation/jobs. Let Avalonia close normally.
-        manager.WaitExitThenApplyUpdates(update.TargetFullRelease);
+        try { manager.WaitExitThenApplyUpdates(update.TargetFullRelease); }
+        catch (Exception error) { AppDiagnostics.Error("updater", "Schedule apply/restart", error); throw; }
     }
 
     private static void RequireSingleInstance()

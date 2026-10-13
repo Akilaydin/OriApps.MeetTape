@@ -122,7 +122,8 @@ public sealed class PostRecordingWorkflow(string ffmpegPath) : IDisposable
             catch (Exception ex) when (ex is not AudioPreparationShutdownException && ex is (InvalidDataException or IOException or UnauthorizedAccessException
                 or InvalidOperationException or System.ComponentModel.Win32Exception or TimeoutException))
             {
-                SavePaused(selected, "Audio preparation paused; check originals, FFmpeg, permissions and free space.", StageState.Paused);
+                AppDiagnostics.Error("preparation", "Trim", ex);
+                SavePaused(selected, AppDiagnostics.UserMessage(ex, "Audio preparation paused; check originals, FFmpeg, permissions and free space."), StageState.Paused);
             }
         });
     }
@@ -137,12 +138,13 @@ public sealed class PostRecordingWorkflow(string ffmpegPath) : IDisposable
             SessionStore.Save(selected, Update(data, state, diagnostic) with { JobState = JobState.Paused });
         }
         catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
-        { diagnostic += " Could not update session.json; prior state retained."; }
+        { AppDiagnostics.Error("preparation", "Save paused state", ex); diagnostic += " Could not update session.json; prior state retained."; }
         Report(new(NoticeKind.Warning, diagnostic));
     }
 
     private void Report(OperationNotice notice)
     {
+        AppDiagnostics.Info("preparation", notice.Message);
         try { Notice?.Invoke(notice); }
         catch (Exception) { /* Diagnostics must not change preparation outcomes. */ }
     }
