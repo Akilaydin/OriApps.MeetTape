@@ -105,12 +105,13 @@ public sealed class App : Application
         if (processingStatus is not null) processingStatus.Header = model.ProcessingText;
         if (record is not null) { record.Header = model.RecordLabel + " (Ctrl+Shift+F9)"; record.IsEnabled = model.CanRecord; }
         if (tray is not null) tray.ToolTipText = model.TrayText;
-        taskbar?.Update(model.IsRecording);
         if (window is not null && tray is not null && idleIcon is not null && recordingIcon is not null)
         {
             var icon = model.IsRecording ? recordingIcon : idleIcon;
             if (!ReferenceEquals(tray.Icon, icon)) { tray.Icon = icon; window.Icon = icon; }
         }
+        // Avalonia SetIcon clears the taskbar overlay to redraw the window icon.
+        taskbar?.Update(model.IsRecording);
     }
 
     private async Task InitializeAsync()
@@ -129,13 +130,13 @@ public sealed class App : Application
                 {
                     model.RefreshCapture(new(true, TimeSpan.FromSeconds(tick), 0, 0, null));
                     if (!ReferenceEquals(tray!.Icon, recordingIcon) || !ReferenceEquals(window!.Icon, recordingIcon) || taskbar?.Applied != true)
-                    { timer.Stop(); desktop!.Shutdown(1); return; }
+                    { Console.Error.WriteLine($"Icon smoke tick {tick}: recording={model.IsRecording}, taskbarApplied={taskbar?.Applied}, buttonCreated={taskbarCreated}."); timer.Stop(); desktop!.Shutdown(1); return; }
                 }
                 if (tick == 2)
                 {
                     model.RefreshCapture(new(false, TimeSpan.FromSeconds(1), 0, 0, "Fixture interruption"));
                     if (!ReferenceEquals(tray!.Icon, idleIcon) || !ReferenceEquals(window!.Icon, idleIcon) || taskbar?.Applied != true)
-                    { timer.Stop(); desktop!.Shutdown(1); return; }
+                    { Console.Error.WriteLine($"Icon smoke tick {tick}: recording={model.IsRecording}, taskbarApplied={taskbar?.Applied}, buttonCreated={taskbarCreated}."); timer.Stop(); desktop!.Shutdown(1); return; }
                 }
                 if (tick == 3)
                 {
@@ -147,7 +148,7 @@ public sealed class App : Application
                     if (details.SelectedText != model.DiagnosticText || !Equals(status!.Header, model.CaptureText)
                         || !Equals(processingStatus!.Header, model.ProcessingText) || tray!.ToolTipText != model.TrayText
                         || window!.Icon is null || !ReferenceEquals(window.Icon, tray.Icon))
-                    { timer.Stop(); desktop!.Shutdown(1); return; }
+                    { Console.Error.WriteLine($"Icon smoke tick {tick}: recording={model.IsRecording}, taskbarApplied={taskbar?.Applied}, buttonCreated={taskbarCreated}."); timer.Stop(); desktop!.Shutdown(1); return; }
                 }
                 if (tick == 5)
                 {
