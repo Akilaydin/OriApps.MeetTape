@@ -6,6 +6,56 @@ namespace MeetTape.Tests;
 public sealed class ProcessingConfigurationTests
 {
     [Fact]
+    public async Task EditingPromptKeepsRunningJobInstructionsAndNextJobReadsSavedText()
+    {
+        using var fixture = new JobTests();
+        string first = fixture.Session(), next = fixture.Session();
+        var data = SessionStore.Read(first);
+        string prompt = Path.Combine(Path.GetDirectoryName(first)!, "fixture-prompt.md");
+        File.WriteAllText(prompt, "Fixture old instructions");
+        var api = data.Processing.Transcription with { PromptFile = prompt };
+        foreach (string directory in new[] { first, next })
+        {
+            var saved = SessionStore.Read(directory);
+            SessionStore.Save(directory, saved with { Processing = saved.Processing with { Transcription = api } });
+        }
+        var config = new LoadedConfiguration(new Configuration
+        {
+            MeetingsRoot = Path.GetDirectoryName(first)!, Transcription = api, Summary = data.Processing.Summary
+        }, data.Processing.ConfigurationDirectory);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var requests = new List<string>();
+        using var handler = new PromptHandler(async (request, token) =>
+        {
+            requests.Add(await request.Content!.ReadAsStringAsync(token));
+            if (requests.Count == 1) { entered.SetResult(); await release.Task.WaitAsync(token); }
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"[00:00] Me: Fixture words.\"}}]}")
+            };
+        });
+        using var http = new HttpClient(handler);
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "fixture-key");
+        Task running = jobs.ProcessSessionAsync(first, default);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var editor = new PromptDocument(prompt, "transcription") { Text = "Fixture new instructions" };
+        editor.VerifyUnchanged(); editor.Save();
+        Assert.False(running.IsCompleted);
+        release.SetResult();
+        await running.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(JobState.Completed, SessionStore.Read(first).JobState);
+        Assert.Equal(3, requests.Count);
+        Assert.All(requests, body => Assert.Contains("Fixture old instructions", body));
+        byte[] checkpoint = File.ReadAllBytes(ChunkStore.PathFor(first, 1));
+        await jobs.ProcessSessionAsync(next, default);
+        Assert.Equal(JobState.Completed, SessionStore.Read(next).JobState);
+        Assert.Equal(6, requests.Count);
+        Assert.All(requests.Skip(3), body => Assert.Contains("Fixture new instructions", body));
+        Assert.Equal(checkpoint, File.ReadAllBytes(ChunkStore.PathFor(first, 1)));
+    }
+
+    [Fact]
     public async Task SettingsChangeRetainsRunningContractAndResumeKeepsSuccessfulChunks()
     {
         using var fixture = new JobTests();
@@ -113,6 +163,11 @@ public sealed class ProcessingConfigurationTests
                 Content = new StringContent("{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"[00:00] Me: New words.\"}}]}")
             });
         }
+    }
+
+    private sealed class PromptHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token) => send(request, token);
     }
 
     private sealed class PendingHandler : HttpMessageHandler

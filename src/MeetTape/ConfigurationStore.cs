@@ -7,7 +7,8 @@ internal static class ConfigurationStore
 {
     internal static string? Save(string path, string originalText, string updatedText,
         IReadOnlyDictionary<string, string> keysToSave,
-        Action<string, string, EnvironmentVariableTarget>? setKey = null)
+        Action<string, string, EnvironmentVariableTarget>? setKey = null,
+        IReadOnlyList<PromptDocument>? promptEdits = null)
     {
         setKey ??= (name, value, target) => Environment.SetEnvironmentVariable(name, value, target);
         path = Path.GetFullPath(path);
@@ -19,7 +20,16 @@ internal static class ConfigurationStore
         }
         try
         {
-            _ = ConfigurationLoader.Parse(updatedText, path, validatePrompts: true);
+            var texts = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var prompt in promptEdits ?? [])
+            {
+                if (prompt.Path.Equals(path, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("A prompt file cannot replace config.json.");
+                if (texts.TryGetValue(prompt.Path, out string? existing) && existing != prompt.Text)
+                    throw new InvalidDataException("Both stages use the same prompt file; enter matching instructions.");
+                texts[prompt.Path] = prompt.Text;
+            }
+            _ = ConfigurationLoader.Parse(updatedText, path, validatePrompts: true, texts);
         }
         catch (InvalidDataException ex)
         {
@@ -43,11 +53,21 @@ internal static class ConfigurationStore
         }
         try
         {
-            if (changed || keysToSave.Count > 0)
+            if (changed || keysToSave.Count > 0 || promptEdits?.Count > 0)
             {
                 if (!string.Equals(originalText, File.ReadAllText(path), StringComparison.Ordinal))
                 {
                     return "Configuration changed during editing. Nothing saved; reopen Settings.";
+                }
+                // Check every source before replacing any file. A failed write retains
+                // unsaved text, and already saved prompts become their own new baseline.
+                foreach (var prompt in promptEdits ?? []) prompt.VerifyUnchanged();
+                foreach (var group in (promptEdits ?? []).GroupBy(prompt => prompt.Path, StringComparer.OrdinalIgnoreCase))
+                {
+                    var prompt = group.First();
+                    prompt.VerifyUnchanged();
+                    prompt.Save();
+                    foreach (var sameFile in group.Skip(1)) sameFile.AcceptSaved();
                 }
                 if (changed) SaveAtomically(path, updatedText);
             }
@@ -74,7 +94,7 @@ internal static class ConfigurationStore
         return null;
     }
 
-    private static void SaveAtomically(string path, string content)
+    internal static void SaveAtomically(string path, string content, bool create = false)
     {
         string temporaryPath = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
@@ -85,7 +105,8 @@ internal static class ConfigurationStore
                 stream.Write(bytes);
                 stream.Flush(flushToDisk: true);
             }
-            File.Replace(temporaryPath, path, null);
+            if (create) File.Move(temporaryPath, path); // Never overwrite a concurrently created prompt.
+            else File.Replace(temporaryPath, path, null);
         }
         finally
         {
