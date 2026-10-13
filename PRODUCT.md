@@ -50,6 +50,8 @@ An exact `[NO_SPEECH]` response adds no utterances, allowing silent chunks to co
 
 Request Summary explicitly requests `summary.md` from a complete published transcript, using independent API settings and an editable prompt. It never replaces the transcript or summarizes partial results. Combined prompt/transcript UTF-8 input is limited to 2 MiB; oversized input pauses without truncation. A provider may enforce a smaller context limit.
 
+For completed transcription/assembly, Summary uses the published Markdown verified against its saved SHA-256, without reading intermediate MP3s/checkpoints or assembling again. Missing intermediate audio does not block Summary. A missing or changed published transcript pauses the Summary stage without re-creating the document or sending text, including restoration from a saved Summary checkpoint.
+
 Successful Summary results are checkpointed before publication. Repeated requests retain existing output; missing output can be restored from its checkpoint without another API request.
 
 ## Files and saved progress
