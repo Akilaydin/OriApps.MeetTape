@@ -8,6 +8,36 @@ namespace MeetTape.Tests;
 public sealed class JobTests : IDisposable
 {
     [Fact]
+    public async Task RemovalExcludesActiveJobsAndStaleSchedulerSnapshotsWithoutBlockingOtherMeetings()
+    {
+        string directory = Session(), other = Session();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        bool hold = true;
+        using var handler = new Handler(async (_, token) =>
+        {
+            if (hold) { entered.TrySetResult(); await Task.Delay(Timeout.Infinite, token); }
+            return Response();
+        });
+        using var http = new HttpClient(handler);
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "fixture-key");
+        Task running = jobs.ProcessSessionAsync(directory, default);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Throws<InvalidOperationException>(() => jobs.RemoveInactiveSession(directory, () => throw new Exception("Must not remove active job")));
+        jobs.Cancel(directory); await running;
+        Assert.Throws<IOException>(() => jobs.RemoveInactiveSession(directory, () => throw new IOException("Fixture bin refused")));
+        bool removed = false;
+        jobs.RemoveInactiveSession(directory, () => removed = true);
+        Assert.True(removed);
+        // An already-discovered path must not run after successful removal, even if its metadata becomes eligible again.
+        SessionStore.Save(directory, SessionStore.Read(directory) with { JobState = JobState.NotStarted });
+        await jobs.ProcessSessionAsync(directory, default);
+        Assert.Equal(1, handler.Calls);
+        hold = false;
+        await jobs.ProcessSessionAsync(other, default);
+        Assert.Equal(JobState.Completed, SessionStore.Read(other).JobState);
+    }
+
+    [Fact]
     public async Task RenamedPausedMeetingCanResumeAndPublishTranscriptFromItsExistingRelativeChunks()
     {
         string directory = Session(120);

@@ -9,6 +9,7 @@ using Avalonia.Media.Imaging;
 using Avalonia.Styling;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
+using Avalonia.LogicalTree;
 using System.Collections.Specialized;
 
 [assembly: AvaloniaTestApplication(typeof(MeetTape.UiTests.TestApp))]
@@ -23,6 +24,78 @@ public static class TestApp
 
 public sealed class WindowTests
 {
+    [AvaloniaFact]
+    public async Task DeleteRequiresConfirmationAndRemovesOnlyTheConfirmedMeetingAfterCancellation()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var model = new MainViewModel(fake);
+        var window = new MainWindow { DataContext = model };
+        window.Show(); await model.RefreshAsync();
+        model.SelectedSession = model.Sessions[0];
+        Assert.False(model.CanDeleteRecording);
+        await model.CancelSelectedProcessingAsync();
+        Assert.True(model.CanDeleteRecording);
+        var row = model.SelectedSession!;
+        var list = window.FindControl<ListBox>("SessionList")!;
+        var menu = list.ContextMenu!;
+        menu.Open(list);
+        var delete = Assert.IsType<MenuItem>(Assert.Single(menu.Items));
+        Assert.True(delete.IsEnabled);
+        delete.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        var dialog = Assert.Single(window.OwnedWindows.OfType<DeleteRecordingWindow>());
+        Assert.Equal($"{row.Title}\n{row.Date}", dialog.GetLogicalDescendants().OfType<TextBlock>().Single(c => c.Name == "DeleteRecordingIdentity").Text);
+        dialog.GetLogicalDescendants().OfType<Button>().Single(c => c.Name == "CancelDeleteRecording").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await WaitFor(() => !model.IsBusy);
+        Assert.Equal(0, fake.Deletes); Assert.Single(model.Sessions);
+        dialog = new DeleteRecordingWindow(row);
+        Task<bool> confirmation = dialog.ShowDialog<bool>(window);
+        dialog.GetLogicalDescendants().OfType<Button>().Single(c => c.Name == "ConfirmDeleteRecording").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await model.DeleteSelectedRecordingAsync(_ => confirmation);
+        Assert.Equal(1, fake.Deletes); Assert.Empty(model.Sessions);
+        Assert.Null(model.SelectedSession); Assert.False(model.CanOpen); Assert.False(model.CanDeleteRecording);
+        Assert.Equal(0, fake.Starts); Assert.Equal(0, fake.Stops); Assert.Equal(0, fake.Summaries);
+        Close(window, model);
+    }
+
+    [AvaloniaTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DeleteRejectsAChangedSelectionOrRecycleFailureAndKeepsTheMeeting(bool changeSelection)
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture) { FailDelete = !changeSelection };
+        await fake.CancelProcessingAsync(fixture.SessionDirectory);
+        var model = new MainViewModel(fake);
+        await model.RefreshAsync(); model.SelectedSession = model.Sessions[0];
+        var answer = new TaskCompletionSource<bool>();
+        Task pending = model.DeleteSelectedRecordingAsync(_ => answer.Task);
+        Assert.True(model.IsBusy); Assert.False(model.CanRecord);
+        if (changeSelection) fake.Snapshot = fake.Snapshot with { Sessions = [fake.Snapshot.Sessions[0] with { Directory = Path.Combine(fixture.Root, "renamed") }] };
+        answer.SetResult(true); await pending;
+        Assert.True(model.HasError); Assert.Single(model.Sessions);
+        Assert.Equal(changeSelection ? 0 : 1, fake.Deletes);
+        Assert.DoesNotContain("private-secret", model.ErrorText);
+        Assert.True(model.CanRecord); model.Detach();
+    }
+
+    [AvaloniaFact]
+    public async Task DeleteIsUnavailableDuringCapturePreparationAndExit()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        await fake.CancelProcessingAsync(fixture.SessionDirectory);
+        var model = new MainViewModel(fake);
+        await model.RefreshAsync(); model.SelectedSession = model.Sessions[0];
+        fake.Snapshot = fake.Snapshot with { Preparing = true, PreparationDirectory = fixture.SessionDirectory };
+        await model.RefreshAsync(); Assert.False(model.CanDeleteRecording);
+        fake.Snapshot = fake.Snapshot with { Preparing = false, Capture = fake.Snapshot.Capture with { IsActive = true } };
+        await model.RefreshAsync(); Assert.False(model.CanDeleteRecording);
+        await model.DeleteSelectedRecordingAsync(_ => throw new Exception("Must not confirm an active recording"));
+        Assert.Equal(0, fake.Deletes);
+        Assert.True(await model.ShutdownAsync()); Assert.False(model.CanDeleteRecording); model.Detach();
+    }
+
     [AvaloniaFact]
     public async Task FinalizedMetadataFailureStillNotifiesInterruptionThroughActualController()
     {
@@ -1136,7 +1209,8 @@ public sealed class WindowTests
     private sealed class FakeController : IDesktopController
     {
         public DesktopSnapshot Snapshot { get; set; }
-        public int Starts, Stops, Summaries, Resumes, Shutdowns, Prepares, Cancels;
+        public int Starts, Stops, Summaries, Resumes, Shutdowns, Prepares, Cancels, Deletes;
+        public bool FailDelete;
         public bool FailStart;
         public string? Title;
         public TrimDecision? Decision;
@@ -1202,6 +1276,13 @@ public sealed class WindowTests
             Snapshot = Snapshot with { AwaitingTitleDirectory = Snapshot.AwaitingTitleDirectory == directory ? null : Snapshot.AwaitingTitleDirectory,
                 Sessions = Snapshot.Sessions.Select(session => session.Directory == directory ? session with
                     { Data = session.Data! with { JobState = JobState.Canceled, Error = null, Retry = null } } : session).ToArray() };
+            return Task.CompletedTask;
+        }
+        public Task DeleteRecordingAsync(string directory, Guid id)
+        {
+            Deletes++;
+            if (FailDelete) throw new IOException("private-secret Recycle Bin failure");
+            Snapshot = Snapshot with { Sessions = Snapshot.Sessions.Where(s => s.Directory != directory || s.Data?.Id != id).ToArray() };
             return Task.CompletedTask;
         }
         public Task SummaryAsync(string directory)

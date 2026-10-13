@@ -70,6 +70,11 @@
         <TextBox Grid.Column="1" Name="MeetingSearch" Text="{Binding SearchText}" PlaceholderText="Search title or date" />
       </Grid>
       <ListBox Grid.Row="1" Name="SessionList" ItemsSource="{Binding Sessions}" SelectedItem="{Binding SelectedSession}">
+        <ListBox.ContextMenu>
+          <ContextMenu>
+            <MenuItem Name="DeleteRecording" Header="Delete recording" IsEnabled="{Binding CanDeleteRecording}" Click="DeleteRecordingClick" />
+          </ContextMenu>
+        </ListBox.ContextMenu>
         <ListBox.ItemTemplate>
           <DataTemplate x:DataType="local:SessionRow">
             <Grid RowDefinitions="Auto,Auto,Auto" ColumnDefinitions="*,Auto" Margin="4" RowSpacing="4">

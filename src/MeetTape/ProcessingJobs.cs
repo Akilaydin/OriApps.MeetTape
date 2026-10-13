@@ -158,6 +158,22 @@ public sealed class ProcessingJobs : IDisposable
         completedSessions.Remove(directory);
     }
 
+    internal void RemoveInactiveSession(string directory, Action remove)
+    {
+        lock (sessionGate)
+        {
+            if (activeSessions.ContainsKey(directory) || !cancelingSessions.Add(directory))
+                throw new InvalidOperationException("Cancel this meeting's processing and wait for it to finish before deleting.");
+        }
+        bool removed = false;
+        try { remove(); removed = true; }
+        finally
+        {
+            // Keep successful removals excluded from any discovery snapshot already in flight.
+            if (!removed) lock (sessionGate) cancelingSessions.Remove(directory);
+        }
+    }
+
     public async Task ProcessSessionAsync(string directory, CancellationToken token)
     {
         using var sessionCancellation = CancellationTokenSource.CreateLinkedTokenSource(token);

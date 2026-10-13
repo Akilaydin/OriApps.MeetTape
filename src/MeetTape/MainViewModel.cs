@@ -93,6 +93,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         && HasCancelableSelection && (!snapshot.Capture.IsActive || !string.Equals(selected!.Directory, snapshot.Capture.RecordingDirectory, StringComparison.OrdinalIgnoreCase));
     public bool CanCancelNamedRecording => CanName && controller is not null && !shutdownStarted && !snapshot.Capture.IsActive;
     public bool CanSummary => CanProcess && snapshot.SummaryEnabled && selected!.CanRequestSummary;
+    public bool CanDeleteRecording => CanProcess && selected!.CanDelete && snapshot.AwaitingTitleDirectory is null
+        && !(snapshot.Preparing && string.Equals(snapshot.PreparationDirectory, selected.Directory, StringComparison.OrdinalIgnoreCase));
     public string SummaryLabel => selected?.CanRestoreSummary == true ? "Restore Summary" : "Request Summary";
     public bool CanOpen => selected is not null;
     public bool CanOpenTranscript => selected?.HasTranscript == true;
@@ -378,6 +380,22 @@ public sealed class MainViewModel : INotifyPropertyChanged
         NamingDirectory = null;
     }) : Task.CompletedTask;
 
+    public Task DeleteSelectedRecordingAsync(Func<SessionRow, Task<bool>> confirm)
+    {
+        if (!CanDeleteRecording || selected is not { Id: { } id } recording) return Task.CompletedTask;
+        return ExecuteAsync(async () =>
+        {
+            if (!await confirm(recording)) return;
+            await RefreshAsync();
+            if (selected?.Id != id || !string.Equals(selected.Directory, recording.Directory, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("The selected recording changed. Refresh and confirm it again.");
+            await controller!.DeleteRecordingAsync(recording.Directory, id);
+            selected = null;
+            ClearProcessingIssues(id);
+            InfoText = "Recording moved to Windows Recycle Bin.";
+        });
+    }
+
     public async Task ExecuteAsync(Func<Task> action)
     {
         if (busy || updating || shutdownStarted || controller is null) return;
@@ -455,6 +473,7 @@ public sealed record SessionRow(string Directory, Guid? Id, string Title, string
     public bool CanRequestSummary { get; init; }
     public bool CanRestoreSummary { get; init; }
     public bool CanCancel { get; init; }
+    public bool CanDelete { get; init; }
     public static SessionRow From(StoredSession session)
     {
         var data = session.Data;
@@ -480,6 +499,7 @@ public sealed record SessionRow(string Directory, Guid? Id, string Title, string
         {
             CanResume = data is not null && ProcessingJobs.CanResume(data),
             CanCancel = data is not null && ProcessingJobs.CanCancel(data),
+            CanDelete = data is not null && SessionRemoval.CanDelete(data),
             CanRequestSummary = data is not null && ProcessingJobs.HasPublishedTranscription(data) && hasTranscript && !hasSummary
                 && data.JobState != JobState.Canceled
                 && (canRestoreSummary || summary is null || summary.Status is StageState.Disabled or StageState.AwaitingRequest),
