@@ -30,6 +30,8 @@ public sealed class App : Application
     private IAppUpdates? updates;
     private RecordingHotkey? hotkey;
     private RecordingNotifications? notifications;
+    private RecordingTaskbar? taskbar;
+    private uint taskbarButtonCreated;
 
     public override void Initialize() => Styles.Add(new FluentTheme());
 
@@ -46,6 +48,7 @@ public sealed class App : Application
             window.UpdateApplication = UpdateAsync;
             window.Opened += async (_, _) =>
             {
+                InitializeTaskbar();
                 await InitializeAsync();
                 if (!Smoke && StartupError is null) InitializeHotkey();
             };
@@ -82,6 +85,8 @@ public sealed class App : Application
             desktop.Exit += (_, _) =>
             {
                 hotkey?.Dispose();
+                taskbar?.Dispose();
+                Win32Properties.RemoveWndProcHookCallback(window, TaskbarMessage);
                 Win32Properties.RemoveWndProcHookCallback(window, HotkeyMessage);
                 notifications?.Dispose();
                 timer?.Stop(); model.Detach(); tray.Dispose();
@@ -96,6 +101,7 @@ public sealed class App : Application
         if (processingStatus is not null) processingStatus.Header = model.ProcessingText;
         if (record is not null) { record.Header = model.RecordLabel + " (Ctrl+Shift+F9)"; record.IsEnabled = model.CanRecord; }
         if (tray is not null) tray.ToolTipText = model.TrayText;
+        taskbar?.Update(model.IsRecording);
         if (window is not null && tray is not null && idleIcon is not null && recordingIcon is not null)
         {
             var icon = model.IsRecording ? recordingIcon : idleIcon;
@@ -118,13 +124,13 @@ public sealed class App : Application
                 if (tick == 1 || tick == 4)
                 {
                     model.RefreshCapture(new(true, TimeSpan.FromSeconds(tick), 0, 0, null));
-                    if (!ReferenceEquals(tray!.Icon, recordingIcon) || !ReferenceEquals(window!.Icon, recordingIcon))
+                    if (!ReferenceEquals(tray!.Icon, recordingIcon) || !ReferenceEquals(window!.Icon, recordingIcon) || taskbar?.Applied != true)
                     { timer.Stop(); desktop!.Shutdown(1); return; }
                 }
                 if (tick == 2)
                 {
                     model.RefreshCapture(new(false, TimeSpan.FromSeconds(1), 0, 0, "Fixture interruption"));
-                    if (!ReferenceEquals(tray!.Icon, idleIcon) || !ReferenceEquals(window!.Icon, idleIcon))
+                    if (!ReferenceEquals(tray!.Icon, idleIcon) || !ReferenceEquals(window!.Icon, idleIcon) || taskbar?.Applied != true)
                     { timer.Stop(); desktop!.Shutdown(1); return; }
                 }
                 if (tick == 3)
@@ -142,7 +148,7 @@ public sealed class App : Application
                 if (tick == 5)
                 {
                     model.RefreshCapture(new(false, TimeSpan.FromSeconds(1), 0, 0, null));
-                    if (!ReferenceEquals(tray!.Icon, idleIcon) || !ReferenceEquals(window!.Icon, idleIcon))
+                    if (!ReferenceEquals(tray!.Icon, idleIcon) || !ReferenceEquals(window!.Icon, idleIcon) || taskbar?.Applied != true)
                     { timer.Stop(); desktop!.Shutdown(1); return; }
                     timer.Stop(); await ExitAsync();
                 }
@@ -189,6 +195,28 @@ public sealed class App : Application
     }
 
     private static string ConfigPath => ConfigurationBootstrap.UserConfigurationPath;
+
+    private void InitializeTaskbar()
+    {
+        if (taskbar is not null || window?.TryGetPlatformHandle()?.Handle is not { } handle || handle == 0) return;
+        try
+        {
+            taskbarButtonCreated = RegisterWindowMessage("TaskbarButtonCreated");
+            taskbar = new RecordingTaskbar(handle);
+            Win32Properties.AddWndProcHookCallback(window, TaskbarMessage);
+            taskbar.Update(model.IsRecording);
+        }
+        catch (Exception) { taskbar?.Dispose(); taskbar = null; }
+    }
+
+    private nint TaskbarMessage(nint handle, uint message, nint wParam, nint lParam, ref bool handled)
+    {
+        if (taskbarButtonCreated != 0 && message == taskbarButtonCreated) taskbar?.Restore();
+        return 0;
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "RegisterWindowMessageW", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern uint RegisterWindowMessage(string message);
 
     private void InitializeHotkey()
     {

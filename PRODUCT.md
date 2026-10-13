@@ -4,7 +4,7 @@ MeetTape is a Windows desktop application on Avalonia 12 and .NET 10 for recordi
 
 ## Recording and desktop lifecycle
 
-The tray and window icons show a red dot in the upper-right corner only while capture is active. Stop or capture failure restores the original icon; audio preparation/transcription does not show the recording indicator. The permanent EXE/shortcut icon stays unchanged.
+The tray and window icons show a red dot in the upper-right corner only while capture is active. Windows taskbar buttons also show a red recording overlay, in the lower-right corner chosen by Windows, including pinned/grouped buttons. Windows small-icon taskbars do not support overlays. Stop or capture failure restores the original icon; audio preparation/transcription does not show the recording indicator. The permanent EXE/shortcut icon stays unchanged.
 
 Ctrl+Shift+F9 uses the same Start/Stop path while MeetTape runs, including when hidden or another app has focus. Busy operations, updates, Exit and unfinished naming block conflicting starts. A shortcut conflict is diagnosed while buttons/tray remain usable. Windows notifications report successful Start, finalized Stop or interruption without focusing the window or including meeting contents. Suppressed/failed notifications do not affect recording or saved work; window/tray status remains authoritative. The shortcut is released on Exit.
 
