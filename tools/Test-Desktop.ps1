@@ -93,7 +93,11 @@ if ($SkipNativeWindow) {
         if ($env:GITHUB_ACTIONS -eq 'true') {
             $captureDeadline = [DateTime]::UtcNow.AddSeconds(20)
             while (-not $smoke.HasExited -and [DateTime]::UtcNow -lt $captureDeadline) {
-                $trace = if ([IO.File]::Exists($smokeError)) { [IO.File]::ReadAllText($smokeError) } else { '' }
+                $trace = ''
+                if ([IO.File]::Exists($smokeError)) {
+                    $traceReader = [IO.StreamReader]::new([IO.FileStream]::new($smokeError, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite))
+                    try { $trace = $traceReader.ReadToEnd() } finally { $traceReader.Dispose() }
+                }
                 foreach ($stage in @(1, 2)) {
                     if (-not $taskbarCounts.ContainsKey($stage) -and $trace.Contains("Icon smoke tick $stage begins")) {
                         Start-Sleep -Milliseconds 150

@@ -12,6 +12,7 @@ public sealed class App : Application
     internal static string? StartupError { get; set; }
     internal static bool Smoke { get; set; }
     internal static DesktopInstance? Instance { get; set; }
+    private static bool TaskbarSmoke => Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true";
     private IClassicDesktopStyleApplicationLifetime? desktop;
     private MainWindow? window;
     private MainViewModel model = new();
@@ -130,13 +131,13 @@ public sealed class App : Application
                 if (tick == 1 || tick == 4)
                 {
                     model.RefreshCapture(new(true, TimeSpan.FromSeconds(tick), 0, 0, null));
-                    if (!ReferenceEquals(tray!.Icon, recordingIcon) || !ReferenceEquals(window!.Icon, recordingIcon) || taskbar?.Applied != true)
+                    if (!ReferenceEquals(tray!.Icon, recordingIcon) || !ReferenceEquals(window!.Icon, recordingIcon) || (TaskbarSmoke && taskbar?.Applied != true))
                     { Console.Error.WriteLine($"Icon smoke tick {tick}: recording={model.IsRecording}, taskbarApplied={taskbar?.Applied}, buttonCreated={taskbarCreated}."); timer.Stop(); desktop!.Shutdown(1); return; }
                 }
                 if (tick == 2)
                 {
                     model.RefreshCapture(new(false, TimeSpan.FromSeconds(1), 0, 0, "Fixture interruption"));
-                    if (!ReferenceEquals(tray!.Icon, idleIcon) || !ReferenceEquals(window!.Icon, idleIcon) || taskbar?.Applied != true)
+                    if (!ReferenceEquals(tray!.Icon, idleIcon) || !ReferenceEquals(window!.Icon, idleIcon) || (TaskbarSmoke && taskbar?.Applied != true))
                     { Console.Error.WriteLine($"Icon smoke tick {tick}: recording={model.IsRecording}, taskbarApplied={taskbar?.Applied}, buttonCreated={taskbarCreated}."); timer.Stop(); desktop!.Shutdown(1); return; }
                 }
                 if (tick == 3)
@@ -154,7 +155,7 @@ public sealed class App : Application
                 if (tick == 5)
                 {
                     model.RefreshCapture(new(false, TimeSpan.FromSeconds(1), 0, 0, null));
-                    if (!ReferenceEquals(tray!.Icon, idleIcon) || !ReferenceEquals(window!.Icon, idleIcon) || taskbar?.Applied != true)
+                    if (!ReferenceEquals(tray!.Icon, idleIcon) || !ReferenceEquals(window!.Icon, idleIcon) || (TaskbarSmoke && taskbar?.Applied != true))
                     { Console.Error.WriteLine($"Icon smoke tick {tick} failed; taskbarApplied={taskbar?.Applied}, buttonCreated={taskbarCreated}."); timer.Stop(); desktop!.Shutdown(1); return; }
                     timer.Stop(); await ExitAsync();
                 }
@@ -204,6 +205,7 @@ public sealed class App : Application
 
     private void InitializeTaskbar()
     {
+        if (Smoke && !TaskbarSmoke) return;
         if (taskbar is not null || window?.TryGetPlatformHandle()?.Handle is not { } handle || handle == 0) return;
         try
         {
