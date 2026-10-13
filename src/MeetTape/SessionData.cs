@@ -3,7 +3,7 @@ using NAudio.Wave;
 namespace MeetTape;
 
 public enum RecordingState { Recording, Recorded, Interrupted, Failed }
-public enum JobState { NotStarted, Running, Paused, Completed }
+public enum JobState { NotStarted, Running, Paused, Completed, Canceled }
 public enum StageState { Disabled, Pending, AwaitingUser, AwaitingRequest, Running, Completed, Paused }
 
 public sealed record StageProgress(bool Enabled, StageState Status, int CompletedChunks = 0, int? TotalChunks = null);
