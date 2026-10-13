@@ -12,6 +12,7 @@ public sealed class App : Application
     internal static string? StartupError { get; set; }
     internal static bool Smoke { get; set; }
     internal static DesktopInstance? Instance { get; set; }
+    private static bool TaskbarSmoke => Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true";
     private IClassicDesktopStyleApplicationLifetime? desktop;
     private MainWindow? window;
     private MainViewModel model = new();
@@ -30,6 +31,9 @@ public sealed class App : Application
     private IAppUpdates? updates;
     private RecordingHotkey? hotkey;
     private RecordingNotifications? notifications;
+    private RecordingTaskbar? taskbar;
+    private uint taskbarButtonCreated;
+    private bool taskbarCreated;
 
     public override void Initialize() => Styles.Add(new FluentTheme());
 
@@ -40,12 +44,15 @@ public sealed class App : Application
             desktop = lifetime;
             desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
             window = new MainWindow { DataContext = model };
+            taskbarButtonCreated = RegisterWindowMessage("TaskbarButtonCreated");
+            Win32Properties.AddWndProcHookCallback(window, TaskbarMessage);
             desktop.MainWindow = window;
             window.OpenSettings = OpenSettingsAsync;
             window.ExitApplication = ExitAsync;
             window.UpdateApplication = UpdateAsync;
             window.Opened += async (_, _) =>
             {
+                InitializeTaskbar();
                 await InitializeAsync();
                 if (!Smoke && StartupError is null) InitializeHotkey();
             };
@@ -73,6 +80,7 @@ public sealed class App : Application
             tray.Clicked += (_, _) => ShowWindow();
             TrayIcon.SetIcons(this, [tray]);
             model.PropertyChanged += ModelChanged;
+            InitializeTaskbar();
             desktop.ShutdownRequested += (_, e) =>
             {
                 if (allowShutdown) return;
@@ -82,6 +90,8 @@ public sealed class App : Application
             desktop.Exit += (_, _) =>
             {
                 hotkey?.Dispose();
+                taskbar?.Dispose();
+                Win32Properties.RemoveWndProcHookCallback(window, TaskbarMessage);
                 Win32Properties.RemoveWndProcHookCallback(window, HotkeyMessage);
                 notifications?.Dispose();
                 timer?.Stop(); model.Detach(); tray.Dispose();
@@ -101,6 +111,8 @@ public sealed class App : Application
             var icon = model.IsRecording ? recordingIcon : idleIcon;
             if (!ReferenceEquals(tray.Icon, icon)) { tray.Icon = icon; window.Icon = icon; }
         }
+        // Avalonia SetIcon clears the taskbar overlay to redraw the window icon.
+        taskbar?.Update(model.IsRecording);
     }
 
     private async Task InitializeAsync()
@@ -115,17 +127,18 @@ public sealed class App : Application
             timer.Tick += async (_, _) =>
             {
                 tick++;
+                Console.Error.WriteLine($"Icon smoke tick {tick} begins; taskbarApplied={taskbar?.Applied}, buttonCreated={taskbarCreated}.");
                 if (tick == 1 || tick == 4)
                 {
                     model.RefreshCapture(new(true, TimeSpan.FromSeconds(tick), 0, 0, null));
-                    if (!ReferenceEquals(tray!.Icon, recordingIcon) || !ReferenceEquals(window!.Icon, recordingIcon))
-                    { timer.Stop(); desktop!.Shutdown(1); return; }
+                    if (!ReferenceEquals(tray!.Icon, recordingIcon) || !ReferenceEquals(window!.Icon, recordingIcon) || (TaskbarSmoke && taskbar?.Applied != true))
+                    { Console.Error.WriteLine($"Icon smoke tick {tick}: recording={model.IsRecording}, taskbarApplied={taskbar?.Applied}, buttonCreated={taskbarCreated}."); timer.Stop(); desktop!.Shutdown(1); return; }
                 }
                 if (tick == 2)
                 {
                     model.RefreshCapture(new(false, TimeSpan.FromSeconds(1), 0, 0, "Fixture interruption"));
-                    if (!ReferenceEquals(tray!.Icon, idleIcon) || !ReferenceEquals(window!.Icon, idleIcon))
-                    { timer.Stop(); desktop!.Shutdown(1); return; }
+                    if (!ReferenceEquals(tray!.Icon, idleIcon) || !ReferenceEquals(window!.Icon, idleIcon) || (TaskbarSmoke && taskbar?.Applied != true))
+                    { Console.Error.WriteLine($"Icon smoke tick {tick}: recording={model.IsRecording}, taskbarApplied={taskbar?.Applied}, buttonCreated={taskbarCreated}."); timer.Stop(); desktop!.Shutdown(1); return; }
                 }
                 if (tick == 3)
                 {
@@ -137,13 +150,13 @@ public sealed class App : Application
                     if (details.SelectedText != model.DiagnosticText || !Equals(status!.Header, model.CaptureText)
                         || !Equals(processingStatus!.Header, model.ProcessingText) || tray!.ToolTipText != model.TrayText
                         || window!.Icon is null || !ReferenceEquals(window.Icon, tray.Icon))
-                    { timer.Stop(); desktop!.Shutdown(1); return; }
+                    { Console.Error.WriteLine($"Icon smoke tick {tick}: recording={model.IsRecording}, taskbarApplied={taskbar?.Applied}, buttonCreated={taskbarCreated}."); timer.Stop(); desktop!.Shutdown(1); return; }
                 }
                 if (tick == 5)
                 {
                     model.RefreshCapture(new(false, TimeSpan.FromSeconds(1), 0, 0, null));
-                    if (!ReferenceEquals(tray!.Icon, idleIcon) || !ReferenceEquals(window!.Icon, idleIcon))
-                    { timer.Stop(); desktop!.Shutdown(1); return; }
+                    if (!ReferenceEquals(tray!.Icon, idleIcon) || !ReferenceEquals(window!.Icon, idleIcon) || (TaskbarSmoke && taskbar?.Applied != true))
+                    { Console.Error.WriteLine($"Icon smoke tick {tick} failed; taskbarApplied={taskbar?.Applied}, buttonCreated={taskbarCreated}."); timer.Stop(); desktop!.Shutdown(1); return; }
                     timer.Stop(); await ExitAsync();
                 }
             };
@@ -189,6 +202,45 @@ public sealed class App : Application
     }
 
     private static string ConfigPath => ConfigurationBootstrap.UserConfigurationPath;
+
+    private void InitializeTaskbar()
+    {
+        if (Smoke && !TaskbarSmoke) return;
+        if (taskbar is not null || window?.TryGetPlatformHandle()?.Handle is not { } handle || handle == 0) return;
+        try
+        {
+            _ = ChangeWindowMessageFilterEx(handle, taskbarButtonCreated, 1, 0);
+            if (Smoke) Console.Error.WriteLine($"Taskbar shell handle: {GetShellWindow()}.");
+            taskbar = new RecordingTaskbar(handle);
+            taskbar.Update(model.IsRecording);
+            if (taskbarCreated) taskbar.Restore();
+        }
+        catch (Exception error)
+        {
+            taskbar?.Dispose(); taskbar = null;
+            if (Smoke) Console.Error.WriteLine($"Taskbar initialization failed: {error.GetType().Name}, HRESULT 0x{error.HResult:X8}.");
+        }
+    }
+
+    private nint TaskbarMessage(nint handle, uint message, nint wParam, nint lParam, ref bool handled)
+    {
+        if (taskbarButtonCreated != 0 && message == taskbarButtonCreated)
+        {
+            taskbarCreated = true;
+            taskbar?.Restore();
+        }
+        else if (message is 0x0080 or 0x02E0 or 0x031A)
+            Dispatcher.UIThread.Post(() => taskbar?.Restore(created: false), DispatcherPriority.Background);
+        return 0;
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "RegisterWindowMessageW", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern uint RegisterWindowMessage(string message);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static extern bool ChangeWindowMessageFilterEx(nint window, uint message, uint action, nint change);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern nint GetShellWindow();
 
     private void InitializeHotkey()
     {

@@ -57,6 +57,12 @@ jobs:
           & powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/Test-Desktop.ps1 -ExecutablePath dist/publish/MeetTape.exe -SkipNativeWindow
           if ($LASTEXITCODE -ne 0) { throw 'Published executable tests failed.' }
 
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: taskbar-snapshots
+          path: dist/desktop-tests/**/taskbar-*.png
+
   package-smoke:
     runs-on: windows-latest
     env:
