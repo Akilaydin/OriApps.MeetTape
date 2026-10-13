@@ -9,33 +9,98 @@ public sealed class MainViewModel : INotifyPropertyChanged
 {
     private readonly IDesktopController? controller;
     private readonly Queue<string> warnings = new();
+    private readonly Queue<OperationNotice> processingIssues = new();
     private DesktopSnapshot snapshot = new(new(false, TimeSpan.Zero, 0, 0, null), [], null, null, false, null);
     private bool refreshing;
     private bool busy;
     private bool updating;
     private bool shutdownStarted;
     private SessionRow? selected;
+    private SessionRow[] allSessions = [];
+    private string searchText = "";
     public ObservableCollection<SessionRow> Sessions { get; } = [];
+    public string SearchText
+    {
+        get => searchText;
+        set
+        {
+            if (searchText == value) return;
+            searchText = value ?? "";
+            UpdateSessionList();
+            Changed();
+        }
+    }
     public SessionRow? SelectedSession { get => selected; set { selected = value; Changed(); } }
     public string CaptureText => snapshot.Capture.IsActive ? "Recording — " + snapshot.Capture.Duration.ToString(@"hh\:mm\:ss") :
         snapshot.Capture.Error is not null ? "Recording stopped with errors" : controller is null ? "Open Settings to configure MeetTape" : "Ready";
     public string RecordLabel => snapshot.Capture.IsActive ? "Stop" : "Start recording";
+    public string ProcessingText
+    {
+        get
+        {
+            if (IsRecording) return HasProcessingErrors || snapshot.Sessions.Any(s => s.Data is { RecordingState: RecordingState.Recorded, JobState: JobState.Paused })
+                ? "Processing deferred; jobs paused" : "Processing deferred during recording";
+            if (snapshot.AwaitingTitleDirectory is not null) return "Processing deferred: finish naming";
+            var meetings = snapshot.Sessions.Select(s => s.Data).OfType<SessionData>()
+                .Where(s => s.RecordingState == RecordingState.Recorded).ToArray();
+            var jobs = meetings.Where(ProcessingJobs.Eligible).ToArray();
+            int paused = meetings.Count(s => s.JobState == JobState.Paused);
+            if (HasProcessingErrors && paused == 0) paused = 1;
+            if (jobs.Length > 0 && paused > 0) return $"Processing: {jobs.Length} jobs; {paused} paused";
+            if (paused > 0) return "Processing paused: open MeetTape";
+            if (snapshot.Preparing) return "Preparing audio";
+            if (jobs.Length > 0)
+            {
+                bool retrying = jobs.All(s => s.Retry is { } retry && retry.NextAttemptUtc > DateTimeOffset.UtcNow);
+                if (retrying) return jobs.Length == 1 ? "Processing: retry scheduled" : $"Processing: {jobs.Length} jobs waiting to retry";
+                if (jobs.Length > 1) return $"Processing: {jobs.Length} jobs";
+                var job = jobs[0];
+                if (job.Stages.TryGetValue("transcribe", out var transcription) && transcription.Status != StageState.Completed
+                    && transcription.TotalChunks is > 0)
+                    return $"Processing: {transcription.CompletedChunks}/{transcription.TotalChunks} chunks";
+                return job.Stages.FirstOrDefault(s => s.Value.Status == StageState.Running).Key switch
+                {
+                    "prepare" => "Preparing audio",
+                    "assemble" => "Assembling transcript",
+                    "summary" => "Processing: Summary",
+                    _ => "Processing queued"
+                };
+            }
+            if (meetings.Any(s => s.Stages.TryGetValue("trim", out var trim) && trim.Enabled && trim.Status != StageState.Completed))
+                return "Waiting for trim choice";
+            return meetings.Any(s => s.JobState == JobState.Completed) ? "Processing complete" : "No active jobs";
+        }
+    }
+    public string TrayText => $"MeetTape — {CaptureText} · {ProcessingText}" +
+        (HasError || HasProcessingErrors ? " · Error: open MeetTape" : HasWarnings ? " · Warning: open MeetTape" : "");
     public bool CanRecord => controller is not null && !busy && !updating && !shutdownStarted && NamingDirectory is null && snapshot.AwaitingTitleDirectory is null;
     public bool CanProcess => controller is not null && !busy && !updating && !shutdownStarted && !snapshot.Capture.IsActive && selected is not null && NamingDirectory is null;
     public bool CanPrepare => CanProcess && selected!.NeedsPreparation;
-    public bool CanSummary => CanProcess && selected!.HasTranscript && !selected.HasSummary;
+    public bool CanResume => CanProcess && selected!.CanResume;
+    public bool CanSummary => CanProcess && snapshot.SummaryEnabled && selected!.CanRequestSummary;
+    public string SummaryLabel => selected?.CanRestoreSummary == true ? "Restore Summary" : "Request Summary";
     public bool CanOpen => selected is not null;
     public bool CanOpenTranscript => selected?.HasTranscript == true;
     public bool CanOpenSummary => selected?.HasSummary == true;
+    public bool CanCopyDocument => CanOpenTranscript || CanOpenSummary;
     public bool CanConfigure => !busy && !updating && !shutdownStarted;
     public bool CanUpdate => CanConfigure && !snapshot.Capture.IsActive && NamingDirectory is null && snapshot.AwaitingTitleDirectory is null;
     public bool IsUpdating => updating;
     public int UpdateProgress { get; private set; }
     public bool IsBusy => busy;
     public bool IsRecording => snapshot.Capture.IsActive;
+    public double MeLevel => IsRecording ? snapshot.Capture.MeLevel * 100 : 0;
+    public double ThemLevel => IsRecording ? snapshot.Capture.ThemLevel * 100 : 0;
     public string WarningText => string.Join(Environment.NewLine, warnings);
     public bool HasWarnings => warnings.Count > 0;
     public bool HasError => ErrorText.Length > 0;
+    public string ErrorSummary => Brief(ErrorText);
+    public string WarningSummary => IsRecording ? "Recording continues with warnings. See Details." : "Recording or preparation reported warnings. See Details.";
+    public bool HasProcessingIssues => processingIssues.Count > 0;
+    public bool HasProcessingErrors => processingIssues.Any(n => n.Kind == NoticeKind.Error);
+    public string ProcessingIssueSummary => HasProcessingErrors
+        ? "Background processing reported an error. Select a meeting or open Details."
+        : "Background processing reported warnings. Select a meeting or open Details.";
     public bool HasTiming => TimingText.Length > 0;
     public bool IsPreparing => snapshot.Preparing;
     public string ErrorText { get; private set; } = "";
@@ -43,6 +108,26 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private string releaseText = "";
     public string ReleaseText { get => releaseText; set { releaseText = value; Changed(); } }
     public string SelectedDiagnostic => selected?.Diagnostic ?? "";
+    public string SelectedDiagnosticSummary => Brief(SelectedDiagnostic);
+    public string DiagnosticText => string.Join(Environment.NewLine + Environment.NewLine, new[]
+    {
+        DevicesText,
+        HasError ? "Current operation / recording:" + Environment.NewLine + ErrorText : "",
+        HasWarnings ? "Recording / preparation warnings:" + Environment.NewLine + WarningText : "",
+        TimingText,
+        HasProcessingIssues ? "Background processing (latest issues):" + Environment.NewLine +
+            string.Join(Environment.NewLine, processingIssues.Select(n => n.Message)) : "",
+        SelectedDiagnostic.Length > 0 ? "Selected meeting:" + Environment.NewLine + SelectedDiagnostic : ""
+    }.Where(text => text.Length > 0));
+
+    private static string Brief(string text)
+    {
+        int end = text.IndexOfAny(['\r', '\n']);
+        string first = end < 0 ? text : text[..end];
+        int sentence = first.IndexOf(". ", StringComparison.Ordinal);
+        if (sentence >= 0) first = first[..(sentence + 1)];
+        return first.Length <= 180 ? first : first[..180] + "…";
+    }
     public string DevicesText
     {
         get
@@ -70,6 +155,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public bool IsNaming => NamingDirectory is not null;
     public string MeetingTitle { get; set; } = "";
     public bool CanName => IsNaming && !busy && !updating;
+    public bool CanStartNextRecording => CanName && controller is not null && !shutdownStarted && !snapshot.Capture.IsActive;
     public bool ShowTrim => snapshot.Suggestion is not null && snapshot.PreparationDirectory is { } directory
         && snapshot.Sessions.Any(s => s.Directory == directory && s.Data?.Stages.TryGetValue("trim", out var trim) == true
             && trim.Enabled && trim.Status != StageState.Completed);
@@ -89,15 +175,38 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     private void OnNotice(OperationNotice notice) => Dispatcher.UIThread.Post(() =>
     {
-        if (notice.Kind == NoticeKind.Error) ErrorText = notice.Message;
+        if (notice.SessionId is not null)
+        {
+            if (notice.Kind == NoticeKind.Information)
+            {
+                ClearProcessingIssues(notice.SessionId.Value);
+                Changed();
+                return;
+            }
+            if (processingIssues.Contains(notice)) return;
+            if (processingIssues.Count == 8) processingIssues.Dequeue();
+            processingIssues.Enqueue(notice);
+        }
+        else if (notice.Kind == NoticeKind.Error) ErrorText = notice.Message;
         else if (notice.Kind == NoticeKind.Warning)
         {
+            if (warnings.Contains(notice.Message)) return;
             if (warnings.Count == 8) warnings.Dequeue();
             warnings.Enqueue(notice.Message);
         }
         else InfoText = notice.Message;
         Changed();
     });
+
+    private void ClearProcessingIssues(Guid id)
+    {
+        int count = processingIssues.Count;
+        for (int i = 0; i < count; i++)
+        {
+            var issue = processingIssues.Dequeue();
+            if (issue.SessionId != id) processingIssues.Enqueue(issue);
+        }
+    }
 
     public async Task RefreshAsync()
     {
@@ -112,15 +221,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 TrimEnd = suggestion.EndSeconds.ToString("F3", CultureInfo.InvariantCulture);
             }
             snapshot = updated;
-            var rows = updated.Sessions.OrderByDescending(s => s.Data?.StartedAtUtc).Select(SessionRow.From).ToArray();
-            if (!Sessions.SequenceEqual(rows))
-            {
-                Guid? id = selected?.Id;
-                string? directory = selected?.Directory;
-                Sessions.Clear();
-                foreach (var row in rows) Sessions.Add(row);
-                selected = Sessions.FirstOrDefault(s => id is not null ? s.Id == id : s.Directory == directory);
-            }
+            foreach (var meeting in updated.Sessions)
+                if (meeting.Data is { JobState: JobState.Completed, Error: null } completed) ClearProcessingIssues(completed.Id);
+            allSessions = updated.Sessions.OrderByDescending(s => s.Data?.StartedAtUtc).Select(SessionRow.From).ToArray();
+            UpdateSessionList();
             if (snapshot.AwaitingTitleDirectory is { } awaiting && NamingDirectory is null)
                 BeginNaming(awaiting, null);
             if (snapshot.Capture.Error is { } error) ErrorText = error;
@@ -128,6 +232,40 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
         catch (Exception) { SetError("Cannot refresh sessions; check meeting folder and metadata permissions."); }
         finally { refreshing = false; }
+    }
+
+    private static bool SameMeeting(SessionRow a, SessionRow b) => a.Id is { } id && b.Id is not null ? id == b.Id :
+        string.Equals(a.Directory, b.Directory, StringComparison.OrdinalIgnoreCase);
+
+    private void UpdateSessionList()
+    {
+        var previousSelection = selected;
+        string query = searchText.Trim();
+        var rows = allSessions.Where(s => s.Title.Contains(query, StringComparison.CurrentCultureIgnoreCase)
+            || s.Date.Contains(query, StringComparison.CurrentCultureIgnoreCase)).ToArray();
+        for (int i = Sessions.Count - 1; i >= 0; i--)
+            if (!rows.Any(row => SameMeeting(row, Sessions[i]))) Sessions.RemoveAt(i);
+        for (int i = 0; i < rows.Length; i++)
+        {
+            int existing = -1;
+            for (int j = i; j < Sessions.Count; j++)
+                if (SameMeeting(Sessions[j], rows[i])) { existing = j; break; }
+            if (existing < 0) Sessions.Insert(i, rows[i]);
+            else
+            {
+                if (existing != i) Sessions.Move(existing, i);
+                if (Sessions[i] != rows[i]) Sessions[i] = rows[i];
+            }
+        }
+        selected = previousSelection is null ? null : Sessions.FirstOrDefault(s => SameMeeting(s, previousSelection));
+    }
+
+    internal void RefreshCapture(CaptureStatus capture)
+    {
+        if (capture == snapshot.Capture) return;
+        snapshot = snapshot with { Capture = capture };
+        if (capture.Error is { } error) ErrorText = error;
+        Changed();
     }
 
     public Task ToggleAsync() => ExecuteAsync(async () =>
@@ -161,6 +299,18 @@ public sealed class MainViewModel : INotifyPropertyChanged
         NamingDirectory = null;
     });
 
+    public Task StartNextRecordingAsync()
+    {
+        if (!CanStartNextRecording) return Task.CompletedTask;
+        return ExecuteAsync(async () =>
+        {
+            await controller!.PrepareAsync(NamingDirectory!, MeetingTitle);
+            NamingDirectory = null;
+            warnings.Clear();
+            await controller.StartAsync();
+        });
+    }
+
     public Task ChooseAsync(TrimDecision decision) => ExecuteAsync(async () =>
     {
         double? start = null, end = null;
@@ -173,8 +323,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         await controller!.ChooseTrimAsync(decision, start, end);
     });
 
-    public Task ResumeAsync() => ExecuteAsync(() => controller!.ResumeAsync(selected!.Directory));
-    public Task SummaryAsync() => ExecuteAsync(() => controller!.SummaryAsync(selected!.Directory));
+    public Task ResumeAsync() => CanResume ? ExecuteAsync(() => controller!.ResumeAsync(selected!.Directory)) : Task.CompletedTask;
+    public Task SummaryAsync() => CanSummary ? ExecuteAsync(() => controller!.SummaryAsync(selected!.Directory)) : Task.CompletedTask;
 
     public async Task ExecuteAsync(Func<Task> action)
     {
@@ -242,6 +392,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
 public sealed record SessionRow(string Directory, Guid? Id, string Title, string Date, string Status,
     string Progress, double ProgressPercent, string? Diagnostic, bool NeedsPreparation, bool HasTranscript, bool HasSummary)
 {
+    public bool CanResume { get; init; }
+    public bool CanRequestSummary { get; init; }
+    public bool CanRestoreSummary { get; init; }
     public static SessionRow From(StoredSession session)
     {
         var data = session.Data;
@@ -255,9 +408,19 @@ public sealed record SessionRow(string Directory, Guid? Id, string Title, string
             "Completed" : data.JobState.ToString();
         string progress = transcription?.TotalChunks is { } total ? $"Chunks: {transcription.CompletedChunks}/{total}" :
             data?.Stages.FirstOrDefault(s => s.Value.Status == StageState.Running).Key is { } stage ? stage : "";
+        bool hasTranscript = File.Exists(Path.Combine(session.Directory, "transcription.md"));
+        bool hasSummary = File.Exists(Path.Combine(session.Directory, "summary.md"));
+        StageProgress? summary = null;
+        data?.Stages.TryGetValue("summary", out summary);
+        bool canRestoreSummary = summary?.Status == StageState.Completed && !hasSummary && File.Exists(Path.Combine(session.Directory, "summary.json"));
         return new(session.Directory, data?.Id, data?.Title ?? "Unnamed meeting", data?.StartedAtUtc.ToLocalTime().ToString("g") ?? "",
             status, progress, transcription?.TotalChunks is > 0 ? 100d * transcription.CompletedChunks / transcription.TotalChunks.Value : 0,
-            session.Diagnostic, needsPreparation, File.Exists(Path.Combine(session.Directory, "transcription.md")),
-            File.Exists(Path.Combine(session.Directory, "summary.md")));
+            session.Diagnostic, needsPreparation, hasTranscript, hasSummary)
+        {
+            CanResume = data is not null && ProcessingJobs.CanResume(data),
+            CanRequestSummary = data is not null && ProcessingJobs.HasPublishedTranscription(data) && hasTranscript && !hasSummary
+                && (canRestoreSummary || summary is null || summary.Status is StageState.Disabled or StageState.AwaitingRequest),
+            CanRestoreSummary = canRestoreSummary
+        };
     }
 }

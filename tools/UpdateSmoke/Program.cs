@@ -15,8 +15,22 @@ if (mode == "startup")
     if (manager.UpdatePendingRestart is null) throw new Exception("Expected a previously downloaded update.");
     typeof(VelopackLocator).GetMethod("SetCurrentLocator", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!
         .Invoke(null, [locator]);
-    // Exercise the real entry point, including its first Velopack call, before diagnostic help.
-    int result = (int)typeof(App).Assembly.EntryPoint!.Invoke(null, [new[] { "--help" }])!;
+    // Invoke real Main on STA and let its isolated Avalonia lifetime open and exit normally.
+    int result = -1;
+    Exception? failure = null;
+    var desktop = new Thread(() =>
+    {
+        try
+        {
+            if (Thread.CurrentThread.GetApartmentState() != ApartmentState.STA) throw new Exception("Desktop host is not STA.");
+            result = (int)typeof(App).Assembly.EntryPoint!.Invoke(null, [new[] { "--ui-smoke" }])!;
+        }
+        catch (Exception ex) { failure = ex; }
+    }) { IsBackground = true };
+    desktop.SetApartmentState(ApartmentState.STA);
+    desktop.Start();
+    if (!desktop.Join(TimeSpan.FromSeconds(30))) throw new Exception("Real Avalonia desktop lifetime did not exit.");
+    if (failure is not null) throw new Exception("Real desktop startup failed.", failure);
     if (result != 0 || locator.ExitCode is not null || manager.CurrentVersion?.ToString() != version)
         throw new Exception("Startup tried to apply or exit for a pending update.");
     if (manager.UpdatePendingRestart is null) throw new Exception("Pending update disappeared without consent.");

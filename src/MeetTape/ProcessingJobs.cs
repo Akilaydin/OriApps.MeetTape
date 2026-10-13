@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
@@ -7,7 +6,10 @@ namespace MeetTape;
 
 public sealed class ProcessingJobs : IDisposable
 {
-    private readonly LoadedConfiguration config;
+    private static readonly string[] ProcessingStages = ["prepare", "transcribe", "assemble", "summary"];
+    private volatile LoadedConfiguration config;
+    private volatile string[] meetingsRoots;
+    internal IReadOnlyList<string> MeetingsRoots => meetingsRoots;
     private readonly Func<bool> captureActive;
     private readonly HttpClient http;
     private readonly bool ownsHttp;
@@ -18,7 +20,6 @@ public sealed class ProcessingJobs : IDisposable
     private readonly Dictionary<string, (RetryProgress Retry, long ObservedAt, bool CapExpired)> observedRetries = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, (DateTime LastWriteTimeUtc, long Length)> completedSessions = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> blocked = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentQueue<string> recovered = new();
     private CancellationTokenSource? cancellation;
     private Task operation = Task.CompletedTask;
 
@@ -36,12 +37,20 @@ public sealed class ProcessingJobs : IDisposable
         Func<DateTimeOffset>? utcNow = null, Func<long>? timestamp = null)
     {
         this.config = config; this.captureActive = captureActive;
+        meetingsRoots = [config.MeetingsRoot];
         ownsHttp = http is null;
         this.http = http ?? new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = Timeout.InfiniteTimeSpan };
         this.delay = delay ?? ((duration, token) => Task.Delay(duration, token));
         this.utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
         this.timestamp = timestamp ?? Stopwatch.GetTimestamp;
         api = new(this.http, captureActive, readKey);
+    }
+
+    internal void ApplyConfiguration(LoadedConfiguration updated)
+    {
+        string root = updated.MeetingsRoot;
+        if (!meetingsRoots.Contains(root, StringComparer.OrdinalIgnoreCase)) meetingsRoots = [.. meetingsRoots, root];
+        config = updated;
     }
 
     public void Start()
@@ -57,12 +66,8 @@ public sealed class ProcessingJobs : IDisposable
                 while (true)
                 {
                     token.ThrowIfCancellationRequested();
-                    while (recovered.TryDequeue(out var directory))
-                    {
-                        blocked.Remove(directory);
-                        completedSessions.Remove(directory);
-                    }
-                    foreach (var session in SessionStore.Discover(config.MeetingsRoot, completedSessions, Eligible))
+                    foreach (string root in meetingsRoots)
+                    foreach (var session in SessionStore.Discover(root, completedSessions, Eligible))
                     {
                         token.ThrowIfCancellationRequested();
                         if (session.Data is { } data && !blocked.Contains(session.Directory) && Eligible(data) && !RetryPending(session.Directory, data))
@@ -85,8 +90,6 @@ public sealed class ProcessingJobs : IDisposable
         { throw new AudioPreparationShutdownException("Processing did not stop; new capture remains blocked. Check the process before restarting MeetTape."); }
     }
 
-    public void UnblockRecovered(string directory) => recovered.Enqueue(directory);
-
     public void Resume(string directory)
     {
         PauseAndWait();
@@ -95,7 +98,7 @@ public sealed class ProcessingJobs : IDisposable
         if (data.RecordingState != RecordingState.Recorded)
             throw new InvalidOperationException("Verify incomplete recording before processing.");
         var stages = new Dictionary<string, StageProgress>(data.Stages);
-        foreach (string name in new[] { "prepare", "transcribe", "assemble", "summary" })
+        foreach (string name in ProcessingStages)
             if (stages.TryGetValue(name, out var stage) && stage.Enabled && stage.Status == StageState.Paused)
                 stages[name] = stage with { Status = StageState.Pending };
         SessionStore.Save(directory, data with { Stages = stages, JobState = JobState.NotStarted, Error = null,
@@ -107,28 +110,13 @@ public sealed class ProcessingJobs : IDisposable
         Report("Job resumed with current API settings; successful chunks retained.", NoticeKind.Information, data.Id);
     }
 
-    public void Assemble(string directory)
-    {
-        PauseAndWait();
-        using var lease = Lease(directory);
-        var data = SessionStore.Read(directory);
-        if (!data.Stages.TryGetValue("transcribe", out var stage) || stage.Status != StageState.Completed)
-            throw new InvalidOperationException("Assembly requires all completed transcription chunks.");
-        var stages = new Dictionary<string, StageProgress>(data.Stages) { ["assemble"] = new(true, StageState.Pending) };
-        SessionStore.Save(directory, data with { Stages = stages, JobState = JobState.NotStarted, Error = null });
-        blocked.Remove(directory);
-        completedSessions.Remove(directory);
-    }
-
     public void RequestSummary(string directory)
     {
         PauseAndWait();
         using var lease = Lease(directory);
         var data = SessionStore.Read(directory);
-        if (!config.Settings.Stages.Summary) throw new InvalidOperationException("Summary disabled; enable stages.summary and restart before requesting it.");
-        if (data.RecordingState != RecordingState.Recorded || data.Audio is null ||
-            !data.Stages.TryGetValue("transcribe", out var transcribe) || transcribe.Status != StageState.Completed || transcribe.CompletedChunks != data.Audio.Chunks.Count ||
-            !data.Stages.TryGetValue("assemble", out var stage) || stage.Status != StageState.Completed || data.TranscriptSha256 is null)
+        if (!config.Settings.Stages.Summary) throw new InvalidOperationException("Summary disabled; enable Summary in Settings before requesting it.");
+        if (!HasPublishedTranscription(data))
             throw new InvalidOperationException("Summary requires a complete published transcription.md.");
         if (data.Stages.TryGetValue("summary", out var summary) && summary.Status == StageState.Completed && File.Exists(Path.Combine(directory, "summary.md")))
             throw new InvalidOperationException("Summary already saved; repeated request retains it without a new API call.");
@@ -139,21 +127,9 @@ public sealed class ProcessingJobs : IDisposable
         completedSessions.Remove(directory);
     }
 
-    internal async Task AssembleLocalAsync(string directory)
-    {
-        PauseAndWait();
-        using var lease = Lease(directory);
-        var data = SessionStore.Read(directory);
-        if (!data.Stages.TryGetValue("transcribe", out var stage) || stage.Status != StageState.Completed)
-            throw new InvalidOperationException("Assembly requires all completed transcription chunks.");
-        string hash = await new TranscriptAssembler().BuildAsync(directory, data, CancellationToken.None);
-        SessionStore.Save(directory, data with { TranscriptSha256 = hash, Error = null, JobState = JobState.NotStarted,
-            Stages = new(data.Stages) { ["assemble"] = new(true, StageState.Completed) } });
-        Report($"Job {data.Id}: local transcription.md rebuilt; no API request made.", NoticeKind.Information, data.Id);
-    }
-
     public async Task ProcessSessionAsync(string directory, CancellationToken token)
     {
+        var currentConfig = config;
         token.ThrowIfCancellationRequested();
         if (captureActive()) return;
         FileStream lease;
@@ -168,16 +144,11 @@ public sealed class ProcessingJobs : IDisposable
             string stage = "prepare";
             try
             {
-                if (!data.Stages.ContainsKey("assemble"))
-                {
-                    data = data with { Stages = new(data.Stages) { ["assemble"] = new(true, StageState.Pending) }, JobState = JobState.Running };
-                    SessionStore.Save(directory, data);
-                }
                 if (data.Audio is null)
                 {
                     data = Update(data, stage, StageState.Running);
                     SessionStore.Save(directory, data);
-                    var audio = await new AudioChunker(config.Settings.Capture.FfmpegPath).PrepareAsync(directory, data, token);
+                    var audio = await new AudioChunker(currentConfig.Settings.Capture.FfmpegPath).PrepareAsync(directory, data, token);
                     data = Update(data with { Audio = audio }, stage, StageState.Completed, audio.Chunks.Count, audio.Chunks.Count);
                     SessionStore.Save(directory, data);
                 }
@@ -195,7 +166,7 @@ public sealed class ProcessingJobs : IDisposable
                         _ = await ChunkStore.ReadAsync(directory, data, chunk, token);
                     else
                     {
-                        prompt ??= File.ReadAllText(Path.GetFullPath(data.Processing.Transcription.PromptFile, data.Processing.ConfigurationDirectory));
+                        prompt ??= ReadPrompt(data.Processing.Transcription, data.Processing.ConfigurationDirectory, "transcription");
                         int attempts = data.Retry?.ChunkIndex == chunk.Index ? data.Retry.Attempts : 0;
                         try
                         {
@@ -271,6 +242,16 @@ public sealed class ProcessingJobs : IDisposable
         && (transcribe.Status != StageState.Completed || !data.Stages.TryGetValue("assemble", out var assemble) || assemble.Status != StageState.Completed || SummaryRequested(data))
         && (!data.Stages.TryGetValue("trim", out var trim) || !trim.Enabled || trim.Status == StageState.Completed);
 
+    internal static bool CanResume(SessionData data) => data.RecordingState == RecordingState.Recorded && data.JobState == JobState.Paused
+        && data.Stages.TryGetValue("transcribe", out var transcribe) && transcribe.Enabled
+        && (!data.Stages.TryGetValue("trim", out var trim) || !trim.Enabled || trim.Status == StageState.Completed)
+        && ProcessingStages.Any(name => data.Stages.TryGetValue(name, out var stage) && stage.Enabled && stage.Status == StageState.Paused);
+
+    internal static bool HasPublishedTranscription(SessionData data) => data.RecordingState == RecordingState.Recorded && data.Audio is not null
+        && data.Stages.TryGetValue("transcribe", out var transcribe) && transcribe.Status == StageState.Completed
+        && transcribe.CompletedChunks == data.Audio.Chunks.Count
+        && data.Stages.TryGetValue("assemble", out var assemble) && assemble.Status == StageState.Completed && data.TranscriptSha256 is not null;
+
     private bool RetryPending(string directory, SessionData data)
     {
         // A successful checkpoint is authoritative even when the last saved retry deadline is still future.
@@ -315,6 +296,13 @@ public sealed class ProcessingJobs : IDisposable
     private static bool SummaryRequested(SessionData data) => data.Stages.TryGetValue("summary", out var stage)
         && stage.Enabled && stage.Status is StageState.Pending or StageState.Running;
 
+    private string ReadPrompt(ApiSettings settings, string directory, string stage)
+    {
+        try { return (config with { Directory = directory }).ReadPrompt(settings, stage); }
+        catch (InvalidDataException ex)
+        { throw new ChatApiException(ApiFailureKind.Configuration, ex.Message + " No request made."); }
+    }
+
     private async Task<bool> GenerateSummaryAsync(string directory, SessionData data, CancellationToken token)
     {
         string checkpoint = Path.Combine(directory, "summary.json");
@@ -329,7 +317,7 @@ public sealed class ProcessingJobs : IDisposable
             if (Convert.ToHexString(SHA256.HashData(bytes)) != data.TranscriptSha256)
                 throw new InvalidDataException("Transcript changed; Summary paused.");
             string transcript = Encoding.UTF8.GetString(bytes);
-            string prompt = File.ReadAllText(Path.GetFullPath(data.Processing.Summary.PromptFile, data.Processing.ConfigurationDirectory));
+            string prompt = ReadPrompt(data.Processing.Summary, data.Processing.ConfigurationDirectory, "summary");
             int attempts = data.Retry?.ChunkIndex == 0 ? data.Retry.Attempts : 0;
             try
             {

@@ -19,21 +19,33 @@
           <TextBlock Name="CaptureStatus" Text="{Binding CaptureText}" FontSize="20" VerticalAlignment="Center" />
           <Button Grid.Column="1" Name="RecordButton" Content="{Binding RecordLabel}" IsEnabled="{Binding CanRecord}" Click="RecordClick" />
         </Grid>
-        <TextBlock Text="{Binding DevicesText}" TextWrapping="Wrap" Opacity="0.75" />
-        <TextBlock Text="{Binding TimingText}" IsVisible="{Binding HasTiming}" TextWrapping="Wrap" />
-        <TextBlock Name="Warnings" Text="{Binding WarningText}" IsVisible="{Binding HasWarnings}" TextWrapping="Wrap" Foreground="DarkOrange" />
-        <TextBlock Name="ErrorMessage" Text="{Binding ErrorText}" IsVisible="{Binding HasError}" TextWrapping="Wrap" Foreground="IndianRed" />
+        <TextBlock Text="Me: microphone · Them: system playback" Opacity="0.65" />
+        <Grid Name="AudioLevels" ColumnDefinitions="Auto,*,Auto,*" ColumnSpacing="8" IsVisible="{Binding IsRecording}">
+          <TextBlock Text="Me" VerticalAlignment="Center" />
+          <ProgressBar Grid.Column="1" Name="MeLevel" Value="{Binding MeLevel}" Height="6" VerticalAlignment="Center" />
+          <TextBlock Grid.Column="2" Text="Them" VerticalAlignment="Center" />
+          <ProgressBar Grid.Column="3" Name="ThemLevel" Value="{Binding ThemLevel}" Height="6" VerticalAlignment="Center" />
+        </Grid>
+        <TextBlock Name="Warnings" Text="{Binding WarningSummary}" IsVisible="{Binding HasWarnings}" TextWrapping="Wrap" Foreground="DarkOrange" />
+        <TextBlock Name="ErrorMessage" Text="{Binding ErrorSummary}" IsVisible="{Binding HasError}" TextWrapping="Wrap" Foreground="IndianRed" />
         <TextBlock Text="{Binding PreparationText}" IsVisible="{Binding IsPreparing}" TextWrapping="Wrap" />
         <ProgressBar Name="UpdateProgress" Value="{Binding UpdateProgress}" IsVisible="{Binding IsUpdating}" Height="6" />
+        <Expander Name="DiagnosticsExpander" Header="Details" HorizontalAlignment="Stretch">
+          <StackPanel Spacing="8">
+            <TextBox Name="DiagnosticDetails" Text="{Binding DiagnosticText, Mode=OneWay}" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" MaxHeight="160" />
+            <Button Name="CopyDiagnostics" Content="Copy details" Click="CopyDiagnosticsClick" HorizontalAlignment="Left" />
+          </StackPanel>
+        </Expander>
       </StackPanel>
     </Border>
     <StackPanel Grid.Row="2" Spacing="12">
       <Border IsVisible="{Binding IsNaming}" Padding="12" BorderThickness="1" BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}" CornerRadius="6">
         <StackPanel Spacing="8">
-          <TextBlock Text="Recording saved. Name the meeting (optional), then continue." TextWrapping="Wrap" />
-          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+          <TextBlock Text="Recording saved. Name the meeting (optional), then continue or start the next recording." TextWrapping="Wrap" />
+          <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
             <TextBox Name="MeetingTitle" Text="{Binding MeetingTitle}" PlaceholderText="Unnamed meeting" MaxLength="200" />
             <Button Grid.Column="1" Name="ContinuePreparation" Content="Continue" IsEnabled="{Binding CanName}" Click="ContinueClick" />
+            <Button Grid.Column="2" Name="StartNextRecording" Content="Start next recording" IsEnabled="{Binding CanStartNextRecording}" Click="StartNextClick" />
           </Grid>
         </StackPanel>
       </Border>
@@ -51,7 +63,10 @@
       </Border>
     </StackPanel>
     <Grid Grid.Row="3" RowDefinitions="Auto,*,Auto" RowSpacing="8">
-      <TextBlock Text="Meetings" FontSize="18" FontWeight="SemiBold" />
+      <Grid ColumnDefinitions="Auto,*" ColumnSpacing="16">
+        <TextBlock Text="Meetings" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center" />
+        <TextBox Grid.Column="1" Name="MeetingSearch" Text="{Binding SearchText}" PlaceholderText="Search title or date" />
+      </Grid>
       <ListBox Grid.Row="1" Name="SessionList" ItemsSource="{Binding Sessions}" SelectedItem="{Binding SelectedSession}">
         <ListBox.ItemTemplate>
           <DataTemplate x:DataType="local:SessionRow">
@@ -66,14 +81,23 @@
         </ListBox.ItemTemplate>
       </ListBox>
       <StackPanel Grid.Row="2" Spacing="8">
-        <TextBlock Text="{Binding SelectedDiagnostic}" TextWrapping="Wrap" Foreground="IndianRed" />
+        <TextBlock Name="ProcessingIssues" Text="{Binding ProcessingIssueSummary}" IsVisible="{Binding HasProcessingIssues}" TextWrapping="Wrap" Foreground="IndianRed" />
+        <TextBlock Text="{Binding SelectedDiagnosticSummary}" TextWrapping="Wrap" Foreground="IndianRed" />
         <WrapPanel>
           <Button Content="Open folder" IsEnabled="{Binding CanOpen}" Click="FolderClick" Margin="0,0,8,8" />
           <Button Content="Transcript" IsEnabled="{Binding CanOpenTranscript}" Click="TranscriptClick" Margin="0,0,8,8" />
           <Button Content="Summary file" IsEnabled="{Binding CanOpenSummary}" Click="SummaryFileClick" Margin="0,0,8,8" />
+          <Button Name="CopyMenu" Content="Copy…" IsEnabled="{Binding CanCopyDocument}" Margin="0,0,8,8">
+            <Button.Flyout>
+              <MenuFlyout>
+                <MenuItem Name="CopyTranscript" Header="Copy transcript" IsEnabled="{Binding CanOpenTranscript}" Click="CopyTranscriptClick" />
+                <MenuItem Name="CopySummary" Header="Copy summary" IsEnabled="{Binding CanOpenSummary}" Click="CopySummaryClick" />
+              </MenuFlyout>
+            </Button.Flyout>
+          </Button>
           <Button Name="PrepareSession" Content="Name / Trim" IsEnabled="{Binding CanPrepare}" Click="PrepareClick" Margin="0,0,8,8" />
-          <Button Name="ResumeSession" Content="Resume" IsEnabled="{Binding CanProcess}" Click="ResumeClick" Margin="0,0,8,8" />
-          <Button Name="RequestSummary" Content="Request Summary" IsEnabled="{Binding CanSummary}" Click="SummaryClick" Margin="0,0,8,8" />
+          <Button Name="ResumeSession" Content="Resume processing" IsEnabled="{Binding CanResume}" Click="ResumeClick" Margin="0,0,8,8" />
+          <Button Name="RequestSummary" Content="{Binding SummaryLabel}" IsEnabled="{Binding CanSummary}" Click="SummaryClick" Margin="0,0,8,8" />
         </WrapPanel>
       </StackPanel>
     </Grid>

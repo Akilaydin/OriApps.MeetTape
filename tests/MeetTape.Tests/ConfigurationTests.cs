@@ -55,34 +55,22 @@ public sealed class ConfigurationTests : IDisposable
     }
 
     [Theory]
-    [InlineData("sessions", "missing")]
-    [InlineData("status", "missing")]
-    [InlineData("sessions", "empty")]
-    [InlineData("status", "empty")]
-    [InlineData("sessions", "directory")]
-    [InlineData("status", "directory")]
-    public void InspectionRetainsRecordedSessionsWithoutUsablePrompts(string command, string promptState)
+    [InlineData("missing")]
+    [InlineData("empty")]
+    [InlineData("directory")]
+    public void SessionDiscoveryDoesNotReadPromptsOrAlterFinalizedRecordings(string promptState)
     {
         using var fixture = new JobTests();
         string session = fixture.Session();
         byte[] metadata = File.ReadAllBytes(Path.Combine(session, "session.json"));
-        json["meetingsRoot"] = Path.GetDirectoryName(session);
-        json["stages"] = new JsonObject { ["transcribe"] = true, ["summary"] = true };
         string prompt = Path.Combine(directory, "prompt.md");
         File.Delete(prompt);
         if (promptState == "empty") File.WriteAllText(prompt, " ");
         if (promptState == "directory") Directory.CreateDirectory(prompt);
-        string configPath = WriteConfig();
-
-        var result = Run(["--config", configPath, command]);
-        Assert.Equal(0, result.Code);
-        Assert.Empty(result.Error);
-        if (command == "sessions") Assert.Contains(SessionStore.Read(session).Id.ToString(), result.Output);
-        else Assert.Contains("Idle", result.Output);
+        var found = Assert.Single(SessionStore.Discover(Path.GetDirectoryName(session)!));
+        Assert.Equal(SessionStore.Read(session).Id, found.Data!.Id);
         Assert.Equal(metadata, File.ReadAllBytes(Path.Combine(session, "session.json")));
         Assert.False(File.Exists(ChunkStore.PathFor(session, 1)));
-        Assert.Equal(2, Run(["--config", configPath, "check-config"]).Code);
-        Assert.Equal(2, Run(["--config", configPath], "exit\n").Code);
     }
 
     [Fact]
@@ -124,17 +112,28 @@ public sealed class ConfigurationTests : IDisposable
         var settings = ConfigurationLoader.Load(path);
         Assert.Equal(meetingsRoot, settings.MeetingsRoot);
         Assert.False(string.IsNullOrWhiteSpace(settings.ReadPrompt(settings.Settings.Transcription)));
+        string transcription = settings.ReadPrompt(settings.Settings.Transcription);
+        string summary = settings.ReadPrompt(settings.Settings.Summary);
+        Assert.StartsWith("Language: Russian (ru).", transcription);
+        Assert.Contains("summary in Russian", summary);
+        Assert.Contains("[inaudible]", transcription);
+        Assert.Contains("[MM:SS] Me/Them/Unknown: text", ChatApiClient.SourceInstruction);
+        Assert.Contains(ChatApiClient.NoSpeechMarker, ChatApiClient.SourceInstruction);
+        Assert.DoesNotMatch(@"[\p{IsCyrillic}\p{IsCJKUnifiedIdeographs}]", transcription + summary + ChatApiClient.SourceInstruction);
         string summaryPath = Path.Combine(directory, "user", "prompts", "summary.md");
         Assert.True(File.Exists(summaryPath));
         Assert.Empty(Directory.EnumerateFiles(Path.GetDirectoryName(path)!, "*.tmp", SearchOption.AllDirectories));
 
         string promptPath = Path.Combine(directory, "user", "prompts", "transcription.md");
         File.WriteAllText(promptPath, "Personal edited prompt");
+        File.WriteAllText(summaryPath, "Personal summary instructions — сохранить мой текст.");
+        byte[] summaryBytes = File.ReadAllBytes(summaryPath);
         string editedJson = File.ReadAllText(path).Replace("your-audio-model", "my-model", StringComparison.Ordinal);
         File.WriteAllText(path, editedJson);
 
         Assert.False(ConfigurationBootstrap.Initialize(path, Path.Combine(directory, "other")));
         Assert.Equal("Personal edited prompt", File.ReadAllText(promptPath));
+        Assert.Equal(summaryBytes, File.ReadAllBytes(summaryPath));
         Assert.Equal(editedJson, File.ReadAllText(path));
         Assert.Equal("my-model", ConfigurationLoader.Load(path).Settings.Transcription.Model);
     }
@@ -166,65 +165,12 @@ public sealed class ConfigurationTests : IDisposable
     }
 
     [Fact]
-    public void DefaultConfigurationPrefersWorkingDirectoryForLegacyInvocations()
+    public void UserConfigurationAlwaysLivesOutsideReplaceableApplicationBinaries()
     {
-        string userPath = Path.Combine(directory, "user", "config.json");
-        Assert.Equal(userPath, ConfigurationBootstrap.DefaultConfigurationPath(directory, userPath));
-        string legacy = Path.Combine(directory, "config.json");
-        File.WriteAllText(legacy, "{}");
-        Assert.Equal(legacy, ConfigurationBootstrap.DefaultConfigurationPath(directory, userPath));
-    }
-
-    [Fact]
-    public void InstalledExecutablesPreferUserConfigAndSourceBuildsRetainLegacyLookup()
-    {
-        string userPath = Path.Combine(directory, "user", "config.json");
-        Directory.CreateDirectory(Path.GetDirectoryName(userPath)!);
-        File.WriteAllText(userPath, "{}");
-        string legacy = Path.Combine(directory, "config.json");
-        File.WriteAllText(legacy, "{}");
-        string app = Path.Combine(directory, "installation", "app");
-        Directory.CreateDirectory(app);
-        string anotherInstall = Path.Combine(directory, "other-installation", "app");
-        Directory.CreateDirectory(anotherInstall);
-        string projectDirectory = Path.Combine(directory, "source", "MeetTape");
-        Directory.CreateDirectory(projectDirectory);
-        File.WriteAllText(Path.Combine(projectDirectory, "MeetTape.csproj"), "<Project />");
-        string buildOutput = Path.Combine(projectDirectory, "bin", "Release", "net10.0-windows", "win-x64");
-        Directory.CreateDirectory(buildOutput);
-
-        Assert.Equal(userPath, ConfigurationBootstrap.DefaultConfigurationPath(directory, userPath, app));
-        Assert.Equal(userPath, ConfigurationBootstrap.DefaultConfigurationPath(directory, userPath, anotherInstall));
-        Assert.Equal(legacy, ConfigurationBootstrap.DefaultConfigurationPath(directory, userPath, buildOutput));
-        File.Delete(userPath);
-        Assert.Equal(legacy, ConfigurationBootstrap.DefaultConfigurationPath(directory, userPath, app));
-    }
-
-    [Fact]
-    public void VelopackDefaultsNeverSelectConfigurationInsideReplaceableCurrentDirectory()
-    {
-        string current = Path.Combine(directory, "OriApps.MeetTape", "current");
-        Directory.CreateDirectory(current);
-        File.WriteAllText(Path.Combine(current, "sq.version"), "fixture manifest");
-        File.WriteAllText(Path.Combine(current, "config.json"), "{}");
-        string userPath = Path.Combine(directory, "user", "config.json");
-        Assert.Equal(userPath, ConfigurationBootstrap.DefaultConfigurationPath(current, userPath, current));
-        ConfigurationBootstrap.Initialize(userPath, Path.Combine(directory, "Meetings"));
-        Assert.Equal(userPath, ConfigurationBootstrap.DefaultConfigurationPath(current, userPath, current));
-        Assert.Equal("{}", File.ReadAllText(Path.Combine(current, "config.json")));
-    }
-
-    [Fact]
-    public void CliConfigureWithExplicitPathRetainsExistingSettingsOnEnter()
-    {
-        string path = Path.Combine(directory, "initialized", "config.json");
-        var first = Run(["--config", path, "configure"], new string('\n', 17));
-        Assert.Equal(0, first.Code);
-        Assert.Contains("Created configuration", first.Output);
-        var second = Run(["--config", path, "configure"], new string('\n', 17));
-        Assert.Equal(0, second.Code);
-        Assert.Contains("Configuration unchanged", second.Output);
-        Assert.Empty(second.Error);
+        Assert.Equal(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "MeetTape", "config.json"), ConfigurationBootstrap.UserConfigurationPath);
+        Assert.False(ConfigurationBootstrap.UserConfigurationPath.StartsWith(AppContext.BaseDirectory,
+            StringComparison.OrdinalIgnoreCase));
     }
 
     [Theory]
@@ -312,7 +258,7 @@ public sealed class ConfigurationTests : IDisposable
         File.WriteAllText(Path.Combine(directory, "prompt.md"), " ");
         Assert.Throws<InvalidDataException>(() => Load());
         File.Delete(Path.Combine(directory, "prompt.md"));
-        Assert.Throws<FileNotFoundException>(() => Load());
+        Assert.Throws<InvalidDataException>(() => Load());
     }
 
     [Fact]
@@ -320,8 +266,9 @@ public sealed class ConfigurationTests : IDisposable
     {
         json["stages"] = new JsonObject { ["transcribe"] = false, ["summary"] = false };
         File.Delete(Path.Combine(directory, "prompt.md"));
-        var result = Run(["--config", WriteConfig(), "check-config"]);
-        Assert.Equal(0, result.Code);
+        var loaded = Load();
+        Assert.False(loaded.Settings.Stages.Transcribe);
+        Assert.False(loaded.Settings.Stages.Summary);
     }
 
     [Theory]
@@ -333,7 +280,7 @@ public sealed class ConfigurationTests : IDisposable
     {
         var config = Load();
         var error = Assert.Throws<InvalidDataException>(() =>
-            ApiKeyProvider.Get(config.Settings.Transcription, _ => key));
+            ApiKeyProvider.Get(config.Settings.Transcription, (_, _) => key));
         Assert.DoesNotContain("secret", error.Message);
     }
 
@@ -341,48 +288,53 @@ public sealed class ConfigurationTests : IDisposable
     public void ApiKeyUsesConfiguredEnvironmentVariable()
     {
         var config = Load();
-        string key = ApiKeyProvider.Get(config.Settings.Transcription, name =>
+        string key = ApiKeyProvider.Get(config.Settings.Transcription, (name, _) =>
             name == config.Settings.Transcription.ApiKeyEnvironmentVariable ? "test-key" : null);
         Assert.Equal("test-key", key);
     }
 
-    [Fact]
-    public void StatusDoesNotCreateAudioFiles()
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" ")]
+    public void MissingProcessKeyUsesUserEnvironmentWithoutReadingRealKeys(string? processKey)
     {
+        var config = Load();
+        var targets = new List<EnvironmentVariableTarget>();
+        string key = ApiKeyProvider.Get(config.Settings.Transcription, (name, target) =>
+        {
+            Assert.Equal(config.Settings.Transcription.ApiKeyEnvironmentVariable, name);
+            targets.Add(target);
+            return target == EnvironmentVariableTarget.Process ? processKey : "fixture-user-key";
+        });
+        Assert.Equal("fixture-user-key", key);
+        Assert.Equal(new[] { EnvironmentVariableTarget.Process, EnvironmentVariableTarget.User }, targets);
+    }
+
+    [Fact]
+    public void ExplicitProcessKeyRetainsPriorityAndInvalidKeyNeverLeaks()
+    {
+        var api = Load().Settings.Transcription;
+        Assert.Equal("fixture-process-key", ApiKeyProvider.Get(api, (_, target) =>
+            target == EnvironmentVariableTarget.Process ? "fixture-process-key" : throw new Exception("No User lookup expected")));
+        var error = Assert.Throws<InvalidDataException>(() => ApiKeyProvider.Get(api, (_, target) =>
+            target == EnvironmentVariableTarget.Process ? "fixture-secret\ninvalid" : throw new Exception("No User lookup expected")));
+        Assert.Contains(api.ApiKeyEnvironmentVariable, error.Message);
+        Assert.DoesNotContain("fixture-secret", error.Message);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CaptureConfigurationRetainsValidationWithoutRequiringPromptFiles(bool empty)
+    {
+        string prompt = Path.Combine(directory, "prompt.md");
+        if (empty) File.WriteAllText(prompt, " "); else File.Delete(prompt);
         string path = WriteConfig();
-        var before = Directory.GetFiles(directory);
-        var result = Run(["--config", path, "status"]);
-        Assert.Equal(0, result.Code);
-        Assert.Contains("No capture started", result.Output);
-        Assert.Contains("Idle", result.Output);
-        Assert.Equal(before, Directory.GetFiles(directory));
-        Assert.Empty(result.Error);
-    }
-
-    [Fact]
-    public void StatusWorksWithoutApiKeyButCredentialCheckFails()
-    {
-        string path = WriteConfig();
-        Assert.Equal(0, Run(["--config", path, "status"]).Code);
-        Assert.Equal(2, Run(["--config", path, "check-config"]).Code);
-    }
-
-    [Fact]
-    public void InvalidConfigReturnsDiagnosticWithoutPrivateValues()
-    {
-        json["private-secret-property"] = "private-secret-value";
-        var result = Run(["--config", WriteConfig(), "status"]);
-        Assert.Equal(2, result.Code);
-        Assert.Contains("Invalid configuration JSON", result.Error);
-        Assert.DoesNotContain("private-secret", result.Error);
-    }
-
-    [Fact]
-    public void HelpDoesNotRequireConfigAndBadArgumentsFail()
-    {
-        Assert.Equal(0, Run(["--help"]).Code);
-        Assert.Equal(2, Run(["--config"]).Code);
-        Assert.Equal(2, Run(["unknown"]).Code);
+        Assert.Throws<InvalidDataException>(() => ConfigurationLoader.Load(path));
+        Assert.True(ConfigurationLoader.LoadForCapture(path).Settings.Stages.Transcribe);
+        json["capture"] = new JsonObject { ["ffmpegPath"] = "" };
+        Assert.Throws<InvalidDataException>(() => ConfigurationLoader.LoadForCapture(WriteConfig()));
     }
 
     private LoadedConfiguration Load() => ConfigurationLoader.Load(WriteConfig());
@@ -392,14 +344,6 @@ public sealed class ConfigurationTests : IDisposable
         string path = Path.Combine(directory, "config.json");
         File.WriteAllText(path, json.ToJsonString());
         return path;
-    }
-
-    private static (int Code, string Output, string Error) Run(string[] args, string input = "")
-    {
-        using var output = new StringWriter();
-        using var error = new StringWriter();
-        int code = Cli.Run(args, new StringReader(input), output, error);
-        return (code, output.ToString(), error.ToString());
     }
 
     public void Dispose() => Directory.Delete(directory, recursive: true);

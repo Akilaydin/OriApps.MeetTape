@@ -47,13 +47,14 @@ try { $stream.WriteByte(0); $stream.Flush($true) } finally { $stream.Dispose() }
 dotnet run --project (Join-Path $PSScriptRoot 'UpdateSmoke/UpdateSmoke.csproj') --configuration Release -- checksum $corruptFeed (Join-Path $testRoot 'checksum-installation') '1.0.0'
 if ($LASTEXITCODE -ne 0) { throw 'SDK checksum rejection failed.' }
 
-# Verify every full package contains the pinned binary, licenses and terminal wrapper.
+# Verify every full package contains the pinned binary and licenses, with no CLI wrapper.
 foreach ($version in @('1.0.0', '1.0.1')) {
     $package = [IO.Compression.ZipFile]::OpenRead((Join-Path $feed "OriApps.MeetTape-$version-full.nupkg"))
     try {
-        foreach ($name in @('MeetTape.exe', 'ffmpeg.exe', 'ffmpeg-LICENSE.txt', 'LICENSE', 'THIRD-PARTY-NOTICES.txt', 'meettape-cli.cmd')) {
+        foreach ($name in @('MeetTape.exe', 'ffmpeg.exe', 'ffmpeg-LICENSE.txt', 'LICENSE', 'THIRD-PARTY-NOTICES.txt')) {
             if (@($package.Entries | Where-Object { $_.FullName -eq "lib/app/$name" }).Count -ne 1) { throw "Missing package file: $name." }
         }
+        if (@($package.Entries | Where-Object { $_.Name -eq 'meettape-cli.cmd' }).Count -ne 0) { throw 'Obsolete CLI wrapper is present.' }
     } finally { $package.Dispose() }
 }
 if (-not $InstallOnCi) { Write-Output 'Local package/source/pending-restart checks passed; native install/uninstall not run.'; return }
@@ -78,25 +79,44 @@ try {
     if (-not (Test-Path -LiteralPath $uninstallKey)) { throw 'Windows uninstaller is not registered.' }
     $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'MeetTape.lnk'
     if (-not [IO.File]::Exists($shortcut)) { throw 'Start menu shortcut missing.' }
+    $shell = New-Object -ComObject WScript.Shell
+    try {
+        $link = $shell.CreateShortcut($shortcut) # Read our existing CI-created shortcut; do not Save.
+        $location = $link.IconLocation
+        if ([string]::IsNullOrWhiteSpace($location)) { $location = $link.TargetPath }
+        [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($link)
+        $iconExecutable = $location -replace ',\s*-?\d+\s*$', ''
+        $iconExecutable = [Environment]::ExpandEnvironmentVariables($iconExecutable.Trim('"'))
+        $installationPrefix = [IO.Path]::GetFullPath($install).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+        if (-not [IO.Path]::GetFullPath($iconExecutable).StartsWith($installationPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Start menu icon must reference this isolated installation.'
+        }
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-Desktop.ps1') -ExecutablePath $iconExecutable -IconOnly
+        if ($LASTEXITCODE -ne 0) { throw 'Installed shortcut icon checks failed.' }
+    } finally { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell) }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-Desktop.ps1') -ExecutablePath (Join-Path $install 'Update.exe') -IconOnly
+    if ($LASTEXITCODE -ne 0) { throw 'Installed updater icon checks failed.' }
     Invoke-Native (Join-Path $install 'current/MeetTape.exe') @('--ui-smoke')
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-Desktop.ps1') -ExecutablePath (Join-Path $install 'current/MeetTape.exe') -SkipNativeWindow
-    if ($LASTEXITCODE -ne 0) { throw 'Installed desktop/CLI failed.' }
+    if ($LASTEXITCODE -ne 0) { throw 'Installed GUI startup failed.' }
     & (Join-Path $install 'current/ffmpeg.exe') -hide_banner -version | Select-Object -First 1
     if ($LASTEXITCODE -ne 0) { throw 'Installed FFmpeg failed.' }
     $oldMarker = [IO.File]::ReadAllText((Join-Path $install 'current/sq.version'))
     $pending = Join-Path $feed 'OriApps.MeetTape-1.0.1-full.nupkg'
     Copy-Item -LiteralPath $pending -Destination (Join-Path $install 'packages')
-    Invoke-Native (Join-Path $install 'current/MeetTape.exe') @('--help')
+    Invoke-Native (Join-Path $install 'current/MeetTape.exe') @('--ui-smoke')
     if ([IO.File]::ReadAllText((Join-Path $install 'current/sq.version')) -cne $oldMarker) { throw 'Restart auto-applied pending update.' }
     Invoke-Native (Join-Path $install 'Update.exe') @('apply', '--package', $pending, '--norestart', '--silent')
     if ([IO.File]::ReadAllText((Join-Path $install 'current/sq.version')) -notmatch '<version>1.0.1</version>') { throw 'Second version was not applied.' }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-Desktop.ps1') -ExecutablePath (Join-Path $install 'current/MeetTape.exe') -SkipNativeWindow
+    if ($LASTEXITCODE -ne 0) { throw 'Updated GUI/icon checks failed.' }
     Invoke-Native (Join-Path $install 'Update.exe') @('uninstall', '--silent')
     if ([IO.Directory]::Exists((Join-Path $install 'current'))) { throw 'Uninstall retained application binaries.' }
     if ((Test-Path -LiteralPath $uninstallKey) -or [IO.File]::Exists($shortcut)) { throw 'Uninstall retained registry entry/shortcut.' }
     $after = @($dataFiles | Get-FileHash -Algorithm SHA256 | ForEach-Object Hash)
     if (Compare-Object $before $after) { throw 'User fixture data changed.' }
     if ([Environment]::GetEnvironmentVariable($keyName, 'User') -cne 'fixture-only') { throw 'User key fixture changed.' }
-    Write-Output 'Disposable runner: fresh setup, installed diagnostics/FFmpeg, pending restart unchanged, full update to 1.0.1, uninstall and fixture preservation passed.'
+    Write-Output 'Disposable runner: fresh setup, installed GUI/FFmpeg, pending restart unchanged, full update to 1.0.1, uninstall and fixture preservation passed.'
 } finally {
     [Environment]::SetEnvironmentVariable($keyName, $null, 'User')
 }

@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$ExecutablePath,
-    [switch]$SkipNativeWindow
+    [switch]$SkipNativeWindow,
+    [switch]$IconOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -15,46 +16,64 @@ $env:TEMP = $testRoot
 $env:TMP = $testRoot
 $env:DOTNET_BUNDLE_EXTRACT_BASE_DIR = Join-Path $testRoot 'native-runtime'
 
-function Invoke-Published([string[]]$Arguments, [int]$ExpectedCode, [string]$ExpectedOutput) {
-    $info = [Diagnostics.ProcessStartInfo]::new($executable)
-    $info.UseShellExecute = $false
-    $info.CreateNoWindow = $true
-    $info.RedirectStandardOutput = $true
-    $info.RedirectStandardError = $true
-    $info.RedirectStandardInput = $true
-    $info.WorkingDirectory = $testRoot
-    $info.Arguments = ($Arguments | ForEach-Object { '"' + $_.Replace('"', '\"') + '"' }) -join ' '
-    $process = [Diagnostics.Process]::Start($info)
-    try {
-        $stdout = $process.StandardOutput.ReadToEndAsync()
-        $stderr = $process.StandardError.ReadToEndAsync()
-        $process.StandardInput.Close()
-        if (-not $process.WaitForExit(20000)) { throw 'Published CLI did not exit within 20 seconds.' }
-        $text = $stdout.GetAwaiter().GetResult() + $stderr.GetAwaiter().GetResult()
-        if ($process.ExitCode -ne $ExpectedCode -or $text -notmatch [regex]::Escape($ExpectedOutput)) {
-            throw "Published CLI contract failed for $($Arguments -join ' '): code=$($process.ExitCode), output=$text"
+# Extract the actual PE resources at Windows shell/DPI sizes. Matching the
+# source ICO prevents a valid but generic .NET/Velopack icon from passing.
+Add-Type -AssemblyName System.Drawing
+Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @'
+using System;
+using System.Drawing;
+using System.Runtime.InteropServices;
+public static class MeetTapeIconProbe {
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "PrivateExtractIconsW")]
+    private static extern uint Extract(string file, int index, int width, int height,
+        IntPtr[] icons, uint[] ids, uint count, uint flags);
+    [DllImport("user32.dll")] private static extern bool DestroyIcon(IntPtr icon);
+    public static bool Matches(string executable, string reference, int size) {
+        var icons = new IntPtr[1]; var sourceIcons = new IntPtr[1];
+        try {
+            if (Extract(executable, 0, size, size, icons, new uint[1], 1, 0) != 1 || icons[0] == IntPtr.Zero)
+                throw new InvalidOperationException("Cannot extract executable icon.");
+            if (Extract(reference, 0, size, size, sourceIcons, new uint[1], 1, 0) != 1 || sourceIcons[0] == IntPtr.Zero)
+                throw new InvalidOperationException("Cannot extract source icon.");
+            using (var actualIcon = Icon.FromHandle(icons[0]))
+            using (var expectedIcon = Icon.FromHandle(sourceIcons[0]))
+            using (var actual = actualIcon.ToBitmap())
+            using (var expected = expectedIcon.ToBitmap()) {
+                if (actual.Width != size || actual.Height != size || expected.Width != size || expected.Height != size)
+                    throw new InvalidOperationException(String.Format("Icon dimensions at {0}px: actual {1}x{2}, source {3}x{4}.", size, actual.Width, actual.Height, expected.Width, expected.Height));
+                for (int y = 0; y < size; y++) for (int x = 0; x < size; x++) {
+                    var a = actual.GetPixel(x, y); var b = expected.GetPixel(x, y);
+                    if (b.A == 255 && (a.R != b.R || a.G != b.G || a.B != b.B))
+                        throw new InvalidOperationException(String.Format("Icon pixel differs at {0}px ({1},{2}): actual {3}, source {4}.", size, x, y, a, b));
+                }
+                return true;
+            }
+        } finally {
+            if (icons[0] != IntPtr.Zero) DestroyIcon(icons[0]);
+            if (sourceIcons[0] != IntPtr.Zero) DestroyIcon(sourceIcons[0]);
         }
-    } finally {
-        if (-not $process.HasExited) { $process.Kill(); [void]$process.WaitForExit(5000) }
-        $process.Dispose()
     }
 }
+'@
+$icon = Join-Path $repository 'assets/MeetTape.ico'
+foreach ($size in @(16, 20, 24, 32, 40, 48, 64, 128, 256)) {
+    if (-not [MeetTapeIconProbe]::Matches($executable, $icon, $size)) { throw "Executable icon differs from MeetTape.ico at ${size}px." }
+}
+Write-Output "Windows PE icon: all 9 source sizes matched for $executable."
+if ($IconOnly) { return }
 
-Invoke-Published @('--help') 0 'Avalonia UI'
-Invoke-Published @('--config', (Join-Path $testRoot 'missing.json'), '--help') 0 'Avalonia UI'
-Invoke-Published @('configure', '--help') 0 'graphical settings'
-Invoke-Published @('update', '--help') 0 'Stop recording first'
-Invoke-Published @('--config') 2 'Missing --config path'
-Invoke-Published @('start') 2 'GUI action'
-$config = Get-Content -LiteralPath (Join-Path $repository 'config.example.json') -Raw | ConvertFrom-Json
-$config.meetingsRoot = Join-Path $testRoot 'Meetings'
-$config.stages.trim = $false; $config.stages.transcribe = $false; $config.stages.summary = $false
-$configPath = Join-Path $testRoot 'config.json'
-[IO.File]::WriteAllText($configPath, ($config | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
-Invoke-Published @('--config', $configPath, 'sessions') 0 'No sessions yet'
-Invoke-Published @('--config', $configPath, 'check-config') 0 'No API request made'
-Invoke-Published @('--config', $configPath, 'status') 0 'cannot inspect'
-Write-Output 'Published WinExe: help, stdout/stderr, exit codes, --config and local diagnostics passed.'
+# Exact test-only startup skips real settings, devices, processing and release checks.
+if ($SkipNativeWindow) {
+    $smoke = Start-Process -FilePath $executable -ArgumentList '--ui-smoke' -WorkingDirectory $testRoot -PassThru -WindowStyle Hidden
+    try {
+        if (-not $smoke.WaitForExit(20000)) { throw 'Published GUI did not complete its startup/lifetime/Exit smoke.' }
+        if ($smoke.ExitCode -ne 0) { throw 'Published GUI smoke failed.' }
+        Write-Output 'Published WinExe: isolated GUI startup, full diagnostic text selection, desktop lifetime and explicit Exit passed.'
+    } finally {
+        if (-not $smoke.HasExited) { $smoke.Kill(); [void]$smoke.WaitForExit(5000) }
+        $smoke.Dispose()
+    }
+}
 
 if (-not $SkipNativeWindow) {
     Add-Type -AssemblyName System.Drawing
@@ -97,65 +116,11 @@ public static class MeetTapeWindowProbe {
         if (-not $smoke.WaitForExit(15000)) { throw 'Explicit native shutdown did not finish.' }
         $smoke.Refresh()
         if ($smoke.ExitCode -ne 0) { throw 'Native smoke exited with failure.' }
-        Write-Output "Native Windows window: creation, hide, reopen and Exit passed. Screenshot: $testRoot\native-window.png"
+        Write-Output "Native Windows window: creation, hide, reopen, full diagnostic text selection and Exit passed. Screenshot: $testRoot\native-window.png"
         Write-Output 'TrayIcon created by native host; shell icon/menu clicks remain a manual check.'
     } finally {
         if (-not $smoke.HasExited) { $smoke.Kill(); [void]$smoke.WaitForExit(5000) }
         $smoke.Dispose()
     }
 
-    Add-Type -AssemblyName UIAutomationClient
-    Add-Type -AssemblyName UIAutomationTypes
-    $gui = Start-Process -FilePath $executable -ArgumentList @('--config', ('"' + $configPath + '"')) -PassThru -WindowStyle Hidden
-    try {
-        $root = $null; $ready = $null
-        for ($i = 0; $i -lt 100 -and $null -eq $ready; $i++) {
-            Start-Sleep -Milliseconds 50
-            $gui.Refresh()
-            if ($gui.MainWindowHandle -eq [IntPtr]::Zero) { continue }
-            $root = [Windows.Automation.AutomationElement]::FromHandle($gui.MainWindowHandle)
-            $ready = $root.FindFirst([Windows.Automation.TreeScope]::Descendants,
-                [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty, 'Ready'))
-        }
-        if ($null -eq $ready) { throw 'Default GUI did not load the isolated --config.' }
-        $settingsButton = $root.FindFirst([Windows.Automation.TreeScope]::Descendants,
-            [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty, 'Settings'))
-        $settingsButton.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
-        $dialog = $null
-        for ($i = 0; $i -lt 100 -and $null -eq $dialog; $i++) {
-            Start-Sleep -Milliseconds 50
-            $dialog = $root.FindFirst([Windows.Automation.TreeScope]::Descendants,
-                [Windows.Automation.AndCondition]::new(
-                    [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Window),
-                    [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty, ('MeetTape ' + [char]0x2014 + ' Settings'))))
-            if ($null -eq $dialog) {
-                $dialog = [Windows.Automation.AutomationElement]::RootElement.FindFirst([Windows.Automation.TreeScope]::Children,
-                    [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty, ('MeetTape ' + [char]0x2014 + ' Settings')))
-            }
-        }
-        if ($null -eq $dialog) {
-            $texts = $root.FindAll([Windows.Automation.TreeScope]::Descendants,
-                [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Text))
-            foreach ($text in $texts) { Write-Output $text.Current.Name }
-            throw 'Native Settings dialog did not open.'
-        }
-        $pathLabel = $dialog.FindFirst([Windows.Automation.TreeScope]::Descendants,
-            [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty, $configPath))
-        if ($null -eq $pathLabel) { throw 'Settings did not honor --config; no save was attempted.' }
-        $close = $dialog.FindFirst([Windows.Automation.TreeScope]::Descendants,
-            [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty, 'Close'))
-        $close.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
-        $exit = $root.FindFirst([Windows.Automation.TreeScope]::Descendants,
-            [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty, 'Exit'))
-        $exit.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
-        if (-not $gui.WaitForExit(15000)) { throw 'GUI Exit button did not finish.' }
-        $gui.Refresh()
-        if ($gui.ExitCode -ne 0 -or [IO.Directory]::Exists($config.meetingsRoot)) {
-            throw 'Default GUI must exit cleanly without creating any recording.'
-        }
-        Write-Output 'Native default GUI: explicit --config, Settings open/close and actual Exit button passed without capture/API.'
-    } finally {
-        if (-not $gui.HasExited) { $gui.Kill(); [void]$gui.WaitForExit(5000) }
-        $gui.Dispose()
-    }
 }

@@ -63,51 +63,6 @@ public sealed class JobTests : IDisposable
     }
 
     [Fact]
-    public async Task LockedLegacyCompletedJobIsRediscoveredWhenItsLeaseBecomesAvailable()
-    {
-        string directory = Session(120);
-        var data = SessionStore.Read(directory);
-        var chunk = Assert.Single(data.Audio!.Chunks);
-        ChunkStore.Save(directory, new(data.Id, chunk,
-            Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(Path.Combine(directory, chunk.RelativePath)))),
-            "test-model", "test-prompt-hash", "[00:01] Me: Saved phrase."));
-        SessionStore.Save(directory, data with { JobState = JobState.Completed,
-            Stages = new(data.Stages) { ["transcribe"] = new(true, StageState.Completed, 1, 1) } });
-        using var lease = new FileStream(Path.Combine(directory, ".session.lock"), FileMode.Open,
-            FileAccess.ReadWrite, FileShare.None);
-        var firstPass = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var proceed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var secondPass = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        int passes = 0;
-        using var handler = new Handler((_, _) => throw new Exception("Saved chunk must not be uploaded again."));
-        using var http = new HttpClient(handler);
-        using var jobs = new ProcessingJobs(config, () => false, http, delay: async (_, token) =>
-        {
-            if (++passes == 1)
-            {
-                firstPass.TrySetResult();
-                await proceed.Task.WaitAsync(token);
-            }
-            else
-            {
-                secondPass.TrySetResult();
-                await Task.Delay(Timeout.Infinite, token);
-            }
-        });
-        jobs.Start();
-        await firstPass.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.False(File.Exists(Path.Combine(directory, "transcription.md")));
-        lease.Dispose();
-        proceed.TrySetResult();
-        await secondPass.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        jobs.PauseAndWait();
-        Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
-        Assert.Equal(StageState.Completed, SessionStore.Read(directory).Stages["assemble"].Status);
-        Assert.Contains("Saved phrase.", File.ReadAllText(Path.Combine(directory, "transcription.md")));
-        Assert.Equal(0, handler.Calls);
-    }
-
-    [Fact]
     public async Task RestartSkipsDurableSuccessEvenWhenMetadataProgressWasLost()
     {
         string directory = Session();
@@ -439,7 +394,7 @@ public sealed class JobTests : IDisposable
             Processing = new(seconds, config.Settings.Transcription, config.Settings.Summary, config.Directory),
             Trim = new(0, 3, false) { Decision = "skip" },
             Stages = new() { ["trim"] = new(true, StageState.Completed), ["prepare"] = new(true, StageState.Completed),
-                ["transcribe"] = new(true, StageState.Pending), ["summary"] = new(false, StageState.Disabled) }
+                ["transcribe"] = new(true, StageState.Pending), ["assemble"] = new(true, StageState.Pending), ["summary"] = new(false, StageState.Disabled) }
         };
         var created = SessionStore.Create(root, data);
         using var lease = created.Lease;

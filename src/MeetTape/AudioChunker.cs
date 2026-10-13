@@ -11,7 +11,7 @@ public sealed class AudioChunker(string ffmpegPath)
     public static List<AudioChunk> Plan(long sourceStartFrame, long frameCount, int chunkSeconds, string relativeDirectory)
     {
         if (sourceStartFrame < 0 || frameCount <= 0 || frameCount > 10800L * SampleRate
-            || chunkSeconds is < 1 or > 10800)
+            || chunkSeconds is < 1 or > MaxChunkSeconds)
             throw new InvalidOperationException("Invalid audio/chunk duration; require positive intervals up to three hours.");
         long width = (long)chunkSeconds * SampleRate;
         long context = Math.Min(2L * SampleRate, width / 4);
@@ -26,28 +26,13 @@ public sealed class AudioChunker(string ffmpegPath)
         return chunks;
     }
 
-    public Task<PreparedAudio> PrepareAsync(string directory, SessionData data, CancellationToken token) =>
-        PrepareCoreAsync(directory, data, [], null, token);
-
-    public Task<PreparedAudio> RecoverAsync(string directory, SessionData old, int chunkSeconds, int preservedChunks, CancellationToken token)
-    {
-        ValidateManifest(old);
-        var audio = old.Audio!;
-        if (audio.Recovery is not null || preservedChunks < 0 || preservedChunks >= audio.Chunks.Count)
-            throw new InvalidOperationException("Selected audio cannot be rechunked with these checkpoints.");
-        var prefix = audio.Chunks.Take(preservedChunks).ToList();
-        var recovery = preservedChunks == 0 ? null : new ChunkRecovery(old.Processing.ChunkSeconds, preservedChunks, audio.RelativeDirectory);
-        return PrepareCoreAsync(directory, old with { Processing = old.Processing with { ChunkSeconds = chunkSeconds } }, prefix, recovery, token);
-    }
-
-    private async Task<PreparedAudio> PrepareCoreAsync(string directory, SessionData data, List<AudioChunk> preserved,
-        ChunkRecovery? recovery, CancellationToken token)
+    public async Task<PreparedAudio> PrepareAsync(string directory, SessionData data, CancellationToken token)
     {
         if (data.RecordingState != RecordingState.Recorded || data.DurationSeconds is not > 0
             || data.DurationSeconds > 10800 || data.Capture.SampleRate != SampleRate)
             throw new InvalidOperationException("Only finalized synchronized 48 kHz recordings can be chunked.");
         if (data.Processing.ChunkSeconds is < 1 or > MaxChunkSeconds)
-            throw new InvalidDataException($"Saved chunkSeconds exceeds the supported 8 MiB limit; use rechunk with 1-{MaxChunkSeconds} seconds.");
+            throw new InvalidDataException($"Saved chunkSeconds exceeds the supported 8 MiB limit; choose 1-{MaxChunkSeconds} seconds in Settings for new recordings.");
         if (data.Stages.TryGetValue("trim", out var trim) && trim.Enabled && trim.Status != StageState.Completed)
             throw new InvalidOperationException("Save the common trim choice before preparing chunks.");
         double duration = data.DurationSeconds.Value;
@@ -66,12 +51,10 @@ public sealed class AudioChunker(string ffmpegPath)
                 throw new InvalidDataException("Selected audio is empty; originals retained.");
         long first = (long)Math.Round(startSeconds * SampleRate), limit = (long)Math.Round(endSeconds * SampleRate);
         string relative = "processed/audio_" + Guid.NewGuid().ToString("N");
-        long covered = preserved.Count == 0 ? 0 : preserved[^1].OwnEndFrame;
-        var fresh = PlanContinuation(first, limit - first, covered, data.Processing.ChunkSeconds, relative, preserved.Count);
-        var chunks = preserved.Concat(fresh).ToList();
+        var chunks = Plan(first, limit - first, data.Processing.ChunkSeconds, relative);
         token.ThrowIfCancellationRequested();
         Directory.CreateDirectory(Path.Combine(directory, relative));
-        foreach (var chunk in fresh)
+        foreach (var chunk in chunks)
         {
             token.ThrowIfCancellationRequested();
             string position = (chunk.StartFrame / (double)SampleRate).ToString("R", CultureInfo.InvariantCulture);
@@ -89,34 +72,13 @@ public sealed class AudioChunker(string ffmpegPath)
             stream.Flush(flushToDisk: true);
         }
         token.ThrowIfCancellationRequested();
-        return new PreparedAudio(relative, chunks) { Recovery = recovery };
+        return new PreparedAudio(relative, chunks);
     }
 
     public static void ValidateUploadSize(string path)
     {
         if (new FileInfo(path).Length is <= 0 or > ChatApiClient.MaxAudioBytes)
             throw new InvalidDataException("Prepared stereo chunk exceeds the 8 MiB API limit; chunk set not selected.");
-    }
-
-    private static List<AudioChunk> PlanContinuation(long first, long total, long covered, int seconds, string relative, int indexOffset)
-    {
-        var fresh = Plan(first + covered, total - covered, seconds, relative);
-        if (covered == 0 && indexOffset == 0) return fresh;
-        long context = Math.Min(2L * SampleRate, (long)seconds * SampleRate / 4);
-        return fresh.Select(chunk =>
-        {
-            long start = chunk.Index == 1 ? Math.Max(0, covered - context) : chunk.StartFrame + covered;
-            return chunk with
-            {
-                Index = chunk.Index + indexOffset,
-                RelativePath = $"{relative}/{chunk.Index + indexOffset:D4}.mp3",
-                StartFrame = start,
-                EndFrame = chunk.EndFrame + covered,
-                OwnStartFrame = chunk.OwnStartFrame + covered,
-                OwnEndFrame = chunk.OwnEndFrame + covered,
-                SourceStartFrame = first + start
-            };
-        }).ToList();
     }
 
     private async Task ValidateAsync(string path, long expected, CancellationToken token)
@@ -149,23 +111,7 @@ public sealed class AudioChunker(string ffmpegPath)
         if (!double.IsFinite(end) || audio.Chunks is null || string.IsNullOrWhiteSpace(audio.RelativeDirectory))
             throw new InvalidDataException("Invalid selected audio manifest.");
         long total = (long)Math.Round(end * 48000) - first;
-        List<AudioChunk> expected;
-        if (audio.Recovery is not { } recovery)
-            expected = Plan(first, total, data.Processing.ChunkSeconds, audio.RelativeDirectory);
-        else
-        {
-            if (recovery.OriginalChunkSeconds is < 1 or > 10800 || recovery.PreservedChunks < 1
-                || string.IsNullOrWhiteSpace(recovery.OriginalRelativeDirectory)
-                || recovery.OriginalRelativeDirectory == audio.RelativeDirectory
-                || data.Processing.ChunkSeconds is < 1 or > MaxChunkSeconds)
-                throw new InvalidDataException("Invalid recovered audio manifest.");
-            var original = Plan(first, total, recovery.OriginalChunkSeconds, recovery.OriginalRelativeDirectory);
-            if (recovery.PreservedChunks >= original.Count)
-                throw new InvalidDataException("Invalid preserved chunk prefix.");
-            long covered = original[recovery.PreservedChunks - 1].OwnEndFrame;
-            expected = original.Take(recovery.PreservedChunks).Concat(PlanContinuation(first, total, covered,
-                data.Processing.ChunkSeconds, audio.RelativeDirectory, recovery.PreservedChunks)).ToList();
-        }
+        var expected = Plan(first, total, data.Processing.ChunkSeconds, audio.RelativeDirectory);
         if (!audio.Chunks.SequenceEqual(expected)) throw new InvalidDataException("Selected chunk intervals do not cover the recording correctly.");
     }
 

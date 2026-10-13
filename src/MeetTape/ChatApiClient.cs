@@ -21,23 +21,21 @@ public sealed class ChatApiClient(HttpClient client, Func<bool> captureActive,
     public const int MaxAudioBytes = 8 * 1024 * 1024;
     private const int MaxResponseBytes = 2 * 1024 * 1024;
     internal const string NoSpeechMarker = "[NO_SPEECH]";
-    public const string SourceInstruction = "\nСтерео: левый канал — Me, правый — Them. Микрофон Me может содержать эхо Them; одинаковую речь выводи один раз. " +
-        "Каждая реплика: [MM:SS] Me/Them/Unknown: текст. Таймкод приблизительный, от начала данного фрагмента. Не выдумывай имена; неясный источник — Unknown. " +
-        "Если во всём фрагменте нет речи, выведи только " + NoSpeechMarker + ". Не используй этот маркер для неразборчивой речи.";
+    public const string SourceInstruction = "\nStereo: the left channel is Me, the right channel is Them. The Me microphone may contain echoes of Them; output identical speech only once. " +
+        "Each utterance: [MM:SS] Me/Them/Unknown: text. Timestamps are approximate and relative to the start of this chunk. Do not invent names; use Unknown for an unclear source. " +
+        "If the entire chunk contains no speech, output only " + NoSpeechMarker + ". Do not use this marker for unintelligible speech.";
 
     public async Task<TranscriptionReply> TranscribeAsync(ApiSettings settings, string prompt, string audioPath, CancellationToken token)
     {
         EnsureIdle(token);
-        string key;
         try
         {
             ConfigurationLoader.ValidateApi(settings, "transcription");
             if (string.IsNullOrWhiteSpace(prompt)) throw new InvalidDataException("Transcription prompt is empty.");
-            key = (readKey ?? (api => ApiKeyProvider.Get(api)))(settings);
-            if (string.IsNullOrWhiteSpace(key) || key.Any(char.IsControl)) throw new InvalidDataException("Invalid API key environment variable.");
         }
-        catch (InvalidDataException)
-        { throw new ChatApiException(ApiFailureKind.Configuration, "Invalid API configuration, prompt or key environment variable; no request made."); }
+        catch (InvalidDataException ex)
+        { throw new ChatApiException(ApiFailureKind.Configuration, ex.Message + " No request made."); }
+        string key = ReadKey(settings, "transcription");
         byte[] audio;
         try
         {
@@ -57,21 +55,33 @@ public sealed class ChatApiClient(HttpClient client, Func<bool> captureActive,
     public async Task<string> SummarizeAsync(ApiSettings settings, string prompt, string transcript, CancellationToken token)
     {
         EnsureIdle(token);
-        string key;
         try
         {
             ConfigurationLoader.ValidateApi(settings, "summary");
-            if (string.IsNullOrWhiteSpace(prompt) || string.IsNullOrWhiteSpace(transcript)) throw new InvalidDataException("Empty summary input.");
-            key = (readKey ?? (api => ApiKeyProvider.Get(api)))(settings);
-            if (string.IsNullOrWhiteSpace(key) || key.Any(char.IsControl)) throw new InvalidDataException("Invalid API key.");
+            if (string.IsNullOrWhiteSpace(prompt)) throw new InvalidDataException("Summary prompt is empty.");
+            if (string.IsNullOrWhiteSpace(transcript)) throw new InvalidDataException("Summary transcript is empty.");
         }
-        catch (InvalidDataException)
-        { throw new ChatApiException(ApiFailureKind.Configuration, "Invalid Summary configuration, input or key; no request made."); }
+        catch (InvalidDataException ex)
+        { throw new ChatApiException(ApiFailureKind.Configuration, ex.Message + " No request made."); }
+        string key = ReadKey(settings, "summary");
         if (System.Text.Encoding.UTF8.GetByteCount(prompt) + System.Text.Encoding.UTF8.GetByteCount(transcript) > 2 * 1024 * 1024)
             throw new ChatApiException(ApiFailureKind.Permanent, "Summary input exceeds 2 MiB; no automatic truncation or partial summary.");
         byte[] body = JsonSerializer.SerializeToUtf8Bytes(new { model = settings.Model, stream = false,
             messages = new[] { new { role = "system", content = prompt }, new { role = "user", content = transcript } } });
         return await SendAsync(settings, key, body, token);
+    }
+
+    private string ReadKey(ApiSettings settings, string stage)
+    {
+        string key;
+        try { key = (readKey ?? (api => ApiKeyProvider.Get(api)))(settings); }
+        catch (Exception ex) when (ex is InvalidDataException or UnauthorizedAccessException or System.Security.SecurityException or NotSupportedException)
+        { throw new ChatApiException(ApiFailureKind.Configuration,
+            $"Cannot read the {stage} API key from environment variable '{settings.ApiKeyEnvironmentVariable}'. Check the key in Settings; no request made."); }
+        if (string.IsNullOrWhiteSpace(key) || key.Any(char.IsControl))
+            throw new ChatApiException(ApiFailureKind.Configuration,
+                $"The {stage} API key in environment variable '{settings.ApiKeyEnvironmentVariable}' is missing or invalid. Set the key in Settings; no request made.");
+        return key;
     }
 
     private async Task<string> SendAsync(ApiSettings settings, string key, byte[] body, CancellationToken token)

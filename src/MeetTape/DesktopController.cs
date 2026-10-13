@@ -4,7 +4,10 @@ public enum NoticeKind { Information, Warning, Error }
 public sealed record OperationNotice(NoticeKind Kind, string Message, Guid? SessionId = null);
 public enum TrimDecision { Accept, Skip, Manual }
 public sealed record DesktopSnapshot(CaptureStatus Capture, IReadOnlyList<StoredSession> Sessions,
-    string? PreparationDirectory, TrimSuggestion? Suggestion, bool Preparing, string? AwaitingTitleDirectory);
+    string? PreparationDirectory, TrimSuggestion? Suggestion, bool Preparing, string? AwaitingTitleDirectory)
+{
+    public bool SummaryEnabled { get; init; }
+}
 
 public interface IDesktopController
 {
@@ -22,7 +25,8 @@ public interface IDesktopController
 // One gate owns all lifecycle transitions. Blocking capture/FFmpeg joins always run on a worker.
 public sealed class DesktopController : IDesktopController
 {
-    private readonly LoadedConfiguration config;
+    private volatile LoadedConfiguration config;
+    private readonly Mp3Recorder? recorder;
     private readonly CaptureCoordinator capture;
     private readonly PostRecordingWorkflow preparation;
     private readonly ProcessingJobs jobs;
@@ -34,10 +38,16 @@ public sealed class DesktopController : IDesktopController
     public event Action<OperationNotice>? Notice;
 
     public DesktopController(LoadedConfiguration config, CaptureCoordinator? capture = null,
-        HttpClient? http = null, Func<ApiSettings, string>? readKey = null)
+        HttpClient? http = null, Func<ApiSettings, string>? readKey = null,
+        Func<CaptureSettings, CaptureSources>? openSources = null)
     {
         this.config = config;
-        this.capture = capture ?? new Mp3Recorder(config).Capture;
+        if (capture is null)
+        {
+            recorder = new Mp3Recorder(config, openSources is null ? null : () => openSources(this.config.Settings.Capture));
+            this.capture = recorder.Capture;
+        }
+        else this.capture = capture;
         preparation = new(config.Settings.Capture.FfmpegPath);
         jobs = new(config, () => this.capture.Status.IsActive || Volatile.Read(ref awaitingTitle) is not null,
             http: http, readKey: readKey);
@@ -49,10 +59,18 @@ public sealed class DesktopController : IDesktopController
     }
 
     public Task InitializeAsync() => RunAsync(() => jobs.Start());
+    internal Task ApplyConfigurationAsync(LoadedConfiguration updated) => RunAsync(() =>
+    {
+        recorder?.ApplyConfiguration(updated);
+        preparation.ApplyFfmpeg(updated.Settings.Capture.FfmpegPath);
+        jobs.ApplyConfiguration(updated);
+        config = updated;
+    });
+    internal Task<CaptureStatus> ReadCaptureAsync() => Task.Run(() => capture.Status);
 
     public Task<DesktopSnapshot> ReadAsync() => Task.Run(() => new DesktopSnapshot(capture.Status,
-        SessionStore.Discover(config.MeetingsRoot), preparation.SelectedDirectory, preparation.Suggestion,
-        !preparation.Completion.IsCompleted, Volatile.Read(ref awaitingTitle)));
+        jobs.MeetingsRoots.SelectMany(root => SessionStore.Discover(root)).ToArray(), preparation.SelectedDirectory, preparation.Suggestion,
+        !preparation.Completion.IsCompleted, Volatile.Read(ref awaitingTitle)) { SummaryEnabled = config.Settings.Stages.Summary });
 
     public Task StartAsync() => RunAsync(() =>
     {
@@ -101,21 +119,6 @@ public sealed class DesktopController : IDesktopController
 
     public Task ResumeAsync(string directory) => JobActionAsync(() => jobs.Resume(directory));
     public Task SummaryAsync(string directory) => JobActionAsync(() => jobs.RequestSummary(directory));
-
-    public Task RecoverAsync(string directory, string command) => RunAsync(() =>
-    {
-        RequireIdle();
-        jobs.PauseAndWait();
-        preparation.CancelAndWait();
-        switch (command)
-        {
-            case "chunks": preparation.PrepareChunks(directory); break;
-            case "rechunk": preparation.Rechunk(directory, config.Settings.ChunkSeconds, jobs.UnblockRecovered); break;
-            case "assemble": jobs.AssembleLocalAsync(directory).GetAwaiter().GetResult(); break;
-            default: throw new InvalidOperationException("Unknown recovery operation.");
-        }
-        preparation.Completion.GetAwaiter().GetResult();
-    });
 
     private Task JobActionAsync(Action action) => RunAsync(() =>
     {

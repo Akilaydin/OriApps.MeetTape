@@ -82,19 +82,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $files = @(
-            'dist/releases/OriApps.MeetTape-win-Setup.exe#Установщик Windows — скачать для установки',
-            "dist/releases/OriApps.MeetTape-$env:MEETTAPE_VERSION-full.nupkg#Служебный пакет обновления — используется приложением",
-            'dist/releases/releases.win.json#Служебный список обновлений — используется приложением'
+            'dist/releases/OriApps.MeetTape-win-Setup.exe#Windows installer - download to install',
+            "dist/releases/OriApps.MeetTape-$env:MEETTAPE_VERSION-full.nupkg#Update package - used by the app",
+            'dist/releases/releases.win.json#Update feed - used by the app'
           )
           $setupUrl = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:MEETTAPE_TAG/OriApps.MeetTape-win-Setup.exe"
           $notes = @(
-            '## Установка Windows',
+            '## Windows installation',
             '',
-            "**[Скачать установщик Windows]($setupUrl)**",
+            "**[Download Windows installer]($setupUrl)**",
             '',
-            'Для установки скачайте только установщик по ссылке выше. FFmpeg и .NET runtime включены.',
+            'To install MeetTape, download only the installer linked above. FFmpeg and the .NET runtime are included.',
             '',
-            '**Служебные файлы:** пакет `.nupkg` и `releases.win.json` нужны приложению для обновлений. Вручную скачивать их не требуется.',
+            '**Update files:** the `.nupkg` package and `releases.win.json` are used by the app for updates. You do not need to download them manually.',
             ''
           ) -join "`n"
           [IO.File]::WriteAllText('dist/release-notes.md', $notes, [Text.UTF8Encoding]::new($false))

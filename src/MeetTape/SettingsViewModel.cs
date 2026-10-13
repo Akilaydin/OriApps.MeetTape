@@ -12,8 +12,12 @@ public sealed record DeviceChoice(string? Id, string Label)
 
 public sealed class SettingsViewModel : INotifyPropertyChanged
 {
-    private readonly string original;
+    private string original;
+    private string[] originalFields;
+    private PromptDocument transcriptionDocument;
+    private PromptDocument summaryDocument;
     private readonly Action<string, string, EnvironmentVariableTarget>? setKey;
+    private readonly Func<LoadedConfiguration, Task>? applySettings;
     public string ConfigurationPath { get; }
     public IReadOnlyList<DeviceChoice> Microphones { get; }
     public IReadOnlyList<DeviceChoice> PlaybackDevices { get; }
@@ -33,19 +37,27 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     public string SummaryModel { get; set; }
     public string SummaryPrompt { get; set; }
     public string SummaryKeyVariable { get; set; }
+    public string TranscriptionPromptText { get => transcriptionDocument.Text; set { transcriptionDocument.Text = value ?? ""; Changed(); } }
+    public string SummaryPromptText { get => summaryDocument.Text; set { summaryDocument.Text = value ?? ""; Changed(); } }
+    public string TranscriptionPromptError => transcriptionDocument.Error;
+    public string SummaryPromptError => summaryDocument.Error;
+    public bool HasUnsavedChanges => !Fields().SequenceEqual(originalFields) || NewTranscriptionKey.Length > 0 || NewSummaryKey.Length > 0
+        || transcriptionDocument.IsDirty || summaryDocument.IsDirty;
     // Only newly entered secrets live here. Existing keys are never loaded into controls.
     public string NewTranscriptionKey { get; set; } = "";
     public string NewSummaryKey { get; set; } = "";
-    public string Message { get; private set; } = "Restart MeetTape after saving. Empty key fields keep existing keys.";
+    public string Message { get; private set; } = "Changes apply to new recordings and explicit Resume. Empty key fields keep existing keys.";
     public bool CanSave { get; private set; } = true;
     public bool Saved { get; private set; }
     public event PropertyChangedEventHandler? PropertyChanged;
 
     public SettingsViewModel(string path, IReadOnlyList<AudioDevice> devices,
-        Action<string, string, EnvironmentVariableTarget>? setKey = null)
+        Action<string, string, EnvironmentVariableTarget>? setKey = null,
+        Func<LoadedConfiguration, Task>? applySettings = null)
     {
         ConfigurationPath = Path.GetFullPath(path);
         this.setKey = setKey;
+        this.applySettings = applySettings;
         original = File.ReadAllText(ConfigurationPath);
         var settings = ConfigurationLoader.Parse(original, ConfigurationPath, validatePrompts: false).Settings;
         var json = JsonNode.Parse(original)!;
@@ -61,6 +73,28 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         PlaybackDevices = Choices(devices, CaptureChannel.Them, settings.Capture.PlaybackDeviceId);
         Microphone = Microphones.Single(d => d.Id == settings.Capture.MicrophoneDeviceId);
         Playback = PlaybackDevices.Single(d => d.Id == settings.Capture.PlaybackDeviceId);
+        string directory = Path.GetDirectoryName(ConfigurationPath)!;
+        transcriptionDocument = new(Path.GetFullPath(TranscriptionPrompt, directory), "transcription");
+        summaryDocument = new(Path.GetFullPath(SummaryPrompt, directory), "summary");
+        originalFields = Fields();
+    }
+
+    private string[] Fields() => [Microphone.Id ?? "", Playback.Id ?? "", MeetingsRoot, FfmpegPath,
+        Trim.ToString(), Transcribe.ToString(), Summary.ToString(), ChunkSeconds,
+        TranscriptionEndpoint, TranscriptionModel, TranscriptionPrompt, TranscriptionKeyVariable,
+        SummaryEndpoint, SummaryModel, SummaryPrompt, SummaryKeyVariable];
+
+    public void LoadTranscriptionPrompt() => ReloadPrompt(ref transcriptionDocument, TranscriptionPrompt);
+    public void LoadSummaryPrompt() => ReloadPrompt(ref summaryDocument, SummaryPrompt);
+    private void ReloadPrompt(ref PromptDocument document, string path)
+    {
+        if (!CanSave) return;
+        if (document.IsDirty)
+        { Message = "Unsaved prompt edits retained. Save them, or Close and explicitly Discard before loading a different file."; Changed(); return; }
+        try { document = new(Path.GetFullPath(path, Path.GetDirectoryName(ConfigurationPath)!), document.Stage); }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException)
+        { Message = "Cannot load prompt; check its path. Existing text retained."; }
+        Changed();
     }
 
     private static IReadOnlyList<DeviceChoice> Choices(IReadOnlyList<AudioDevice> devices, CaptureChannel channel, string? selected)
@@ -75,7 +109,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     public async Task SaveAsync()
     {
         if (!CanSave) return;
-        CanSave = false; Changed();
+        CanSave = false; Saved = false; Changed();
         try
         {
             if (!int.TryParse(ChunkSeconds, NumberStyles.None, CultureInfo.InvariantCulture, out int seconds))
@@ -93,17 +127,49 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             var keys = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             AddKey(keys, TranscriptionKeyVariable.Trim(), NewTranscriptionKey);
             AddKey(keys, SummaryKeyVariable.Trim(), NewSummaryKey);
+            var editedPrompts = new List<PromptDocument>();
+            AddPromptEdit(editedPrompts, transcriptionDocument, TranscriptionPrompt);
+            AddPromptEdit(editedPrompts, summaryDocument, SummaryPrompt);
             string updated = JsonNode.DeepEquals(json, JsonNode.Parse(original)) ? original :
                 json.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) + (original.EndsWith('\n') ? Environment.NewLine : "");
-            using var output = new StringWriter();
-            using var error = new StringWriter();
-            int result = await Task.Run(() => ConfigurationWizard.Save(ConfigurationPath, original, updated, keys, output, error, setKey));
-            Saved = result == 0;
-            Message = Saved ? "Saved. Restart MeetTape to apply settings. User prompts retained." : error.ToString().Trim();
+            var result = await Task.Run(() =>
+            {
+                string? error = ConfigurationStore.Save(ConfigurationPath, original, updated, keys, setKey, editedPrompts);
+                bool configurationSaved = error is null;
+                if (error is not null)
+                {
+                    // Key persistence can fail after the configuration was replaced.
+                    // Retrying must compare against that exact candidate, without
+                    // accepting any differing external edit.
+                    try { configurationSaved = File.ReadAllText(ConfigurationPath) == updated; }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+                }
+                return (Error: error, ConfigurationSaved: configurationSaved);
+            });
+            string? error = result.Error;
+            if (result.ConfigurationSaved) original = updated;
+            Saved = error is null;
+            Message = error ?? "Saved. Capture changes apply to the next recording; running jobs keep their saved parameters. Resume uses current API settings. Only edited prompts were saved.";
+            if (Saved)
+            {
+                original = updated; originalFields = Fields(); ClearSecrets();
+                if (applySettings is not null)
+                    await applySettings(ConfigurationLoader.Parse(updated, ConfigurationPath, validatePrompts: false));
+            }
         }
         catch (InvalidDataException ex) { Message = ex.Message; }
-        catch (Exception) { Message = "Cannot save settings. Check paths and permissions; secrets are not logged."; }
-        finally { ClearSecrets(); CanSave = !Saved; Changed(); }
+        catch (Exception) { Message = Saved ? "Settings saved, but could not be applied to the running app. Reopen Settings and Save to retry; current recording retained." :
+            "Cannot save all settings or prompts. Check paths and permissions; remaining edits are retained. Some files may already have been saved; secrets are not logged."; }
+        finally { CanSave = true; Changed(); }
+    }
+
+    private void AddPromptEdit(List<PromptDocument> edits, PromptDocument document, string configuredPath)
+    {
+        if (!document.IsDirty) return;
+        string path = Path.GetFullPath(configuredPath.Trim(), Path.GetDirectoryName(ConfigurationPath)!);
+        if (!path.Equals(document.Path, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException($"The {document.Stage} prompt path changed after loading. Existing edits retained; save them to the loaded path or explicitly Discard and Load the new file.");
+        edits.Add(document);
     }
 
     private static JsonObject Api(string endpoint, string model, string prompt, string variable) => new()

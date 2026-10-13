@@ -8,7 +8,7 @@ public sealed record ChunkResult(Guid SessionId, AudioChunk Chunk, string AudioS
 public static class ChunkStore
 {
     private static readonly JsonSerializerOptions Options = new()
-    { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, RespectNullableAnnotations = true, RespectRequiredConstructorParameters = true };
+    { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, UnmappedMemberHandling = System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow, RespectNullableAnnotations = true, RespectRequiredConstructorParameters = true };
 
     public static string PathFor(string directory, int index) => Path.Combine(directory, "chunks", $"{index:D4}.json");
 

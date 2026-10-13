@@ -5,6 +5,35 @@ namespace MeetTape.Tests;
 
 public sealed class SessionTests : IDisposable
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void UnavailableHistoricalRootDoesNotAbortDiscoveryOfCurrentRoot(bool permissions)
+    {
+        Directory.CreateDirectory(root);
+        using var fixture = new JobTests();
+        string session = fixture.Session();
+        string current = Path.GetDirectoryName(session)!;
+        string[] roots = [root, current];
+        IEnumerable<string> Enumerate(string path)
+        {
+            if (path == root)
+            {
+                yield return Path.Combine(root, "partial-enumeration");
+                if (permissions) throw new UnauthorizedAccessException("private storage details");
+                throw new IOException("private storage details");
+            }
+            foreach (string item in Directory.EnumerateDirectories(path)) yield return item;
+        }
+        var found = roots.SelectMany(path => SessionStore.Discover(path, null, enumerateDirectories: Enumerate)).ToArray();
+        Assert.Equal(2, found.Length);
+        Assert.Null(found[0].Data);
+        Assert.Contains("other folders remain available", found[0].Diagnostic);
+        Assert.DoesNotContain("private storage details", found[0].Diagnostic);
+        Assert.Equal(session, found[1].Directory);
+        Assert.True(ProcessingJobs.Eligible(found[1].Data!));
+    }
+
     private readonly string root = Path.Combine(Path.GetTempPath(), "MeetTapeSessions-" + Guid.NewGuid().ToString("N"));
     private readonly LoadedConfiguration configuration;
 
@@ -162,7 +191,7 @@ public sealed class SessionTests : IDisposable
     }
 
     [Fact]
-    public void UnknownMetadataFieldsSurviveUpdateAndFutureSchemasAreRejected()
+    public void UnknownMetadataFieldsAndOtherSchemasAreRejectedWithoutChanges()
     {
         var created = SessionStore.Create(root, Data());
         created.Lease.Dispose();
@@ -170,8 +199,9 @@ public sealed class SessionTests : IDisposable
         var json = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
         json["customNote"] = "preserve";
         File.WriteAllText(path, json.ToJsonString());
-        SessionStore.Save(created.Directory, SessionStore.Read(created.Directory) with { Title = "new" });
-        Assert.Equal("preserve", JsonNode.Parse(File.ReadAllText(path))!["customNote"]!.GetValue<string>());
+        byte[] before = File.ReadAllBytes(path);
+        Assert.Throws<InvalidDataException>(() => SessionStore.Read(created.Directory));
+        Assert.Equal(before, File.ReadAllBytes(path));
         SessionStore.Save(created.Directory, Data() with { SchemaVersion = 2 });
         Assert.Throws<InvalidDataException>(() => SessionStore.Read(created.Directory));
     }

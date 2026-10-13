@@ -1,48 +1,96 @@
 <Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="using:MeetTape" x:Class="MeetTape.SettingsWindow" x:DataType="local:SettingsViewModel"
         Title="MeetTape — Settings" Width="660" Height="730" MinWidth="520" MinHeight="480">
-  <Grid RowDefinitions="*,Auto" Margin="24">
-    <ScrollViewer>
-      <StackPanel Spacing="8">
-        <TextBlock Text="Settings" FontSize="24" />
-        <TextBlock Text="{Binding ConfigurationPath}" TextWrapping="Wrap" Opacity="0.7" />
-        <TextBlock Text="Microphone (Me)" />
-        <ComboBox Name="MicrophoneChoice" ItemsSource="{Binding Microphones}" SelectedItem="{Binding Microphone}" HorizontalAlignment="Stretch" />
-        <TextBlock Text="System playback (Them)" />
-        <ComboBox ItemsSource="{Binding PlaybackDevices}" SelectedItem="{Binding Playback}" HorizontalAlignment="Stretch" />
-        <TextBlock Text="Meetings folder" />
-        <TextBox Name="MeetingsFolder" Text="{Binding MeetingsRoot}" />
-        <TextBlock Text="FFmpeg executable" />
-        <TextBox Text="{Binding FfmpegPath}" />
-        <StackPanel Orientation="Horizontal" Spacing="16">
-          <CheckBox Content="Trim" IsChecked="{Binding Trim}" />
-          <CheckBox Content="Transcribe" IsChecked="{Binding Transcribe}" />
-          <CheckBox Content="Optional Summary" IsChecked="{Binding Summary}" />
-        </StackPanel>
-        <TextBlock Text="Chunk duration (1–340 seconds)" />
-        <TextBox Name="ChunkDuration" Text="{Binding ChunkSeconds}" />
-        <TextBlock Text="Transcription API" FontSize="18" Margin="0,12,0,0" />
-        <TextBlock Text="HTTPS endpoint (HTTP allowed for loopback)" />
-        <TextBox Text="{Binding TranscriptionEndpoint}" />
-        <TextBlock Text="Model" /><TextBox Text="{Binding TranscriptionModel}" />
-        <TextBlock Text="Prompt file" /><TextBox Text="{Binding TranscriptionPrompt}" />
-        <TextBlock Text="API key environment variable" /><TextBox Text="{Binding TranscriptionKeyVariable}" />
-        <TextBlock Text="New key (empty keeps existing)" />
-        <TextBox Name="TranscriptionKey" Text="{Binding NewTranscriptionKey}" PasswordChar="●" />
-        <TextBlock Text="Summary API — runs only on explicit request" FontSize="18" Margin="0,12,0,0" />
-        <TextBlock Text="Endpoint" /><TextBox Text="{Binding SummaryEndpoint}" />
-        <TextBlock Text="Model" /><TextBox Text="{Binding SummaryModel}" />
-        <TextBlock Text="Prompt file" /><TextBox Text="{Binding SummaryPrompt}" />
-        <TextBlock Text="API key environment variable" /><TextBox Text="{Binding SummaryKeyVariable}" />
-        <TextBlock Text="New key (empty keeps existing)" />
-        <TextBox Name="SummaryKey" Text="{Binding NewSummaryKey}" PasswordChar="●" />
-        <TextBlock Text="Keys are stored in your Windows user environment, never in config.json. Existing keys are never displayed. Audio is uploaded only for enabled transcription; Summary uploads the completed transcript." TextWrapping="Wrap" Opacity="0.7" />
-      </StackPanel>
-    </ScrollViewer>
-    <StackPanel Grid.Row="1" Spacing="12" Margin="0,16,0,0">
+  <Grid RowDefinitions="Auto,*,Auto" Margin="24">
+    <StackPanel Spacing="8" Margin="0,0,0,12">
+      <TextBlock Text="Settings" FontSize="24" />
+      <TextBlock Text="{Binding ConfigurationPath}" TextWrapping="Wrap" Opacity="0.7" />
+    </StackPanel>
+    <TabControl Name="SettingsSections" Grid.Row="1" IsEnabled="{Binding CanSave}">
+      <TabItem Header="Recording">
+        <ScrollViewer>
+          <StackPanel Spacing="8" Margin="4,12,8,8">
+            <TextBlock Text="Microphone (Me)" />
+            <ComboBox Name="MicrophoneChoice" ItemsSource="{Binding Microphones}" SelectedItem="{Binding Microphone}" HorizontalAlignment="Stretch" />
+            <TextBlock Text="System playback (Them)" />
+            <ComboBox ItemsSource="{Binding PlaybackDevices}" SelectedItem="{Binding Playback}" HorizontalAlignment="Stretch" />
+            <TextBlock Text="Meetings folder" /><TextBox Name="MeetingsFolder" Text="{Binding MeetingsRoot}" />
+            <TextBlock Text="FFmpeg executable" /><TextBox Text="{Binding FfmpegPath}" />
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+      <TabItem Header="Processing">
+        <ScrollViewer>
+          <StackPanel Spacing="8" Margin="4,12,8,8">
+            <CheckBox Content="Trim" IsChecked="{Binding Trim}" />
+            <CheckBox Content="Transcribe" IsChecked="{Binding Transcribe}" />
+            <CheckBox Content="Optional Summary" IsChecked="{Binding Summary}" />
+            <TextBlock Text="Audio is uploaded only for enabled transcription; Summary uploads the completed transcript on explicit request." TextWrapping="Wrap" Opacity="0.7" />
+            <TextBlock Text="Chunk duration (1–340 seconds)" /><TextBox Name="ChunkDuration" Text="{Binding ChunkSeconds}" />
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+      <TabItem Header="API &amp; prompts">
+        <TabControl Name="PromptSections">
+          <TabItem Header="Transcription">
+            <ScrollViewer>
+              <StackPanel Spacing="8" Margin="4,12,8,8">
+                <Expander Header="API connection &amp; key" HorizontalAlignment="Stretch">
+                  <StackPanel Spacing="8">
+                    <TextBlock Text="HTTPS endpoint (HTTP allowed for loopback)" />
+                    <TextBox Text="{Binding TranscriptionEndpoint}" />
+                    <TextBlock Text="Model" /><TextBox Text="{Binding TranscriptionModel}" />
+                    <TextBlock Text="API key environment variable" /><TextBox Text="{Binding TranscriptionKeyVariable}" />
+                    <TextBlock Text="New key (empty keeps existing)" />
+                    <TextBox Name="TranscriptionKey" Text="{Binding NewTranscriptionKey}" PasswordChar="●" />
+                    <TextBlock Text="Keys stay in your Windows user environment, never config.json. Existing keys are never displayed." TextWrapping="Wrap" Opacity="0.7" />
+                  </StackPanel>
+                </Expander>
+                <TextBlock Text="Prompt file path" />
+                <Grid ColumnDefinitions="*,Auto">
+                  <TextBox Name="TranscriptionPromptPath" Text="{Binding TranscriptionPrompt}" />
+                  <Button Grid.Column="1" Content="Load file" Click="LoadTranscriptionPromptClick" Margin="8,0,0,0" />
+                </Grid>
+                <TextBlock Text="{Binding TranscriptionPromptError}" TextWrapping="Wrap" />
+                <TextBlock Text="Prompt contents — saved only when edited" />
+                <TextBox Name="TranscriptionPromptEditor" Text="{Binding TranscriptionPromptText}" AcceptsReturn="True" TextWrapping="Wrap"
+                         Height="240" VerticalContentAlignment="Top" ScrollViewer.VerticalScrollBarVisibility="Auto" />
+              </StackPanel>
+            </ScrollViewer>
+          </TabItem>
+          <TabItem Header="Summary — on request">
+            <ScrollViewer>
+              <StackPanel Spacing="8" Margin="4,12,8,8">
+                <Expander Header="API connection &amp; key" HorizontalAlignment="Stretch">
+                  <StackPanel Spacing="8">
+                    <TextBlock Text="HTTPS endpoint (HTTP allowed for loopback)" />
+                    <TextBox Text="{Binding SummaryEndpoint}" />
+                    <TextBlock Text="Model" /><TextBox Text="{Binding SummaryModel}" />
+                    <TextBlock Text="API key environment variable" /><TextBox Text="{Binding SummaryKeyVariable}" />
+                    <TextBlock Text="New key (empty keeps existing)" />
+                    <TextBox Name="SummaryKey" Text="{Binding NewSummaryKey}" PasswordChar="●" />
+                    <TextBlock Text="Keys stay in your Windows user environment, never config.json. Existing keys are never displayed." TextWrapping="Wrap" Opacity="0.7" />
+                  </StackPanel>
+                </Expander>
+                <TextBlock Text="Prompt file path" />
+                <Grid ColumnDefinitions="*,Auto">
+                  <TextBox Name="SummaryPromptPath" Text="{Binding SummaryPrompt}" />
+                  <Button Grid.Column="1" Content="Load file" Click="LoadSummaryPromptClick" Margin="8,0,0,0" />
+                </Grid>
+                <TextBlock Text="{Binding SummaryPromptError}" TextWrapping="Wrap" />
+                <TextBlock Text="Prompt contents — saved only when edited" />
+                <TextBox Name="SummaryPromptEditor" Text="{Binding SummaryPromptText}" AcceptsReturn="True" TextWrapping="Wrap"
+                         Height="240" VerticalContentAlignment="Top" ScrollViewer.VerticalScrollBarVisibility="Auto" />
+              </StackPanel>
+            </ScrollViewer>
+          </TabItem>
+        </TabControl>
+      </TabItem>
+    </TabControl>
+    <StackPanel Grid.Row="2" Spacing="12" Margin="0,16,0,0">
       <TextBlock Name="SettingsMessage" Text="{Binding Message}" TextWrapping="Wrap" />
       <StackPanel Orientation="Horizontal" Spacing="12" HorizontalAlignment="Right">
-        <Button Content="Close" Click="CloseClick" />
+        <Button Name="CloseSettings" Content="Close" Click="CloseClick" />
         <Button Name="SaveSettings" Content="Save settings" IsEnabled="{Binding CanSave}" Click="SaveClick" />
       </StackPanel>
     </StackPanel>
