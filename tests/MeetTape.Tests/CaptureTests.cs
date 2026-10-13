@@ -8,6 +8,44 @@ namespace MeetTape.Tests;
 
 public sealed class CaptureTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CaptureTransitionsOccurAfterBothSourcesStartAndFinalizationCompletes(bool finalizationFails)
+    {
+        var me = new FakeSource(); var them = new FakeSource();
+        bool finalized = false;
+        using var capture = new CaptureCoordinator(() => new(me, them), stopped: _ =>
+        {
+            finalized = true;
+            if (finalizationFails) throw new IOException("Fixture encoder failure");
+        });
+        var transitions = new List<CaptureStatus>();
+        capture.StateChanged += status =>
+        {
+            if (status.IsActive) Assert.True(me.Running && them.Running); else Assert.True(finalized);
+            transitions.Add(status);
+        };
+        capture.Start(); capture.Stop();
+        Assert.Equal(2, transitions.Count);
+        Assert.True(transitions[0].IsActive); Assert.Null(transitions[0].Error);
+        Assert.False(transitions[1].IsActive);
+        Assert.Equal(finalizationFails, transitions[1].Error is not null);
+    }
+
+    [Fact]
+    public void FailedStartDoesNotPublishStartedAndNotificationFailureCannotStopCapture()
+    {
+        using var failing = new CaptureCoordinator(() => new(new FakeSource(), new FakeSource { FailStart = true }));
+        int starts = 0;
+        failing.StateChanged += status => { if (status.IsActive) starts++; };
+        Assert.Throws<InvalidOperationException>(() => failing.Start()); Assert.Equal(0, starts);
+        using var capture = new CaptureCoordinator(() => new(new FakeSource(), new FakeSource()));
+        capture.StateChanged += _ => throw new IOException("Fixture notifier failure");
+        capture.Start(); Assert.True(capture.Status.IsActive); Assert.Null(capture.Status.Error);
+        capture.Stop(); Assert.Null(capture.Status.Error);
+    }
+
     [Fact]
     public void PcmActivityIsIndependentIgnoresSilentBuffersDecaysAndResetsForNextCapture()
     {

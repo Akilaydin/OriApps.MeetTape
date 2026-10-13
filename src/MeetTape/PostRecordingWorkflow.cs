@@ -1,4 +1,5 @@
 using System.Text;
+using System.Globalization;
 
 namespace MeetTape;
 
@@ -32,6 +33,12 @@ public sealed class PostRecordingWorkflow(string ffmpegPath) : IDisposable
         directory = sessionDirectory;
         lock (gate) suggestion = null;
         var session = SessionStore.Read(directory);
+        if (session.JobState == JobState.Canceled)
+        {
+            using var lease = Lease(directory);
+            session = SessionStore.Read(directory);
+            SessionStore.Save(directory, session = session with { JobState = JobState.NotStarted, Error = null, Retry = null });
+        }
         if (!session.Stages.TryGetValue("trim", out var trim) || !trim.Enabled)
         {
             Report(new(NoticeKind.Information, "Trimming disabled; original tracks selected.", session.Id));
@@ -171,19 +178,22 @@ public sealed class PostRecordingWorkflow(string ffmpegPath) : IDisposable
         var data = SessionStore.Read(directory);
         if (data.RecordingState != RecordingState.Recorded)
             throw new InvalidOperationException("Only a finalized recording can be named.");
+        if (data.DurationSeconds is null)
+            throw new InvalidOperationException("Finalized audio duration is missing; original files retained.");
         title = title.Trim();
         if (title.Length > 200 || title.Any(char.IsControl))
             throw new InvalidOperationException("Title must contain at most 200 characters and no control characters.");
         var safe = new StringBuilder();
         foreach (var rune in title.EnumerateRunes())
         {
-            if (safe.Length + rune.Utf16SequenceLength > 80) break;
             string text = rune.ToString();
             safe.Append(text.Length == 1 && Path.GetInvalidFileNameChars().Contains(text[0]) ? '_' : text);
         }
         string name = safe.ToString().Trim(' ', '.');
+        var duration = TimeSpan.FromSeconds(data.DurationSeconds.Value);
         string destination = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(directory))!,
-            $"{data.StartedAtUtc.ToLocalTime():yyyy-MM-dd_HHmmss}_{(name.Length == 0 ? "" : name + "_")}{data.Id:N}");
+            string.Create(CultureInfo.InvariantCulture,
+                $"{(name.Length == 0 ? "Unnamed meeting" : name)}_{data.StartedAtUtc.ToLocalTime():dd.MM.yyyy HH-mm} {(long)duration.TotalHours:00}h{duration.Minutes:00}m"));
         bool move = !string.Equals(Path.GetFullPath(directory), destination, StringComparison.OrdinalIgnoreCase);
         if (move && (Directory.Exists(destination) || File.Exists(destination)))
             throw new RecordingException("Named session directory already exists; refusing to overwrite.");

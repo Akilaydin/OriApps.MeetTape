@@ -20,6 +20,9 @@ public sealed class ProcessingJobs : IDisposable
     private readonly Dictionary<string, (RetryProgress Retry, long ObservedAt, bool CapExpired)> observedRetries = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, (DateTime LastWriteTimeUtc, long Length)> completedSessions = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> blocked = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object sessionGate = new();
+    private readonly Dictionary<string, (CancellationTokenSource Cancellation, TaskCompletionSource Completion)> activeSessions = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> cancelingSessions = new(StringComparer.OrdinalIgnoreCase);
     private CancellationTokenSource? cancellation;
     private Task operation = Task.CompletedTask;
 
@@ -70,8 +73,10 @@ public sealed class ProcessingJobs : IDisposable
                     foreach (var session in SessionStore.Discover(root, completedSessions, Eligible))
                     {
                         token.ThrowIfCancellationRequested();
-                        if (session.Data is { } data && !blocked.Contains(session.Directory) && Eligible(data) && !RetryPending(session.Directory, data))
-                            await ProcessSessionAsync(session.Directory, token);
+                        bool unavailable;
+                        lock (sessionGate) unavailable = blocked.Contains(session.Directory);
+                        if (session.Data is { } data && !unavailable && Eligible(data) && !RetryPending(session.Directory, data))
+                            await ProcessSessionAsync(session.Directory, token, data.Id);
                     }
                     await delay(TimeSpan.FromSeconds(1), token);
                 }
@@ -104,10 +109,38 @@ public sealed class ProcessingJobs : IDisposable
         SessionStore.Save(directory, data with { Stages = stages, JobState = JobState.NotStarted, Error = null,
             Processing = data.Processing with { Transcription = config.Settings.Transcription, Summary = config.Settings.Summary,
                 ConfigurationDirectory = config.Directory } });
-        blocked.Remove(directory);
+        lock (sessionGate) blocked.Remove(directory);
         completedSessions.Remove(directory);
         observedRetries.Remove(directory);
+        lock (sessionGate) cancelingSessions.Remove(directory);
         Report("Job resumed with current API settings; successful chunks retained.", NoticeKind.Information, data.Id);
+    }
+
+    public void Cancel(string directory)
+    {
+        Task completion = Task.CompletedTask;
+        lock (sessionGate)
+        {
+            cancelingSessions.Add(directory);
+            if (activeSessions.TryGetValue(directory, out var active))
+            {
+                completion = active.Completion.Task;
+                active.Cancellation.Cancel();
+            }
+        }
+        try { completion.WaitAsync(TimeSpan.FromSeconds(15)).GetAwaiter().GetResult(); }
+        catch (TimeoutException)
+        { throw new AudioPreparationShutdownException("Processing did not stop; cancellation could not be saved. Check the process before retrying."); }
+        using var lease = Lease(directory);
+        var data = SessionStore.Read(directory);
+        if (data.RecordingState != RecordingState.Recorded)
+            throw new InvalidOperationException("Only a finalized recording can have its processing canceled.");
+        if (CanCancel(data))
+        {
+            SessionStore.Save(directory, data with { JobState = JobState.Canceled, Retry = null, Error = null });
+            Report("Processing canceled; audio, documents and successful checkpoints retained. Resume explicitly to continue.", NoticeKind.Information, data.Id);
+        }
+        lock (sessionGate) cancelingSessions.Remove(directory);
     }
 
     public void RequestSummary(string directory)
@@ -123,23 +156,60 @@ public sealed class ProcessingJobs : IDisposable
         SessionStore.Save(directory, data with { Stages = new(data.Stages) { ["summary"] = new(true, StageState.Pending) },
             JobState = JobState.NotStarted, Error = null, Processing = data.Processing with
             { Summary = config.Settings.Summary with { PromptFile = config.Resolve(config.Settings.Summary.PromptFile) } } });
-        blocked.Remove(directory);
+        lock (sessionGate) blocked.Remove(directory);
         completedSessions.Remove(directory);
     }
 
-    public async Task ProcessSessionAsync(string directory, CancellationToken token)
+    internal void RemoveInactiveSession(string directory, Action remove)
+    {
+        lock (sessionGate)
+        {
+            if (activeSessions.ContainsKey(directory) || !cancelingSessions.Add(directory))
+                throw new InvalidOperationException("Cancel this meeting's processing and wait for it to finish before deleting.");
+        }
+        try
+        {
+            remove();
+            lock (sessionGate) blocked.Remove(directory);
+        }
+        finally { lock (sessionGate) cancelingSessions.Remove(directory); }
+    }
+
+    public Task ProcessSessionAsync(string directory, CancellationToken token) => ProcessSessionAsync(directory, token, null);
+
+    internal async Task ProcessSessionAsync(string directory, CancellationToken token, Guid? expectedId)
+    {
+        using var sessionCancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (sessionGate)
+        {
+            if (cancelingSessions.Contains(directory) || activeSessions.ContainsKey(directory)) return;
+            activeSessions.Add(directory, (sessionCancellation, completion));
+        }
+        try { await ProcessSessionCoreAsync(directory, sessionCancellation.Token, expectedId); }
+        catch (OperationCanceledException) when (sessionCancellation.IsCancellationRequested && !token.IsCancellationRequested) { }
+        finally
+        {
+            lock (sessionGate) activeSessions.Remove(directory);
+            completion.TrySetResult();
+        }
+    }
+
+    private async Task ProcessSessionCoreAsync(string directory, CancellationToken token, Guid? expectedId)
     {
         var currentConfig = config;
         token.ThrowIfCancellationRequested();
         if (captureActive()) return;
         FileStream lease;
         try { lease = Lease(directory); }
+        catch (DirectoryNotFoundException) { return; }
         catch (IOException ex) when ((ex.HResult & 0xffff) is 32 or 33) { return; }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        { blocked.Add(directory); Report("Cannot acquire session lease; processing blocked in this process. Cannot save paused state without an exclusive lease. Check storage permissions.", NoticeKind.Error); return; }
+        { lock (sessionGate) blocked.Add(directory); Report("Cannot acquire session lease; processing blocked in this process. Cannot save paused state without an exclusive lease. Check storage permissions.", NoticeKind.Error); return; }
         using (lease)
         {
             var data = SessionStore.Read(directory);
+            if (expectedId is { } id && data.Id != id) return;
             if (!Eligible(data) || RetryPending(directory, data)) return;
             string stage = "prepare";
             try
@@ -173,7 +243,6 @@ public sealed class ProcessingJobs : IDisposable
                             token.ThrowIfCancellationRequested();
                             var reply = await api.TranscribeAsync(data.Processing.Transcription, prompt,
                                 AudioChunker.ResolveProcessed(directory, chunk.RelativePath), token);
-                            token.ThrowIfCancellationRequested();
                             ChunkStore.Save(directory, new(data.Id, chunk, reply.AudioSha256, data.Processing.Transcription.Model,
                                 Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(prompt + ChatApiClient.SourceInstruction))), reply.Text));
                         }
@@ -223,7 +292,7 @@ public sealed class ProcessingJobs : IDisposable
             catch (Exception ex) when (ex is ChatApiException or InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException
                 || ex is InvalidOperationException and not AudioPreparationShutdownException)
             {
-                blocked.Add(directory);
+                lock (sessionGate) blocked.Add(directory);
                 SavePause(directory, data, stage, StageState.Paused,
                     ex is ChatApiException apiError ? apiError.Message : "Processing paused; check selected audio, saved chunks, FFmpeg, metadata and filesystem.", permanent: true);
             }
@@ -237,15 +306,19 @@ public sealed class ProcessingJobs : IDisposable
         return TimeSpan.FromSeconds(Math.Clamp(seconds, 1, 300));
     }
 
-    internal static bool Eligible(SessionData data) => data.RecordingState == RecordingState.Recorded && data.JobState != JobState.Paused
+    internal static bool Eligible(SessionData data) => data.RecordingState == RecordingState.Recorded && data.JobState is not (JobState.Paused or JobState.Canceled)
         && data.Stages.TryGetValue("transcribe", out var transcribe) && transcribe.Enabled
         && (transcribe.Status != StageState.Completed || !data.Stages.TryGetValue("assemble", out var assemble) || assemble.Status != StageState.Completed || SummaryRequested(data))
         && (!data.Stages.TryGetValue("trim", out var trim) || !trim.Enabled || trim.Status == StageState.Completed);
 
-    internal static bool CanResume(SessionData data) => data.RecordingState == RecordingState.Recorded && data.JobState == JobState.Paused
+    internal static bool CanCancel(SessionData data) => data.RecordingState == RecordingState.Recorded && data.JobState != JobState.Canceled
+        && data.Stages.Values.Any(stage => stage.Enabled && stage.Status is StageState.Pending or StageState.AwaitingUser or StageState.Running or StageState.Paused);
+
+    internal static bool CanResume(SessionData data) => data.RecordingState == RecordingState.Recorded && data.JobState is JobState.Paused or JobState.Canceled
         && data.Stages.TryGetValue("transcribe", out var transcribe) && transcribe.Enabled
         && (!data.Stages.TryGetValue("trim", out var trim) || !trim.Enabled || trim.Status == StageState.Completed)
-        && ProcessingStages.Any(name => data.Stages.TryGetValue(name, out var stage) && stage.Enabled && stage.Status == StageState.Paused);
+        && ProcessingStages.Any(name => data.Stages.TryGetValue(name, out var stage) && stage.Enabled
+            && (stage.Status == StageState.Paused || data.JobState == JobState.Canceled && stage.Status is StageState.Pending or StageState.Running));
 
     internal static bool HasPublishedTranscription(SessionData data) => data.RecordingState == RecordingState.Recorded && data.Audio is not null
         && data.Stages.TryGetValue("transcribe", out var transcribe) && transcribe.Status == StageState.Completed
@@ -281,7 +354,7 @@ public sealed class ProcessingJobs : IDisposable
         try { SessionStore.Save(directory, (data.Stages.ContainsKey(stage) ? Update(data, stage, state) : data)
             with { JobState = permanent ? JobState.Paused : JobState.NotStarted, Error = diagnostic }); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        { blocked.Add(directory); diagnostic += " Cannot save paused state; prior disk state retained, session blocked in this process."; }
+        { lock (sessionGate) blocked.Add(directory); diagnostic += " Cannot save paused state; prior disk state retained, session blocked in this process."; }
         Report($"Job {data.Id}: {diagnostic}", permanent ? NoticeKind.Error : NoticeKind.Warning, data.Id);
     }
 
@@ -322,7 +395,6 @@ public sealed class ProcessingJobs : IDisposable
             try
             {
                 string text = await api.SummarizeAsync(data.Processing.Summary, prompt, transcript, token);
-                token.ThrowIfCancellationRequested();
                 result = new(data.Id, data.TranscriptSha256!, data.Processing.Summary.Model,
                     Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(prompt))), text);
                 ChunkStore.SaveFile(checkpoint, result);

@@ -7,6 +7,107 @@ namespace MeetTape.Tests;
 
 public sealed class JobTests : IDisposable
 {
+    [Fact]
+    public async Task RecycledStorageFailureDoesNotLeaveReplacementBlockedInTheScheduler()
+    {
+        string directory = Session();
+        bool fail = true;
+        using var handler = new Handler((_, _) =>
+        {
+            if (fail)
+            {
+                File.SetAttributes(Path.Combine(directory, "session.json"), FileAttributes.ReadOnly);
+                return Task.FromResult(Response(400));
+            }
+            return Task.FromResult(Response());
+        });
+        using var http = new HttpClient(handler);
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "fixture-key");
+        await jobs.ProcessSessionAsync(directory, default);
+        File.SetAttributes(Path.Combine(directory, "session.json"), FileAttributes.Normal);
+        jobs.Cancel(directory);
+        string bin = Path.Combine(root, "Fixture bin"); Directory.CreateDirectory(bin);
+        jobs.RemoveInactiveSession(directory, () => Directory.Move(directory, Path.Combine(bin, "removed")));
+        string replacement = Session(); Directory.Move(replacement, directory);
+        fail = false; jobs.Start();
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        while (SessionStore.Read(directory).JobState != JobState.Completed)
+        {
+            Assert.True(DateTimeOffset.UtcNow < deadline, "A removed session's storage failure must not block a new identity at its old path.");
+            await Task.Delay(10);
+        }
+        jobs.PauseAndWait();
+        Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
+    }
+
+    [Fact]
+    public async Task RemovalExcludesActiveJobsAndStaleSchedulerSnapshotsWithoutBlockingOtherMeetings()
+    {
+        string directory = Session(), other = Session();
+        Guid removedId = SessionStore.Read(directory).Id;
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        bool hold = true;
+        using var handler = new Handler(async (_, token) =>
+        {
+            if (hold) { entered.TrySetResult(); await Task.Delay(Timeout.Infinite, token); }
+            return Response();
+        });
+        using var http = new HttpClient(handler);
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "fixture-key");
+        Task running = jobs.ProcessSessionAsync(directory, default);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Throws<InvalidOperationException>(() => jobs.RemoveInactiveSession(directory, () => throw new Exception("Must not remove active job")));
+        jobs.Cancel(directory); await running;
+        Assert.Throws<IOException>(() => jobs.RemoveInactiveSession(directory, () => throw new IOException("Fixture bin refused")));
+        string bin = Path.Combine(root, "Fixture bin"); Directory.CreateDirectory(bin);
+        jobs.RemoveInactiveSession(directory, () => Directory.Move(directory, Path.Combine(bin, "removed")));
+        await jobs.ProcessSessionAsync(directory, default, removedId);
+        string replacement = Session(); Directory.Move(replacement, directory);
+        await jobs.ProcessSessionAsync(directory, default, removedId);
+        Assert.Equal(JobState.NotStarted, SessionStore.Read(directory).JobState);
+        Assert.Equal(1, handler.Calls);
+        hold = false;
+        jobs.Start();
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        while (SessionStore.Read(directory).JobState != JobState.Completed || SessionStore.Read(other).JobState != JobState.Completed)
+        {
+            Assert.True(DateTimeOffset.UtcNow < deadline, "New session and unrelated meeting must remain schedulable after path reuse.");
+            await Task.Delay(10);
+        }
+        jobs.PauseAndWait();
+        Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
+        Assert.Equal(JobState.Completed, SessionStore.Read(other).JobState);
+        bool secondRemoval = false;
+        jobs.RemoveInactiveSession(directory, () => secondRemoval = true);
+        Assert.True(secondRemoval);
+    }
+
+    [Fact]
+    public async Task RenamedPausedMeetingCanResumeAndPublishTranscriptFromItsExistingRelativeChunks()
+    {
+        string directory = Session(120);
+        var data = SessionStore.Read(directory);
+        byte[] original = File.ReadAllBytes(Path.Combine(directory, "me.mp3"));
+        using (var failed = new Handler((_, _) => Task.FromResult(Response(400))))
+        using (var http = new HttpClient(failed))
+        using (var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "fixture-key"))
+            await jobs.ProcessSessionAsync(directory, default);
+        Assert.Equal(JobState.Paused, SessionStore.Read(directory).JobState);
+        string named = PostRecordingWorkflow.SetTitle(directory, "Development review");
+        using var success = new Handler((_, _) => Task.FromResult(Response()));
+        using var client = new HttpClient(success);
+        using var resumed = new ProcessingJobs(config, () => false, client, readKey: _ => "fixture-key");
+        resumed.Resume(named);
+        await resumed.ProcessSessionAsync(named, default);
+        Assert.Equal(JobState.Completed, SessionStore.Read(named).JobState);
+        Assert.Equal(data.Id, SessionStore.Read(named).Id);
+        Assert.Equal(data.Audio!.Chunks, SessionStore.Read(named).Audio!.Chunks);
+        Assert.Equal(original, File.ReadAllBytes(Path.Combine(named, "me.mp3")));
+        Assert.True(File.Exists(Path.Combine(named, "transcription.md")));
+        await resumed.ProcessSessionAsync(named, default);
+        Assert.Equal(1, success.Calls); Assert.False(Directory.Exists(directory));
+    }
+
     private readonly string root = Path.Combine(Path.GetTempPath(), "MeetTapeJobs-" + Guid.NewGuid().ToString("N"));
     private readonly LoadedConfiguration config;
     private const string Valid = "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"[00:01] Me: test\"}}]}";
@@ -385,6 +486,167 @@ public sealed class JobTests : IDisposable
         Assert.Equal(original, SHA256.HashData(File.ReadAllBytes(Path.Combine(directory, "me.mp3"))));
     }
 
+    [Fact]
+    public async Task CancelInFlightRetainsCheckpointsAndRestartRequiresExplicitResume()
+    {
+        string directory = Session();
+        byte[] original = File.ReadAllBytes(Path.Combine(directory, "me.mp3"));
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        bool canceled = false;
+        using var handler = new Handler(async (call, token) =>
+        {
+            if (call == 2)
+            {
+                entered.TrySetResult();
+                try { await Task.Delay(Timeout.Infinite, token); }
+                catch (OperationCanceledException) { canceled = true; throw; }
+            }
+            return Response();
+        });
+        using var http = new HttpClient(handler);
+        using (var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key"))
+        {
+            Task operation = jobs.ProcessSessionAsync(directory, default);
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await Task.Run(() => jobs.Cancel(directory));
+            await operation;
+            Assert.True(canceled);
+            Assert.Equal(JobState.Canceled, SessionStore.Read(directory).JobState);
+            Assert.Null(SessionStore.Read(directory).Error);
+        }
+        byte[] checkpoint = File.ReadAllBytes(ChunkStore.PathFor(directory, 1));
+        using var remaining = new Handler((_, _) => Task.FromResult(Response()));
+        using var nextHttp = new HttpClient(remaining);
+        using var restarted = new ProcessingJobs(config, () => false, nextHttp, readKey: _ => "test-key");
+        await restarted.ProcessSessionAsync(directory, default);
+        Assert.Equal(0, remaining.Calls);
+        Assert.True(ProcessingJobs.CanResume(SessionStore.Read(directory)));
+        restarted.Resume(directory);
+        await restarted.ProcessSessionAsync(directory, default);
+        Assert.Equal(2, remaining.Calls);
+        Assert.Equal(checkpoint, File.ReadAllBytes(ChunkStore.PathFor(directory, 1)));
+        Assert.Equal(original, File.ReadAllBytes(Path.Combine(directory, "me.mp3")));
+        Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
+        Assert.False(ProcessingJobs.CanCancel(SessionStore.Read(directory)));
+    }
+
+    [Fact]
+    public async Task CancelDuringRetryNeverRestartsButOtherMeetingCompletes()
+    {
+        string canceled = Session(120);
+        string other = Session(120);
+        using var handler = new Handler((call, _) => Task.FromResult(call == 1 ? Response(503) : Response()));
+        using var http = new HttpClient(handler);
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key");
+        await jobs.ProcessSessionAsync(canceled, default);
+        Assert.NotNull(SessionStore.Read(canceled).Retry);
+        jobs.Cancel(canceled);
+        await jobs.ProcessSessionAsync(canceled, default);
+        Assert.Equal(1, handler.Calls);
+        Assert.Null(SessionStore.Read(canceled).Retry);
+        Assert.Equal(JobState.Canceled, SessionStore.Read(canceled).JobState);
+        await jobs.ProcessSessionAsync(other, default);
+        Assert.Equal(2, handler.Calls);
+        Assert.Equal(JobState.Completed, SessionStore.Read(other).JobState);
+    }
+
+    [Fact]
+    public async Task CancellationAfterAValidatedReplyKeepsPaidCheckpointForResume()
+    {
+        string directory = Session(120);
+        using var cancellation = new CancellationTokenSource();
+        using var handler = new Handler((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            { Content = new CancelOnDisposeContent(cancellation.Cancel) }));
+        using var http = new HttpClient(handler);
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key");
+        await jobs.ProcessSessionAsync(directory, cancellation.Token);
+        Assert.True(cancellation.IsCancellationRequested);
+        byte[] checkpoint = File.ReadAllBytes(ChunkStore.PathFor(directory, 1));
+        jobs.Cancel(directory);
+        Assert.Equal(JobState.Canceled, SessionStore.Read(directory).JobState);
+        jobs.Resume(directory);
+        await jobs.ProcessSessionAsync(directory, default);
+        Assert.Equal(1, handler.Calls);
+        Assert.Equal(checkpoint, File.ReadAllBytes(ChunkStore.PathFor(directory, 1)));
+        Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
+    }
+
+    [Fact]
+    public async Task CancelSelectedSessionDoesNotInterruptAnotherInFlightRequest()
+    {
+        string canceled = Session(120);
+        string other = Session(120);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var handler = new Handler(async (_, token) =>
+        {
+            entered.TrySetResult();
+            await release.Task.WaitAsync(token);
+            return Response();
+        });
+        using var http = new HttpClient(handler);
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key");
+        Task operation = jobs.ProcessSessionAsync(other, default);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        try
+        {
+            jobs.Cancel(canceled);
+            Assert.False(operation.IsCompleted);
+            Assert.Equal(JobState.Canceled, SessionStore.Read(canceled).JobState);
+        }
+        finally { release.TrySetResult(); await operation; }
+        Assert.Equal(JobState.Completed, SessionStore.Read(other).JobState);
+        Assert.Equal(1, handler.Calls);
+    }
+
+    [Fact]
+    public async Task FailedCancellationSaveBlocksNewRequestsAndRetainsOriginalMetadata()
+    {
+        string directory = Session(120);
+        string metadata = Path.Combine(directory, "session.json");
+        byte[] original = File.ReadAllBytes(metadata);
+        using var handler = new Handler((_, _) => throw new Exception("Canceled session must stay blocked after a save failure"));
+        using var http = new HttpClient(handler);
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key");
+        File.SetAttributes(metadata, FileAttributes.ReadOnly);
+        try
+        {
+            Assert.Throws<UnauthorizedAccessException>(() => jobs.Cancel(directory));
+            await jobs.ProcessSessionAsync(directory, default);
+            Assert.Equal(0, handler.Calls);
+            Assert.Equal(original, File.ReadAllBytes(metadata));
+        }
+        finally { File.SetAttributes(metadata, FileAttributes.Normal); }
+        jobs.Cancel(directory);
+        Assert.Equal(JobState.Canceled, SessionStore.Read(directory).JobState);
+    }
+
+    [Fact]
+    public async Task CancelRacingSessionStartupDoesNotFaultProcessing()
+    {
+        bool holdRequests = true;
+        using var handler = new Handler(async (_, token) =>
+        {
+            if (holdRequests) await Task.Delay(Timeout.Infinite, token);
+            return Response();
+        });
+        using var http = new HttpClient(handler);
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key");
+        for (int attempt = 0; attempt < 100; attempt++)
+        {
+            string directory = Session(120);
+            Task processing = Task.Run(() => jobs.ProcessSessionAsync(directory, default));
+            await Task.Yield();
+            await Task.Run(() => jobs.Cancel(directory));
+            await processing.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(JobState.Canceled, SessionStore.Read(directory).JobState);
+        }
+        string other = Session(120);
+        holdRequests = false;
+        await jobs.ProcessSessionAsync(other, default);
+        Assert.Equal(JobState.Completed, SessionStore.Read(other).JobState);
+    }
+
     internal string Session(int seconds = 1)
     {
         var data = new SessionData
@@ -414,6 +676,14 @@ public sealed class JobTests : IDisposable
     {
         public int Calls { get; private set; }
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token) => send(++Calls, token);
+    }
+    private sealed class CancelOnDisposeContent(Action cancel) : StringContent(Valid, Encoding.UTF8, "application/json")
+    {
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) cancel();
+            base.Dispose(disposing);
+        }
     }
     private sealed class RoutingHandler(string readyAudioMarker) : HttpMessageHandler
     {

@@ -18,6 +18,8 @@ public sealed class App : Application
     private DesktopController? controller;
     private DispatcherTimer? timer;
     private TrayIcon? tray;
+    private WindowIcon? idleIcon;
+    private WindowIcon? recordingIcon;
     private NativeMenuItem? record;
     private NativeMenuItem? status;
     private NativeMenuItem? processingStatus;
@@ -26,6 +28,8 @@ public sealed class App : Application
     private bool initialized;
     private bool initializingController;
     private IAppUpdates? updates;
+    private RecordingHotkey? hotkey;
+    private RecordingNotifications? notifications;
 
     public override void Initialize() => Styles.Add(new FluentTheme());
 
@@ -40,7 +44,11 @@ public sealed class App : Application
             window.OpenSettings = OpenSettingsAsync;
             window.ExitApplication = ExitAsync;
             window.UpdateApplication = UpdateAsync;
-            window.Opened += async (_, _) => await InitializeAsync();
+            window.Opened += async (_, _) =>
+            {
+                await InitializeAsync();
+                if (!Smoke && StartupError is null) InitializeHotkey();
+            };
             Instance?.Listen(() => Dispatcher.UIThread.Post(() => { if (!allowShutdown) ShowWindow(); }));
             var menu = new NativeMenu();
             status = new NativeMenuItem(model.CaptureText) { IsEnabled = false };
@@ -54,8 +62,14 @@ public sealed class App : Application
             menu.Items.Add(status); menu.Items.Add(processingStatus); menu.Items.Add(open); menu.Items.Add(record); menu.Items.Add(exit);
             using var iconStream = AssetLoader.Open(new Uri("avares://MeetTape/Assets/MeetTape.ico"));
             var icon = new WindowIcon(iconStream);
+            idleIcon = icon;
+            using var recordingStream = AssetLoader.Open(new Uri("avares://MeetTape/Assets/MeetTape-recording.ico"));
+            recordingIcon = new WindowIcon(recordingStream);
             window.Icon = icon;
             tray = new TrayIcon { Icon = icon, ToolTipText = model.TrayText, Menu = menu };
+            if (!Smoke && StartupError is null)
+                notifications = new(() => Dispatcher.UIThread.Post(() =>
+                { if (!allowShutdown) model.SetInfo("Windows notifications unavailable. Use the window or tray for recording status."); }));
             tray.Clicked += (_, _) => ShowWindow();
             TrayIcon.SetIcons(this, [tray]);
             model.PropertyChanged += ModelChanged;
@@ -65,7 +79,13 @@ public sealed class App : Application
                 e.Cancel = true;
                 _ = ExitAsync();
             };
-            desktop.Exit += (_, _) => { timer?.Stop(); model.Detach(); tray.Dispose(); };
+            desktop.Exit += (_, _) =>
+            {
+                hotkey?.Dispose();
+                Win32Properties.RemoveWndProcHookCallback(window, HotkeyMessage);
+                notifications?.Dispose();
+                timer?.Stop(); model.Detach(); tray.Dispose();
+            };
         }
         base.OnFrameworkInitializationCompleted();
     }
@@ -74,8 +94,13 @@ public sealed class App : Application
     {
         if (status is not null) status.Header = model.CaptureText;
         if (processingStatus is not null) processingStatus.Header = model.ProcessingText;
-        if (record is not null) { record.Header = model.RecordLabel; record.IsEnabled = model.CanRecord; }
+        if (record is not null) { record.Header = model.RecordLabel + " (Ctrl+Shift+F9)"; record.IsEnabled = model.CanRecord; }
         if (tray is not null) tray.ToolTipText = model.TrayText;
+        if (window is not null && tray is not null && idleIcon is not null && recordingIcon is not null)
+        {
+            var icon = model.IsRecording ? recordingIcon : idleIcon;
+            if (!ReferenceEquals(tray.Icon, icon)) { tray.Icon = icon; window.Icon = icon; }
+        }
     }
 
     private async Task InitializeAsync()
@@ -89,7 +114,20 @@ public sealed class App : Application
             timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
             timer.Tick += async (_, _) =>
             {
-                if (++tick == 3)
+                tick++;
+                if (tick == 1 || tick == 4)
+                {
+                    model.RefreshCapture(new(true, TimeSpan.FromSeconds(tick), 0, 0, null));
+                    if (!ReferenceEquals(tray!.Icon, recordingIcon) || !ReferenceEquals(window!.Icon, recordingIcon))
+                    { timer.Stop(); desktop!.Shutdown(1); return; }
+                }
+                if (tick == 2)
+                {
+                    model.RefreshCapture(new(false, TimeSpan.FromSeconds(1), 0, 0, "Fixture interruption"));
+                    if (!ReferenceEquals(tray!.Icon, idleIcon) || !ReferenceEquals(window!.Icon, idleIcon))
+                    { timer.Stop(); desktop!.Shutdown(1); return; }
+                }
+                if (tick == 3)
                 {
                     ShowWindow();
                     model.SetError("Smoke recording diagnostic. Original fixture detail retained for copying.");
@@ -101,7 +139,13 @@ public sealed class App : Application
                         || window!.Icon is null || !ReferenceEquals(window.Icon, tray.Icon))
                     { timer.Stop(); desktop!.Shutdown(1); return; }
                 }
-                if (tick == 5) { timer.Stop(); await ExitAsync(); }
+                if (tick == 5)
+                {
+                    model.RefreshCapture(new(false, TimeSpan.FromSeconds(1), 0, 0, null));
+                    if (!ReferenceEquals(tray!.Icon, idleIcon) || !ReferenceEquals(window!.Icon, idleIcon))
+                    { timer.Stop(); desktop!.Shutdown(1); return; }
+                    timer.Stop(); await ExitAsync();
+                }
             };
             timer.Start();
             return;
@@ -114,7 +158,7 @@ public sealed class App : Application
             controller = new DesktopController(config);
             model.PropertyChanged -= ModelChanged;
             model.Detach();
-            model = new MainViewModel(controller);
+            model = new MainViewModel(controller, notice => notifications?.Show(notice));
             model.PropertyChanged += ModelChanged;
             window!.DataContext = model;
             await controller.InitializeAsync();
@@ -145,6 +189,33 @@ public sealed class App : Application
     }
 
     private static string ConfigPath => ConfigurationBootstrap.UserConfigurationPath;
+
+    private void InitializeHotkey()
+    {
+        if (hotkey is not null || window is null) return;
+        try
+        {
+            nint handle = window.TryGetPlatformHandle()?.Handle ?? 0;
+            if (handle == 0) throw new InvalidOperationException("Ctrl+Shift+F9 is unavailable. Use Start/Stop buttons or the tray.");
+            hotkey = new(handle);
+            Win32Properties.AddWndProcHookCallback(window, HotkeyMessage);
+        }
+        catch (Exception)
+        {
+            hotkey?.Dispose(); hotkey = null;
+            model.SetInfo("Ctrl+Shift+F9 is unavailable or already in use. Start/Stop buttons and tray remain available.");
+        }
+    }
+
+    private nint HotkeyMessage(nint handle, uint message, nint wParam, nint lParam, ref bool handled)
+    {
+        if (hotkey?.Matches(message, wParam) == true)
+        {
+            handled = true;
+            Dispatcher.UIThread.Post(async () => await model.ToggleFromHotkeyAsync());
+        }
+        return 0;
+    }
 
     private async Task OpenSettingsAsync()
     {
