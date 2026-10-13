@@ -131,6 +131,8 @@ public sealed class EncodingTests : IDisposable
         Assert.True(SpinWait.SpinUntil(() => capture.Status.ThemTiming.InvalidTimestamps == 1,
             TimeSpan.FromSeconds(5)), "TimestampError did not reach the recording timeline.");
         Assert.True(capture.Status.IsActive);
+        Assert.True(SpinWait.SpinUntil(() => warnings.Any(warning => warning.Contains("invalid WASAPI timestamp")),
+            TimeSpan.FromSeconds(5)), "Timestamp warning did not reach the recording observer.");
         Assert.Contains(warnings, warning => warning.Contains("invalid WASAPI timestamp"));
         capture.Stop();
         var saved = SessionStore.Read(capture.RecordingDirectory!);
