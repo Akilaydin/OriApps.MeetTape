@@ -27,6 +27,8 @@ public sealed partial class MainWindow : Window
     private async void SkipClick(object? sender, RoutedEventArgs e) => await Model.ChooseAsync(TrimDecision.Skip);
     private async void ManualClick(object? sender, RoutedEventArgs e) => await Model.ChooseAsync(TrimDecision.Manual);
     private async void ResumeClick(object? sender, RoutedEventArgs e) => await Model.ResumeAsync();
+    private async void CancelProcessingClick(object? sender, RoutedEventArgs e) => await Model.CancelSelectedProcessingAsync();
+    private async void CancelNamedClick(object? sender, RoutedEventArgs e) => await Model.CancelNamedRecordingAsync();
     private async void SummaryClick(object? sender, RoutedEventArgs e) => await Model.SummaryAsync();
     private async void SettingsClick(object? sender, RoutedEventArgs e) { if (OpenSettings is not null) await OpenSettings(); }
     private async void ExitClick(object? sender, RoutedEventArgs e) { if (ExitApplication is not null) await ExitApplication(); }

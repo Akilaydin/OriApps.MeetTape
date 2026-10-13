@@ -149,6 +149,42 @@ public sealed class SummaryTests : IDisposable
         Assert.False(File.Exists(Path.Combine(directory, "summary.md")));
     }
 
+    [Fact]
+    public async Task CancelSummaryStopsOnlyItsRequestAndResumeKeepsPublishedTranscript()
+    {
+        var (directory, config) = await SessionAsync();
+        byte[] transcript = File.ReadAllBytes(Path.Combine(directory, "transcription.md"));
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var handler = new Handler(async (_, token) =>
+        {
+            entered.TrySetResult();
+            await Task.Delay(Timeout.Infinite, token);
+            return Reply();
+        });
+        using var http = new HttpClient(handler);
+        using (var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key"))
+        {
+            jobs.RequestSummary(directory);
+            Task operation = jobs.ProcessSessionAsync(directory, default);
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await Task.Run(() => jobs.Cancel(directory));
+            await operation;
+            Assert.Equal(JobState.Canceled, SessionStore.Read(directory).JobState);
+            Assert.True(ProcessingJobs.CanResume(SessionStore.Read(directory)));
+            Assert.Equal(transcript, File.ReadAllBytes(Path.Combine(directory, "transcription.md")));
+        }
+        using var remaining = new Handler((_, _) => Task.FromResult(Reply()));
+        using var nextHttp = new HttpClient(remaining);
+        using var restarted = new ProcessingJobs(config, () => false, nextHttp, readKey: _ => "test-key");
+        await restarted.ProcessSessionAsync(directory, default);
+        Assert.Equal(0, remaining.Calls);
+        restarted.Resume(directory);
+        await restarted.ProcessSessionAsync(directory, default);
+        Assert.Equal(1, remaining.Calls);
+        Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
+        Assert.Equal(transcript, File.ReadAllBytes(Path.Combine(directory, "transcription.md")));
+    }
+
     private async Task<(string Directory, LoadedConfiguration Config)> SessionAsync()
     {
         string directory = fixture.Prepare(["[00:00] Me: technical details"], 120);

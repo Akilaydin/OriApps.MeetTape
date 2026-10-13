@@ -215,6 +215,62 @@ public sealed class TrimmingTests : IDisposable
         }
         finally { await controller.ShutdownAsync(); }
     }
+    [Fact]
+    public async Task CancelBeforeNamingPersistsDecisionAndAllowsNextCaptureWithoutApi()
+    {
+        string configPath = Path.Combine(root, "config.json");
+        ConfigurationBootstrap.Initialize(configPath, root);
+        var loaded = ConfigurationLoader.Load(configPath);
+        var capture = new Mp3Recorder(loaded, () => new(new Source(), new Source())).Capture;
+        var controller = new DesktopController(loaded, capture, readKey: _ => throw new Exception("Cancellation must not send requests"));
+        try
+        {
+            await controller.StartAsync();
+            await Task.Delay(30);
+            string directory = (await controller.StopAsync())!;
+            byte[] original = File.ReadAllBytes(Path.Combine(directory, "me.mp3"));
+            await controller.CancelProcessingAsync(directory);
+            var canceled = SessionStore.Read(directory);
+            Assert.Equal(JobState.Canceled, canceled.JobState);
+            Assert.Null(canceled.Title);
+            Assert.Null((await controller.ReadAsync()).AwaitingTitleDirectory);
+            Assert.Equal(original, File.ReadAllBytes(Path.Combine(directory, "me.mp3")));
+            await controller.StartAsync();
+            Assert.True((await controller.ReadAsync()).Capture.IsActive);
+            Assert.Equal(JobState.Canceled, SessionStore.Read(directory).JobState);
+        }
+        finally { await controller.ShutdownAsync(); }
+    }
+
+    [Fact]
+    public async Task CancelTrimPreparationRetainsOriginalsAndExplicitNameTrimClearsCancellation()
+    {
+        string directory = await SessionAsync([], []);
+        byte[] original = Hash(directory, "me.mp3");
+        var loaded = config with { Settings = config.Settings with { MeetingsRoot = root } };
+        using var capture = new CaptureCoordinator(() => new(new Source(), new Source()));
+        var controller = new DesktopController(loaded, capture);
+        try
+        {
+            await controller.PrepareAsync(directory, null);
+            await controller.CancelProcessingAsync(directory);
+            Assert.Equal(JobState.Canceled, SessionStore.Read(directory).JobState);
+            Assert.False((await controller.ReadAsync()).Preparing);
+            Assert.Equal(original, Hash(directory, "me.mp3"));
+            await controller.PrepareAsync(directory, null);
+            var deadline = DateTimeOffset.UtcNow.AddSeconds(10);
+            while ((await controller.ReadAsync()).Preparing)
+            {
+                Assert.True(DateTimeOffset.UtcNow < deadline);
+                await Task.Delay(25);
+            }
+            Assert.NotEqual(JobState.Canceled, SessionStore.Read(directory).JobState);
+            Assert.Equal(StageState.AwaitingUser, SessionStore.Read(directory).Stages["trim"].Status);
+            Assert.Equal(original, Hash(directory, "me.mp3"));
+        }
+        finally { await controller.ShutdownAsync(); }
+    }
+
     [Theory]
     [InlineData("12.5", 12.5)]
     [InlineData("01:23.5", 83.5)]

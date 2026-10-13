@@ -32,6 +32,12 @@ public sealed class PostRecordingWorkflow(string ffmpegPath) : IDisposable
         directory = sessionDirectory;
         lock (gate) suggestion = null;
         var session = SessionStore.Read(directory);
+        if (session.JobState == JobState.Canceled)
+        {
+            using var lease = Lease(directory);
+            session = SessionStore.Read(directory);
+            SessionStore.Save(directory, session = session with { JobState = JobState.NotStarted, Error = null, Retry = null });
+        }
         if (!session.Stages.TryGetValue("trim", out var trim) || !trim.Enabled)
         {
             Report(new(NoticeKind.Information, "Trimming disabled; original tracks selected.", session.Id));
