@@ -24,6 +24,25 @@ using System;
 using System.Drawing;
 using System.Runtime.InteropServices;
 public static class MeetTapeIconProbe {
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr FindWindow(string name, string title);
+    [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr window, out Rect rectangle);
+    [StructLayout(LayoutKind.Sequential)] private struct Rect { public int Left, Top, Right, Bottom; }
+    public static int CaptureTaskbar(string path) {
+        Rect rectangle;
+        if (!GetWindowRect(FindWindow("Shell_TrayWnd", null), out rectangle))
+            throw new InvalidOperationException("Cannot locate the isolated CI taskbar.");
+        using (var bitmap = new Bitmap(rectangle.Right - rectangle.Left, rectangle.Bottom - rectangle.Top)) {
+            using (var graphics = Graphics.FromImage(bitmap))
+                graphics.CopyFromScreen(rectangle.Left, rectangle.Top, 0, 0, bitmap.Size);
+            bitmap.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+            int red = 0;
+            for (int y = 0; y < bitmap.Height; y++) for (int x = 0; x < bitmap.Width; x++) {
+                var pixel = bitmap.GetPixel(x, y);
+                if (pixel.R > 160 && pixel.R > pixel.G * 1.7 && pixel.R > pixel.B * 1.7) red++;
+            }
+            return red;
+        }
+    }
     [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "PrivateExtractIconsW")]
     private static extern uint Extract(string file, int index, int width, int height,
         IntPtr[] icons, uint[] ids, uint count, uint flags);
@@ -70,9 +89,29 @@ if ($SkipNativeWindow) {
     $smoke = Start-Process -FilePath $executable -ArgumentList '--ui-smoke' -WorkingDirectory $testRoot -PassThru -WindowStyle $smokeStyle -RedirectStandardError $smokeError
     $null = $smoke.Handle
     try {
+        $taskbarCounts = @{}
+        if ($env:GITHUB_ACTIONS -eq 'true') {
+            $captureDeadline = [DateTime]::UtcNow.AddSeconds(20)
+            while (-not $smoke.HasExited -and [DateTime]::UtcNow -lt $captureDeadline) {
+                $trace = if ([IO.File]::Exists($smokeError)) { [IO.File]::ReadAllText($smokeError) } else { '' }
+                foreach ($stage in @(1, 2)) {
+                    if (-not $taskbarCounts.ContainsKey($stage) -and $trace.Contains("Icon smoke tick $stage begins")) {
+                        Start-Sleep -Milliseconds 150
+                        $taskbarCounts[$stage] = [MeetTapeIconProbe]::CaptureTaskbar((Join-Path $testRoot "taskbar-$stage.png"))
+                    }
+                }
+                Start-Sleep -Milliseconds 50
+            }
+        }
         if (-not $smoke.WaitForExit(20000)) { throw 'Published GUI did not complete its startup/lifetime/Exit smoke.' }
         $smoke.Refresh()
         if ($smoke.ExitCode -ne 0) { Get-Content -LiteralPath $smokeError; throw "Published GUI smoke failed (exit code $($smoke.ExitCode))." }
+        if ($env:GITHUB_ACTIONS -eq 'true') {
+            if ($taskbarCounts.Count -ne 2 -or $taskbarCounts[1] -le ($taskbarCounts[2] + 8)) {
+                throw "Recording must visibly add red pixels to the isolated taskbar: active=$($taskbarCounts[1]), stopped=$($taskbarCounts[2])."
+            }
+            Write-Output "Visible CI taskbar: red pixels active=$($taskbarCounts[1]), stopped=$($taskbarCounts[2]); screenshots in $testRoot."
+        }
         Write-Output 'Published WinExe: isolated GUI startup, full diagnostic text selection, desktop lifetime and explicit Exit passed.'
     } finally {
         if (-not $smoke.HasExited) { $smoke.Kill(); [void]$smoke.WaitForExit(5000) }
