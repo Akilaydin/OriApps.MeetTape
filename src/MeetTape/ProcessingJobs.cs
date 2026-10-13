@@ -74,7 +74,7 @@ public sealed class ProcessingJobs : IDisposable
                     {
                         token.ThrowIfCancellationRequested();
                         if (session.Data is { } data && !blocked.Contains(session.Directory) && Eligible(data) && !RetryPending(session.Directory, data))
-                            await ProcessSessionAsync(session.Directory, token);
+                            await ProcessSessionAsync(session.Directory, token, data.Id);
                     }
                     await delay(TimeSpan.FromSeconds(1), token);
                 }
@@ -165,16 +165,13 @@ public sealed class ProcessingJobs : IDisposable
             if (activeSessions.ContainsKey(directory) || !cancelingSessions.Add(directory))
                 throw new InvalidOperationException("Cancel this meeting's processing and wait for it to finish before deleting.");
         }
-        bool removed = false;
-        try { remove(); removed = true; }
-        finally
-        {
-            // Keep successful removals excluded from any discovery snapshot already in flight.
-            if (!removed) lock (sessionGate) cancelingSessions.Remove(directory);
-        }
+        try { remove(); }
+        finally { lock (sessionGate) cancelingSessions.Remove(directory); }
     }
 
-    public async Task ProcessSessionAsync(string directory, CancellationToken token)
+    public Task ProcessSessionAsync(string directory, CancellationToken token) => ProcessSessionAsync(directory, token, null);
+
+    internal async Task ProcessSessionAsync(string directory, CancellationToken token, Guid? expectedId)
     {
         using var sessionCancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -183,7 +180,7 @@ public sealed class ProcessingJobs : IDisposable
             if (cancelingSessions.Contains(directory) || activeSessions.ContainsKey(directory)) return;
             activeSessions.Add(directory, (sessionCancellation, completion));
         }
-        try { await ProcessSessionCoreAsync(directory, sessionCancellation.Token); }
+        try { await ProcessSessionCoreAsync(directory, sessionCancellation.Token, expectedId); }
         catch (OperationCanceledException) when (sessionCancellation.IsCancellationRequested && !token.IsCancellationRequested) { }
         finally
         {
@@ -192,19 +189,21 @@ public sealed class ProcessingJobs : IDisposable
         }
     }
 
-    private async Task ProcessSessionCoreAsync(string directory, CancellationToken token)
+    private async Task ProcessSessionCoreAsync(string directory, CancellationToken token, Guid? expectedId)
     {
         var currentConfig = config;
         token.ThrowIfCancellationRequested();
         if (captureActive()) return;
         FileStream lease;
         try { lease = Lease(directory); }
+        catch (DirectoryNotFoundException) { return; }
         catch (IOException ex) when ((ex.HResult & 0xffff) is 32 or 33) { return; }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         { blocked.Add(directory); Report("Cannot acquire session lease; processing blocked in this process. Cannot save paused state without an exclusive lease. Check storage permissions.", NoticeKind.Error); return; }
         using (lease)
         {
             var data = SessionStore.Read(directory);
+            if (expectedId is { } id && data.Id != id) return;
             if (!Eligible(data) || RetryPending(directory, data)) return;
             string stage = "prepare";
             try

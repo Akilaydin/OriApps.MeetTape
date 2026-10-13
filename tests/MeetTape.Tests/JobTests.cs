@@ -11,6 +11,7 @@ public sealed class JobTests : IDisposable
     public async Task RemovalExcludesActiveJobsAndStaleSchedulerSnapshotsWithoutBlockingOtherMeetings()
     {
         string directory = Session(), other = Session();
+        Guid removedId = SessionStore.Read(directory).Id;
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         bool hold = true;
         using var handler = new Handler(async (_, token) =>
@@ -25,16 +26,27 @@ public sealed class JobTests : IDisposable
         Assert.Throws<InvalidOperationException>(() => jobs.RemoveInactiveSession(directory, () => throw new Exception("Must not remove active job")));
         jobs.Cancel(directory); await running;
         Assert.Throws<IOException>(() => jobs.RemoveInactiveSession(directory, () => throw new IOException("Fixture bin refused")));
-        bool removed = false;
-        jobs.RemoveInactiveSession(directory, () => removed = true);
-        Assert.True(removed);
-        // An already-discovered path must not run after successful removal, even if its metadata becomes eligible again.
-        SessionStore.Save(directory, SessionStore.Read(directory) with { JobState = JobState.NotStarted });
-        await jobs.ProcessSessionAsync(directory, default);
+        string bin = Path.Combine(root, "Fixture bin"); Directory.CreateDirectory(bin);
+        jobs.RemoveInactiveSession(directory, () => Directory.Move(directory, Path.Combine(bin, "removed")));
+        await jobs.ProcessSessionAsync(directory, default, removedId);
+        string replacement = Session(); Directory.Move(replacement, directory);
+        await jobs.ProcessSessionAsync(directory, default, removedId);
+        Assert.Equal(JobState.NotStarted, SessionStore.Read(directory).JobState);
         Assert.Equal(1, handler.Calls);
         hold = false;
-        await jobs.ProcessSessionAsync(other, default);
+        jobs.Start();
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        while (SessionStore.Read(directory).JobState != JobState.Completed || SessionStore.Read(other).JobState != JobState.Completed)
+        {
+            Assert.True(DateTimeOffset.UtcNow < deadline, "New session and unrelated meeting must remain schedulable after path reuse.");
+            await Task.Delay(10);
+        }
+        jobs.PauseAndWait();
+        Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
         Assert.Equal(JobState.Completed, SessionStore.Read(other).JobState);
+        bool secondRemoval = false;
+        jobs.RemoveInactiveSession(directory, () => secondRemoval = true);
+        Assert.True(secondRemoval);
     }
 
     [Fact]
