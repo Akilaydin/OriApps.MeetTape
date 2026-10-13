@@ -18,6 +18,8 @@ public sealed class App : Application
     private DesktopController? controller;
     private DispatcherTimer? timer;
     private TrayIcon? tray;
+    private WindowIcon? idleIcon;
+    private WindowIcon? recordingIcon;
     private NativeMenuItem? record;
     private NativeMenuItem? status;
     private NativeMenuItem? processingStatus;
@@ -54,6 +56,9 @@ public sealed class App : Application
             menu.Items.Add(status); menu.Items.Add(processingStatus); menu.Items.Add(open); menu.Items.Add(record); menu.Items.Add(exit);
             using var iconStream = AssetLoader.Open(new Uri("avares://MeetTape/Assets/MeetTape.ico"));
             var icon = new WindowIcon(iconStream);
+            idleIcon = icon;
+            using var recordingStream = AssetLoader.Open(new Uri("avares://MeetTape/Assets/MeetTape-recording.ico"));
+            recordingIcon = new WindowIcon(recordingStream);
             window.Icon = icon;
             tray = new TrayIcon { Icon = icon, ToolTipText = model.TrayText, Menu = menu };
             tray.Clicked += (_, _) => ShowWindow();
@@ -76,6 +81,11 @@ public sealed class App : Application
         if (processingStatus is not null) processingStatus.Header = model.ProcessingText;
         if (record is not null) { record.Header = model.RecordLabel; record.IsEnabled = model.CanRecord; }
         if (tray is not null) tray.ToolTipText = model.TrayText;
+        if (window is not null && tray is not null && idleIcon is not null && recordingIcon is not null)
+        {
+            var icon = model.IsRecording ? recordingIcon : idleIcon;
+            if (!ReferenceEquals(tray.Icon, icon)) { tray.Icon = icon; window.Icon = icon; }
+        }
     }
 
     private async Task InitializeAsync()
@@ -89,7 +99,20 @@ public sealed class App : Application
             timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
             timer.Tick += async (_, _) =>
             {
-                if (++tick == 3)
+                tick++;
+                if (tick == 1 || tick == 4)
+                {
+                    model.RefreshCapture(new(true, TimeSpan.FromSeconds(tick), 0, 0, null));
+                    if (!ReferenceEquals(tray!.Icon, recordingIcon) || !ReferenceEquals(window!.Icon, recordingIcon))
+                    { timer.Stop(); desktop!.Shutdown(1); return; }
+                }
+                if (tick == 2)
+                {
+                    model.RefreshCapture(new(false, TimeSpan.FromSeconds(1), 0, 0, "Fixture interruption"));
+                    if (!ReferenceEquals(tray!.Icon, idleIcon) || !ReferenceEquals(window!.Icon, idleIcon))
+                    { timer.Stop(); desktop!.Shutdown(1); return; }
+                }
+                if (tick == 3)
                 {
                     ShowWindow();
                     model.SetError("Smoke recording diagnostic. Original fixture detail retained for copying.");
@@ -101,7 +124,13 @@ public sealed class App : Application
                         || window!.Icon is null || !ReferenceEquals(window.Icon, tray.Icon))
                     { timer.Stop(); desktop!.Shutdown(1); return; }
                 }
-                if (tick == 5) { timer.Stop(); await ExitAsync(); }
+                if (tick == 5)
+                {
+                    model.RefreshCapture(new(false, TimeSpan.FromSeconds(1), 0, 0, null));
+                    if (!ReferenceEquals(tray!.Icon, idleIcon) || !ReferenceEquals(window!.Icon, idleIcon))
+                    { timer.Stop(); desktop!.Shutdown(1); return; }
+                    timer.Stop(); await ExitAsync();
+                }
             };
             timer.Start();
             return;
