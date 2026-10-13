@@ -19,6 +19,7 @@ public sealed class TranscriptTests : IDisposable
         var builder = new TranscriptAssembler();
         string first = await builder.BuildAsync(directory, data, default);
         string output = File.ReadAllText(Path.Combine(directory, "transcription.md"));
+        Assert.Contains("> Full transcript. Timestamps are approximate and relative to the original recording.", output);
         Assert.Equal(1, output.Split("MP3 track 42").Length - 1);
         Assert.Contains("Дополнительный аргумент: bitrate 96 килобит в секунду.", output);
         Assert.Contains("USB-C 3.2 — кабель, не адаптер.", output);

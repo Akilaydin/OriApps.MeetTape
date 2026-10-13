@@ -21,7 +21,7 @@ public sealed class SummaryTests : IDisposable
             var messages = body.RootElement.GetProperty("messages");
             Assert.Equal("system", messages[0].GetProperty("role").GetString());
             Assert.Equal("summary-prompt", messages[0].GetProperty("content").GetString());
-            Assert.Contains("Полная транскрипция", messages[1].GetProperty("content").GetString());
+            Assert.Contains("Full transcript", messages[1].GetProperty("content").GetString());
             return Reply();
         });
         using var http = new HttpClient(handler);

@@ -27,7 +27,7 @@ public sealed class TranscriptAssembler
                 using var writer = new StreamWriter(file, new UTF8Encoding(false), 8192, leaveOpen: true) { NewLine = "\n" };
                 writer.WriteLine("# " + (data.Title ?? "MeetTape").Replace('\r', ' ').Replace('\n', ' '));
                 writer.WriteLine();
-                writer.WriteLine("> Полная транскрипция. Таймкоды приблизительные, от начала оригинальной записи. Me/Them — оценки источника, не гарантированные личности.");
+                writer.WriteLine("> Full transcript. Timestamps are approximate and relative to the original recording. Me/Them are estimated sources, not verified identities.");
                 writer.WriteLine();
                 var pending = new List<Utterance>();
                 var previous = new List<Utterance>();

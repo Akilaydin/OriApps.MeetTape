@@ -21,9 +21,9 @@ public sealed class ChatApiClient(HttpClient client, Func<bool> captureActive,
     public const int MaxAudioBytes = 8 * 1024 * 1024;
     private const int MaxResponseBytes = 2 * 1024 * 1024;
     internal const string NoSpeechMarker = "[NO_SPEECH]";
-    public const string SourceInstruction = "\nСтерео: левый канал — Me, правый — Them. Микрофон Me может содержать эхо Them; одинаковую речь выводи один раз. " +
-        "Каждая реплика: [MM:SS] Me/Them/Unknown: текст. Таймкод приблизительный, от начала данного фрагмента. Не выдумывай имена; неясный источник — Unknown. " +
-        "Если во всём фрагменте нет речи, выведи только " + NoSpeechMarker + ". Не используй этот маркер для неразборчивой речи.";
+    public const string SourceInstruction = "\nStereo: the left channel is Me, the right channel is Them. The Me microphone may contain echoes of Them; output identical speech only once. " +
+        "Each utterance: [MM:SS] Me/Them/Unknown: text. Timestamps are approximate and relative to the start of this chunk. Do not invent names; use Unknown for an unclear source. " +
+        "If the entire chunk contains no speech, output only " + NoSpeechMarker + ". Do not use this marker for unintelligible speech.";
 
     public async Task<TranscriptionReply> TranscribeAsync(ApiSettings settings, string prompt, string audioPath, CancellationToken token)
     {

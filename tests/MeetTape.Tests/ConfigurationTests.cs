@@ -112,17 +112,28 @@ public sealed class ConfigurationTests : IDisposable
         var settings = ConfigurationLoader.Load(path);
         Assert.Equal(meetingsRoot, settings.MeetingsRoot);
         Assert.False(string.IsNullOrWhiteSpace(settings.ReadPrompt(settings.Settings.Transcription)));
+        string transcription = settings.ReadPrompt(settings.Settings.Transcription);
+        string summary = settings.ReadPrompt(settings.Settings.Summary);
+        Assert.StartsWith("Language: Russian (ru).", transcription);
+        Assert.Contains("summary in Russian", summary);
+        Assert.Contains("[inaudible]", transcription);
+        Assert.Contains("[MM:SS] Me/Them/Unknown: text", ChatApiClient.SourceInstruction);
+        Assert.Contains(ChatApiClient.NoSpeechMarker, ChatApiClient.SourceInstruction);
+        Assert.DoesNotMatch(@"[\p{IsCyrillic}\p{IsCJKUnifiedIdeographs}]", transcription + summary + ChatApiClient.SourceInstruction);
         string summaryPath = Path.Combine(directory, "user", "prompts", "summary.md");
         Assert.True(File.Exists(summaryPath));
         Assert.Empty(Directory.EnumerateFiles(Path.GetDirectoryName(path)!, "*.tmp", SearchOption.AllDirectories));
 
         string promptPath = Path.Combine(directory, "user", "prompts", "transcription.md");
         File.WriteAllText(promptPath, "Personal edited prompt");
+        File.WriteAllText(summaryPath, "Personal summary instructions — сохранить мой текст.");
+        byte[] summaryBytes = File.ReadAllBytes(summaryPath);
         string editedJson = File.ReadAllText(path).Replace("your-audio-model", "my-model", StringComparison.Ordinal);
         File.WriteAllText(path, editedJson);
 
         Assert.False(ConfigurationBootstrap.Initialize(path, Path.Combine(directory, "other")));
         Assert.Equal("Personal edited prompt", File.ReadAllText(promptPath));
+        Assert.Equal(summaryBytes, File.ReadAllBytes(summaryPath));
         Assert.Equal(editedJson, File.ReadAllText(path));
         Assert.Equal("my-model", ConfigurationLoader.Load(path).Settings.Transcription.Model);
     }
