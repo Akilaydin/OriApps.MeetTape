@@ -6,6 +6,22 @@ namespace MeetTape.UiTests;
 public sealed class RecordingControlTests
 {
     [Fact]
+    public void CancellationCallbackExposesTheRequiredWindowsComInterface()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var callback = new RecordingNotifications.ContinueNotification(cancellation.Token);
+        nint unknown = Marshal.GetIUnknownForObject(callback), pointer = 0;
+        try
+        {
+            var iid = new Guid("7307055C-B24A-486B-9F25-163E597A28A9");
+            Assert.Equal(0, Marshal.QueryInterface(unknown, in iid, out pointer));
+            Assert.Equal(0, callback.QueryContinue());
+            cancellation.Cancel(); Assert.Equal(1, callback.QueryContinue());
+        }
+        finally { if (pointer != 0) Marshal.Release(pointer); Marshal.Release(unknown); }
+    }
+
+    [Fact]
     public void RegistrationFailureHasClearDiagnosticAndSuccessfulRegistrationIsReleasedOnce()
     {
         int releases = 0;

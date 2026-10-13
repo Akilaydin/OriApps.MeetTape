@@ -37,6 +37,13 @@ internal sealed class RecordingHotkey : IDisposable
     private static extern bool UnregisterHotKey(nint window, int id);
 }
 
+// COM can query the cancellation interface only when its declaring type is publicly visible.
+[ComVisible(true), Guid("7307055C-B24A-486B-9F25-163E597A28A9"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IRecordingNotificationContinue
+{
+    [PreserveSig] int QueryContinue();
+}
+
 internal sealed class RecordingNotifications(Action unavailable,
     Action<OperationNotice, CancellationToken>? display = null) : IDisposable
 {
@@ -113,18 +120,12 @@ internal sealed class RecordingNotifications(Action unavailable,
             [MarshalAs(UnmanagedType.LPWStr)] string text, uint flags);
         [PreserveSig] int SetBalloonRetry(uint showTime, uint interval, uint retryCount);
         [PreserveSig] int SetIconInfo(nint icon, [MarshalAs(UnmanagedType.LPWStr)] string tooltip);
-        [PreserveSig] int Show(IQueryContinue query, uint pollInterval, nint callback);
+        [PreserveSig] int Show(IRecordingNotificationContinue query, uint pollInterval, nint callback);
         [PreserveSig] int PlaySound([MarshalAs(UnmanagedType.LPWStr)] string name);
     }
 
-    [ComVisible(true), Guid("7307055C-B24A-486B-9F25-163E597A28A9"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    public interface IQueryContinue
-    {
-        [PreserveSig] int QueryContinue();
-    }
-
     [ComVisible(true), ClassInterface(ClassInterfaceType.None)]
-    private sealed class ContinueNotification(CancellationToken token) : IQueryContinue
+    internal sealed class ContinueNotification(CancellationToken token) : IRecordingNotificationContinue
     {
         public int QueryContinue() => token.IsCancellationRequested ? 1 : 0;
     }
