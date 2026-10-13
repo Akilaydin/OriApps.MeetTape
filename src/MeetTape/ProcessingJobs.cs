@@ -73,7 +73,9 @@ public sealed class ProcessingJobs : IDisposable
                     foreach (var session in SessionStore.Discover(root, completedSessions, Eligible))
                     {
                         token.ThrowIfCancellationRequested();
-                        if (session.Data is { } data && !blocked.Contains(session.Directory) && Eligible(data) && !RetryPending(session.Directory, data))
+                        bool unavailable;
+                        lock (sessionGate) unavailable = blocked.Contains(session.Directory);
+                        if (session.Data is { } data && !unavailable && Eligible(data) && !RetryPending(session.Directory, data))
                             await ProcessSessionAsync(session.Directory, token, data.Id);
                     }
                     await delay(TimeSpan.FromSeconds(1), token);
@@ -107,7 +109,7 @@ public sealed class ProcessingJobs : IDisposable
         SessionStore.Save(directory, data with { Stages = stages, JobState = JobState.NotStarted, Error = null,
             Processing = data.Processing with { Transcription = config.Settings.Transcription, Summary = config.Settings.Summary,
                 ConfigurationDirectory = config.Directory } });
-        blocked.Remove(directory);
+        lock (sessionGate) blocked.Remove(directory);
         completedSessions.Remove(directory);
         observedRetries.Remove(directory);
         lock (sessionGate) cancelingSessions.Remove(directory);
@@ -154,7 +156,7 @@ public sealed class ProcessingJobs : IDisposable
         SessionStore.Save(directory, data with { Stages = new(data.Stages) { ["summary"] = new(true, StageState.Pending) },
             JobState = JobState.NotStarted, Error = null, Processing = data.Processing with
             { Summary = config.Settings.Summary with { PromptFile = config.Resolve(config.Settings.Summary.PromptFile) } } });
-        blocked.Remove(directory);
+        lock (sessionGate) blocked.Remove(directory);
         completedSessions.Remove(directory);
     }
 
@@ -165,7 +167,11 @@ public sealed class ProcessingJobs : IDisposable
             if (activeSessions.ContainsKey(directory) || !cancelingSessions.Add(directory))
                 throw new InvalidOperationException("Cancel this meeting's processing and wait for it to finish before deleting.");
         }
-        try { remove(); }
+        try
+        {
+            remove();
+            lock (sessionGate) blocked.Remove(directory);
+        }
         finally { lock (sessionGate) cancelingSessions.Remove(directory); }
     }
 
@@ -199,7 +205,7 @@ public sealed class ProcessingJobs : IDisposable
         catch (DirectoryNotFoundException) { return; }
         catch (IOException ex) when ((ex.HResult & 0xffff) is 32 or 33) { return; }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        { blocked.Add(directory); Report("Cannot acquire session lease; processing blocked in this process. Cannot save paused state without an exclusive lease. Check storage permissions.", NoticeKind.Error); return; }
+        { lock (sessionGate) blocked.Add(directory); Report("Cannot acquire session lease; processing blocked in this process. Cannot save paused state without an exclusive lease. Check storage permissions.", NoticeKind.Error); return; }
         using (lease)
         {
             var data = SessionStore.Read(directory);
@@ -286,7 +292,7 @@ public sealed class ProcessingJobs : IDisposable
             catch (Exception ex) when (ex is ChatApiException or InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException
                 || ex is InvalidOperationException and not AudioPreparationShutdownException)
             {
-                blocked.Add(directory);
+                lock (sessionGate) blocked.Add(directory);
                 SavePause(directory, data, stage, StageState.Paused,
                     ex is ChatApiException apiError ? apiError.Message : "Processing paused; check selected audio, saved chunks, FFmpeg, metadata and filesystem.", permanent: true);
             }
@@ -348,7 +354,7 @@ public sealed class ProcessingJobs : IDisposable
         try { SessionStore.Save(directory, (data.Stages.ContainsKey(stage) ? Update(data, stage, state) : data)
             with { JobState = permanent ? JobState.Paused : JobState.NotStarted, Error = diagnostic }); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        { blocked.Add(directory); diagnostic += " Cannot save paused state; prior disk state retained, session blocked in this process."; }
+        { lock (sessionGate) blocked.Add(directory); diagnostic += " Cannot save paused state; prior disk state retained, session blocked in this process."; }
         Report($"Job {data.Id}: {diagnostic}", permanent ? NoticeKind.Error : NoticeKind.Warning, data.Id);
     }
 

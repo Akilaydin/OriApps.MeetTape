@@ -8,6 +8,39 @@ namespace MeetTape.Tests;
 public sealed class JobTests : IDisposable
 {
     [Fact]
+    public async Task RecycledStorageFailureDoesNotLeaveReplacementBlockedInTheScheduler()
+    {
+        string directory = Session();
+        bool fail = true;
+        using var handler = new Handler((_, _) =>
+        {
+            if (fail)
+            {
+                File.SetAttributes(Path.Combine(directory, "session.json"), FileAttributes.ReadOnly);
+                return Task.FromResult(Response(400));
+            }
+            return Task.FromResult(Response());
+        });
+        using var http = new HttpClient(handler);
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "fixture-key");
+        await jobs.ProcessSessionAsync(directory, default);
+        File.SetAttributes(Path.Combine(directory, "session.json"), FileAttributes.Normal);
+        jobs.Cancel(directory);
+        string bin = Path.Combine(root, "Fixture bin"); Directory.CreateDirectory(bin);
+        jobs.RemoveInactiveSession(directory, () => Directory.Move(directory, Path.Combine(bin, "removed")));
+        string replacement = Session(); Directory.Move(replacement, directory);
+        fail = false; jobs.Start();
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        while (SessionStore.Read(directory).JobState != JobState.Completed)
+        {
+            Assert.True(DateTimeOffset.UtcNow < deadline, "A removed session's storage failure must not block a new identity at its old path.");
+            await Task.Delay(10);
+        }
+        jobs.PauseAndWait();
+        Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
+    }
+
+    [Fact]
     public async Task RemovalExcludesActiveJobsAndStaleSchedulerSnapshotsWithoutBlockingOtherMeetings()
     {
         string directory = Session(), other = Session();
