@@ -64,6 +64,7 @@ public sealed class UpdateTests
         Assert.Equal(75, window.FindControl<ProgressBar>("UpdateProgress")!.Value);
         Assert.False(model.CanRecord); Assert.False(model.CanConfigure);
         await model.ToggleAsync(); Assert.Equal(0, controller.Starts);
+        await model.ToggleFromHotkeyAsync(); Assert.Equal(0, controller.Starts);
         Assert.False(await model.ShutdownAsync());
         controller.Join.SetResult();
         Assert.True(await operation); Assert.Equal(1, updates.Applies);
@@ -158,6 +159,7 @@ public sealed class UpdateTests
         public int Starts, Shutdowns;
         public TaskCompletionSource? Join;
         public event Action<OperationNotice>? Notice { add { } remove { } }
+        public event Action<CaptureStatus>? RecordingChanged { add { } remove { } }
         public Task<DesktopSnapshot> ReadAsync() => Task.FromResult(new DesktopSnapshot(new(Recording, TimeSpan.Zero, 0, 0, null), [], null, null, false, null));
         public Task StartAsync() { Starts++; Recording = true; return Task.CompletedTask; }
         public Task<string?> StopAsync() => Task.FromResult<string?>(null);

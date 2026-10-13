@@ -12,6 +12,7 @@ public sealed record DesktopSnapshot(CaptureStatus Capture, IReadOnlyList<Stored
 public interface IDesktopController
 {
     event Action<OperationNotice>? Notice;
+    event Action<CaptureStatus>? RecordingChanged;
     Task<DesktopSnapshot> ReadAsync();
     Task StartAsync();
     Task<string?> StopAsync();
@@ -36,6 +37,7 @@ public sealed class DesktopController : IDesktopController
     private Task? shutdown;
 
     public event Action<OperationNotice>? Notice;
+    public event Action<CaptureStatus>? RecordingChanged;
 
     public DesktopController(LoadedConfiguration config, CaptureCoordinator? capture = null,
         HttpClient? http = null, Func<ApiSettings, string>? readKey = null,
@@ -54,6 +56,7 @@ public sealed class DesktopController : IDesktopController
         this.capture.Warning += Warn;
         this.capture.Failed += Fail;
         this.capture.Finished += Finished;
+        this.capture.Started += PublishRecording;
         preparation.Notice += Publish;
         jobs.Notice += Publish;
     }
@@ -147,6 +150,7 @@ public sealed class DesktopController : IDesktopController
 
     private void Finished(CaptureStatus status)
     {
+        PublishRecording(status);
         if (status.Error is null || closing) return;
         // Finished is raised under the capture lock. Do not take our gate or join jobs there.
         _ = RestartAfterFailureAsync();
@@ -159,6 +163,11 @@ public sealed class DesktopController : IDesktopController
     }
 
     private void Warn(string message) => Publish(new(NoticeKind.Warning, message));
+    private void PublishRecording(CaptureStatus status)
+    {
+        try { RecordingChanged?.Invoke(status); }
+        catch (Exception) { /* Notifications cannot affect capture or finalization. */ }
+    }
     private void Fail(string message) => Publish(new(NoticeKind.Error, message));
     private void Publish(OperationNotice notice)
     {
@@ -195,6 +204,7 @@ public sealed class DesktopController : IDesktopController
                 capture.Warning -= Warn;
                 capture.Failed -= Fail;
                 capture.Finished -= Finished;
+                capture.Started -= PublishRecording;
             }).ConfigureAwait(false);
         }
         finally { gate.Release(); }

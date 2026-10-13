@@ -50,6 +50,7 @@ public sealed class CaptureCoordinator(
     public event Action<string>? Failed;
     internal event Action<string>? Warning;
     public event Action<CaptureStatus>? Finished;
+    internal event Action<CaptureStatus>? Started;
     public string? RecordingDirectory { get; internal set; }
     public long AudioFrames { get; internal set; }
     public int Discontinuities { get; internal set; }
@@ -124,6 +125,8 @@ public sealed class CaptureCoordinator(
                 Volatile.Write(ref active, sources);
                 sources.Me.StartRecording();
                 sources.Them.StartRecording();
+                try { Started?.Invoke(Status); }
+                catch (Exception) { /* Status notifications cannot affect capture. */ }
             }
             catch (Exception ex)
             {
