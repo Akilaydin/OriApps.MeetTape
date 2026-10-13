@@ -280,6 +280,32 @@ public sealed class TrimmingTests : IDisposable
     };
 
     [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ExitAfterDefaultNameCollisionStillCompletesAndRetainsFinalizedSource(bool stopFirst)
+    {
+        var controller = new DesktopController(RecordingConfiguration(), openSources: _ => new(new Source(), new Source()));
+        var notices = new List<OperationNotice>();
+        controller.Notice += notices.Add;
+        await controller.StartAsync();
+        var initial = (await controller.ReadAsync()).Sessions.Single();
+        string collision = Path.Combine(root, $"Unnamed meeting_{initial.Data!.StartedAtUtc.ToLocalTime():dd.MM.yyyy HH-mm} 00h00m");
+        Directory.CreateDirectory(collision); File.WriteAllText(Path.Combine(collision, "keep.txt"), "Untouched");
+        if (stopFirst) await Assert.ThrowsAsync<InvalidOperationException>(controller.StopAsync);
+        byte[]? audio = stopFirst ? File.ReadAllBytes(Path.Combine(initial.Directory, "me.mp3")) : null;
+        await controller.ShutdownAsync();
+        await controller.ShutdownAsync();
+        var saved = Assert.Single(SessionStore.Discover(root));
+        Assert.Equal(initial.Directory, saved.Directory);
+        Assert.Equal(initial.Data.Id, saved.Data!.Id);
+        Assert.Equal(RecordingState.Recorded, saved.Data.RecordingState);
+        if (audio is not null) Assert.Equal(audio, File.ReadAllBytes(Path.Combine(saved.Directory, "me.mp3")));
+        Assert.True(saved.MePresent && saved.ThemPresent);
+        Assert.Equal("Untouched", File.ReadAllText(Path.Combine(collision, "keep.txt")));
+        Assert.Contains(notices, n => n.Kind == NoticeKind.Error);
+    }
+
+    [Theory]
     [InlineData("12.5", 12.5)]
     [InlineData("01:23.5", 83.5)]
     [InlineData("02:01:03", 7263)]

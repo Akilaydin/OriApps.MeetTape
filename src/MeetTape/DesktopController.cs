@@ -211,8 +211,9 @@ public sealed class DesktopController : IDesktopController
                         if (capture.Status.Error is null && (recording || awaitingTitle is not null))
                         {
                             awaitingTitle = capture.RecordingDirectory;
-                            _ = FinalizeFolderName();
-                            awaitingTitle = null;
+                            try { _ = FinalizeFolderName(); awaitingTitle = null; }
+                            catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidOperationException)
+                            { Fail("Cannot apply readable folder name; finalized recording kept in its original folder. Check collisions and permissions."); }
                         }
                     }
                 }
