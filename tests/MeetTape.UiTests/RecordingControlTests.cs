@@ -68,15 +68,17 @@ public sealed class RecordingControlTests
         Assert.Equal(2, deliveries); Assert.Equal(0, failures);
     }
 
-    [Fact]
-    public async Task UnavailableNotificationReportsSafeDiagnosticAndCanRetry()
+    [Theory]
+    [InlineData(unchecked((int)0x80004005))]
+    [InlineData(unchecked((int)0x800704C7))]
+    public async Task UnavailableNotificationReportsSafeDiagnosticAndCanRetry(int failureCode)
     {
         var reported = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var delivered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         int attempts = 0;
         using var notifications = new RecordingNotifications(() => reported.SetResult(), (_, _) =>
         {
-            if (Interlocked.Increment(ref attempts) == 1) throw new COMException("Fixture unavailable");
+            if (Interlocked.Increment(ref attempts) == 1) throw new COMException("Fixture unavailable", failureCode);
             delivered.SetResult();
         });
         notifications.Show(new(NoticeKind.Information, "Recording started"));
@@ -87,7 +89,7 @@ public sealed class RecordingControlTests
     }
 
     [WindowsCiFact, Trait("Category", "NativeWindows")]
-    public void WindowsRegistrationMessageRoutingReleaseAndNotificationApiSmoke()
+    public void WindowsRegistrationMessageRoutingConflictAndRelease()
     {
         // Only the disposable Windows CI runner. No key simulation, capture or user configuration.
         _ = PeekMessage(out _, 0, 0, 0, 0);
@@ -99,8 +101,21 @@ public sealed class RecordingControlTests
             Assert.True(hotkey.Matches(message.Id, message.WParam));
         }
         Assert.True(RegisterOnOtherThread());
-        RecordingNotifications.ShowNative(new(NoticeKind.Information, "MeetTape CI recording status fixture"), TestContext.Current.CancellationToken);
-        // Successful API delivery cannot prove visibility when Windows suppresses notifications.
+    }
+
+    [WindowsCiFact, Trait("Category", "NativeWindows")]
+    public void WindowsNotificationApiSmokeAllowsOperatingSystemCancellation()
+    {
+        try
+        {
+            RecordingNotifications.ShowNative(new(NoticeKind.Information, "MeetTape CI recording status fixture"), TestContext.Current.CancellationToken);
+            TestContext.Current.TestOutputHelper?.WriteLine("Windows notification API completed; visual visibility is not asserted.");
+        }
+        catch (COMException error) when (error.HResult == unchecked((int)0x800704C7))
+        {
+            // Hosted Windows can suppress balloons. All other interop/registration failures still fail CI.
+            TestContext.Current.TestOutputHelper?.WriteLine("Windows canceled notification display (ERROR_CANCELLED); visual delivery remains unverified. Fallback/retry is covered by fake delivery tests.");
+        }
     }
 
     private static bool RegisterOnOtherThread()
