@@ -168,6 +168,7 @@ public sealed class ProcessingJobs : IDisposable
             activeSessions.Add(directory, (sessionCancellation, completion));
         }
         try { await ProcessSessionCoreAsync(directory, sessionCancellation.Token); }
+        catch (OperationCanceledException) when (sessionCancellation.IsCancellationRequested && !token.IsCancellationRequested) { }
         finally
         {
             lock (sessionGate) activeSessions.Remove(directory);

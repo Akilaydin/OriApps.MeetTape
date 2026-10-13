@@ -520,6 +520,32 @@ public sealed class JobTests : IDisposable
         Assert.Equal(JobState.Canceled, SessionStore.Read(directory).JobState);
     }
 
+    [Fact]
+    public async Task CancelRacingSessionStartupDoesNotFaultProcessing()
+    {
+        bool holdRequests = true;
+        using var handler = new Handler(async (_, token) =>
+        {
+            if (holdRequests) await Task.Delay(Timeout.Infinite, token);
+            return Response();
+        });
+        using var http = new HttpClient(handler);
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key");
+        for (int attempt = 0; attempt < 100; attempt++)
+        {
+            string directory = Session(120);
+            Task processing = Task.Run(() => jobs.ProcessSessionAsync(directory, default));
+            await Task.Yield();
+            await Task.Run(() => jobs.Cancel(directory));
+            await processing.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(JobState.Canceled, SessionStore.Read(directory).JobState);
+        }
+        string other = Session(120);
+        holdRequests = false;
+        await jobs.ProcessSessionAsync(other, default);
+        Assert.Equal(JobState.Completed, SessionStore.Read(other).JobState);
+    }
+
     internal string Session(int seconds = 1)
     {
         var data = new SessionData
