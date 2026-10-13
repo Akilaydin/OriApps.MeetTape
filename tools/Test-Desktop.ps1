@@ -29,12 +29,14 @@ public static class MeetTapeIconProbe {
         IntPtr[] icons, uint[] ids, uint count, uint flags);
     [DllImport("user32.dll")] private static extern bool DestroyIcon(IntPtr icon);
     public static bool Matches(string executable, string reference, int size) {
-        var icons = new IntPtr[1];
-        if (Extract(executable, 0, size, size, icons, new uint[1], 1, 0) != 1 || icons[0] == IntPtr.Zero)
-            throw new InvalidOperationException("Cannot extract executable icon.");
+        var icons = new IntPtr[1]; var sourceIcons = new IntPtr[1];
         try {
+            if (Extract(executable, 0, size, size, icons, new uint[1], 1, 0) != 1 || icons[0] == IntPtr.Zero)
+                throw new InvalidOperationException("Cannot extract executable icon.");
+            if (Extract(reference, 0, size, size, sourceIcons, new uint[1], 1, 0) != 1 || sourceIcons[0] == IntPtr.Zero)
+                throw new InvalidOperationException("Cannot extract source icon.");
             using (var actualIcon = Icon.FromHandle(icons[0]))
-            using (var expectedIcon = new Icon(reference, size, size))
+            using (var expectedIcon = Icon.FromHandle(sourceIcons[0]))
             using (var actual = actualIcon.ToBitmap())
             using (var expected = expectedIcon.ToBitmap()) {
                 if (actual.Width != size || actual.Height != size || expected.Width != size || expected.Height != size)
@@ -46,7 +48,10 @@ public static class MeetTapeIconProbe {
                 }
                 return true;
             }
-        } finally { DestroyIcon(icons[0]); }
+        } finally {
+            if (icons[0] != IntPtr.Zero) DestroyIcon(icons[0]);
+            if (sourceIcons[0] != IntPtr.Zero) DestroyIcon(sourceIcons[0]);
+        }
     }
 }
 '@
