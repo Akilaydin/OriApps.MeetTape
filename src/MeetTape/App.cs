@@ -32,6 +32,7 @@ public sealed class App : Application
     private RecordingNotifications? notifications;
     private RecordingTaskbar? taskbar;
     private uint taskbarButtonCreated;
+    private bool taskbarCreated;
 
     public override void Initialize() => Styles.Add(new FluentTheme());
 
@@ -42,6 +43,8 @@ public sealed class App : Application
             desktop = lifetime;
             desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
             window = new MainWindow { DataContext = model };
+            taskbarButtonCreated = RegisterWindowMessage("TaskbarButtonCreated");
+            Win32Properties.AddWndProcHookCallback(window, TaskbarMessage);
             desktop.MainWindow = window;
             window.OpenSettings = OpenSettingsAsync;
             window.ExitApplication = ExitAsync;
@@ -202,10 +205,9 @@ public sealed class App : Application
         if (taskbar is not null || window?.TryGetPlatformHandle()?.Handle is not { } handle || handle == 0) return;
         try
         {
-            taskbarButtonCreated = RegisterWindowMessage("TaskbarButtonCreated");
             taskbar = new RecordingTaskbar(handle);
-            Win32Properties.AddWndProcHookCallback(window, TaskbarMessage);
             taskbar.Update(model.IsRecording);
+            if (taskbarCreated) taskbar.Restore();
         }
         catch (Exception error)
         {
@@ -216,7 +218,11 @@ public sealed class App : Application
 
     private nint TaskbarMessage(nint handle, uint message, nint wParam, nint lParam, ref bool handled)
     {
-        if (taskbarButtonCreated != 0 && message == taskbarButtonCreated) taskbar?.Restore();
+        if (taskbarButtonCreated != 0 && message == taskbarButtonCreated)
+        {
+            taskbarCreated = true;
+            taskbar?.Restore();
+        }
         return 0;
     }
 
