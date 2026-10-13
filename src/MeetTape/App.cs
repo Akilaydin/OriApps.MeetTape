@@ -30,6 +30,8 @@ public sealed class App : Application
     private bool initializingController;
     private IAppUpdates? updates;
     private RecordingHotkey? hotkey;
+    private bool hotkeyHooked;
+    internal Func<string, int, RecordingHotkey>? HotkeyFactory { get; set; }
     private RecordingNotifications? notifications;
     private RecordingTaskbar? taskbar;
     private uint taskbarButtonCreated;
@@ -104,7 +106,7 @@ public sealed class App : Application
     {
         if (status is not null) status.Header = model.CaptureText;
         if (processingStatus is not null) processingStatus.Header = model.ProcessingText;
-        if (record is not null) { record.Header = model.RecordLabel + " (Ctrl+Shift+F9)"; record.IsEnabled = model.CanRecord; }
+        if (record is not null) { record.Header = model.RecordLabel + " (" + model.RecordingShortcut + ")"; record.IsEnabled = model.CanRecord; }
         if (tray is not null) tray.ToolTipText = model.TrayText;
         if (window is not null && tray is not null && idleIcon is not null && recordingIcon is not null)
         {
@@ -172,6 +174,7 @@ public sealed class App : Application
             model.PropertyChanged -= ModelChanged;
             model.Detach();
             model = new MainViewModel(controller, notice => notifications?.Show(notice));
+            model.SetRecordingShortcut(config.Settings.RecordingHotkey);
             model.PropertyChanged += ModelChanged;
             window!.DataContext = model;
             await controller.InitializeAsync();
@@ -247,16 +250,41 @@ public sealed class App : Application
         if (hotkey is not null || window is null) return;
         try
         {
-            nint handle = window.TryGetPlatformHandle()?.Handle ?? 0;
-            if (handle == 0) throw new InvalidOperationException("Ctrl+Shift+F9 is unavailable. Use Start/Stop buttons or the tray.");
-            hotkey = new(handle);
-            Win32Properties.AddWndProcHookCallback(window, HotkeyMessage);
+            hotkey = CreateHotkey(model.RecordingShortcut, RecordingHotkey.Id);
         }
         catch (Exception)
         {
             hotkey?.Dispose(); hotkey = null;
-            model.SetInfo("Ctrl+Shift+F9 is unavailable or already in use. Start/Stop buttons and tray remain available.");
+            model.SetInfo($"{model.RecordingShortcut} is unavailable or already in use. Start/Stop buttons and tray remain available.");
         }
+    }
+
+    private RecordingHotkey CreateHotkey(string shortcut, int id)
+    {
+        if (HotkeyFactory is { } factory) return factory(shortcut, id);
+        nint handle = window?.TryGetPlatformHandle()?.Handle ?? 0;
+        if (handle == 0) throw new InvalidOperationException("Recording hotkey is unavailable. Use Start/Stop buttons or the tray.");
+        if (!hotkeyHooked)
+        {
+            Win32Properties.AddWndProcHookCallback(window!, HotkeyMessage);
+            hotkeyHooked = true;
+        }
+        return new RecordingHotkey(handle, shortcut, id);
+    }
+
+    internal Action<bool> PrepareHotkey(string shortcut)
+    {
+        if (hotkey?.Shortcut == shortcut) return _ => { };
+        RecordingHotkey candidate;
+        try { candidate = CreateHotkey(shortcut, hotkey?.RegistrationId == RecordingHotkey.Id ? RecordingHotkey.Id + 1 : RecordingHotkey.Id); }
+        catch (InvalidOperationException error) { throw new InvalidDataException(error.Message); }
+        return saved =>
+        {
+            if (!saved || allowShutdown) { candidate.Dispose(); return; }
+            var previous = hotkey; hotkey = candidate;
+            previous?.Dispose();
+            model.SetRecordingShortcut(candidate.Shortcut);
+        };
     }
 
     private nint HotkeyMessage(nint handle, uint message, nint wParam, nint lParam, ref bool handled)
@@ -279,7 +307,7 @@ public sealed class App : Application
             IReadOnlyList<AudioDevice> devices;
             try { devices = await Task.Run(AudioDevices.List); }
             catch (Exception) { devices = []; model.SetError("Cannot enumerate devices. Check Windows Audio service and permissions."); }
-            var settings = await Task.Run(() => new SettingsViewModel(ConfigPath, devices, applySettings: ApplySettingsAsync));
+            var settings = await Task.Run(() => new SettingsViewModel(ConfigPath, devices, applySettings: ApplySettingsAsync, prepareHotkey: PrepareHotkey));
             var dialog = new SettingsWindow { DataContext = settings, Icon = window.Icon };
             ShowWindow();
             await dialog.ShowDialog(window);

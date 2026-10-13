@@ -19,6 +19,119 @@ public sealed class SettingsTests : IDisposable
     private SettingsViewModel Model(Func<LoadedConfiguration, Task>? apply = null) => new(ConfigPath, [], (_, _, _) => { }, apply);
 
     [AvaloniaFact]
+    public async Task RecordingShortcutSaveUpdatesRuntimeLabelsAndReloadsThePersistedChoice()
+    {
+        using var keys = new HotkeyFixture();
+        var model = new SettingsViewModel(ConfigPath, [], (_, _, _) => { }, prepareHotkey: keys.App.PrepareHotkey);
+        Assert.Equal(RecordingHotkey.DefaultShortcut, model.RecordingHotkey);
+        var settings = new SettingsWindow { DataContext = model }; settings.Show();
+        var main = new MainWindow { DataContext = keys.Model }; main.Show();
+        settings.FindControl<TextBox>("RecordingHotkey")!.Text = "ctrl + alt + F10";
+        Assert.True(model.HasUnsavedChanges);
+        await model.SaveAsync();
+        Assert.True(model.Saved); Assert.False(model.HasUnsavedChanges);
+        Assert.Equal("Ctrl+Alt+F10", keys.Model.RecordingShortcut);
+        Assert.Equal("Ctrl+Alt+F10 · Start / Stop", main.FindControl<TextBlock>("RecordingShortcut")!.Text);
+        Assert.Single(keys.Registered); Assert.Contains((0x4003u, 0x79u), keys.Registered.Values);
+        Assert.Equal("Ctrl+Alt+F10", Model().RecordingHotkey);
+        Assert.Equal("Ctrl+Alt+F10", ConfigurationLoader.Load(ConfigPath).Settings.RecordingHotkey);
+        settings.Close(); main.AllowClose = true; main.Close();
+    }
+
+    [AvaloniaFact]
+    public async Task OccupiedShortcutAndFailedPersistenceKeepTheOldBindingAndReleaseTheCandidate()
+    {
+        using var keys = new HotkeyFixture();
+        string original = File.ReadAllText(ConfigPath);
+        keys.Registered[99] = (0x4003u, 0x79u);
+        var model = new SettingsViewModel(ConfigPath, [], (_, _, _) => { }, prepareHotkey: keys.App.PrepareHotkey)
+            { RecordingHotkey = "Ctrl+Alt+F10" };
+        await model.SaveAsync();
+        Assert.False(model.Saved); Assert.Contains("already in use", model.Message);
+        Assert.Equal(original, File.ReadAllText(ConfigPath)); Assert.Equal(RecordingHotkey.DefaultShortcut, keys.Model.RecordingShortcut);
+        keys.Registered.Remove(99);
+        var priorFactory = keys.App.HotkeyFactory!;
+        keys.App.HotkeyFactory = (text, id) =>
+        {
+            var candidate = priorFactory(text, id);
+            var external = JsonNode.Parse(original)!; external["meetingsRoot"] = "External fixture folder";
+            File.WriteAllText(ConfigPath, external.ToJsonString());
+            return candidate;
+        };
+        await model.SaveAsync();
+        Assert.False(model.Saved); Assert.Contains("changed during editing", model.Message);
+        Assert.Equal(RecordingHotkey.DefaultShortcut, keys.Model.RecordingShortcut);
+        Assert.Single(keys.Registered); Assert.Contains((0x4006u, 0x78u), keys.Registered.Values);
+    }
+
+    [AvaloniaFact]
+    public void DiscardingAnEditedShortcutDoesNotApplyItOrChangeExistingConfiguration()
+    {
+        using var keys = new HotkeyFixture();
+        string original = File.ReadAllText(ConfigPath);
+        var model = new SettingsViewModel(ConfigPath, [], (_, _, _) => { }, prepareHotkey: keys.App.PrepareHotkey);
+        var settings = new SettingsWindow { DataContext = model, ConfirmDiscard = () => Task.FromResult(true) }; settings.Show();
+        settings.FindControl<TextBox>("RecordingHotkey")!.Text = "Ctrl+Alt+F10";
+        settings.Close();
+        Assert.False(model.Saved); Assert.Equal(original, File.ReadAllText(ConfigPath));
+        Assert.Equal(RecordingHotkey.DefaultShortcut, keys.Model.RecordingShortcut);
+        Assert.Single(keys.Registered); Assert.Contains((0x4006u, 0x78u), keys.Registered.Values);
+    }
+
+    [AvaloniaFact]
+    public async Task SavedConfigurationKeepsTheNewShortcutAppliedEvenWhenKeyPersistenceFailsAfterReplacement()
+    {
+        using var keys = new HotkeyFixture();
+        var model = new SettingsViewModel(ConfigPath, [], (_, _, _) => throw new UnauthorizedAccessException("Fixture key failure"),
+            prepareHotkey: keys.App.PrepareHotkey)
+        { RecordingHotkey = "Ctrl+Alt+F10", NewTranscriptionKey = "fixture-key" };
+        await model.SaveAsync();
+        Assert.False(model.Saved); Assert.Contains("Cannot save API key", model.Message);
+        Assert.Equal("Ctrl+Alt+F10", keys.Model.RecordingShortcut);
+        Assert.Equal("Ctrl+Alt+F10", ConfigurationLoader.Load(ConfigPath).Settings.RecordingHotkey);
+        Assert.Single(keys.Registered); Assert.Contains((0x4003u, 0x79u), keys.Registered.Values);
+    }
+
+    [AvaloniaFact]
+    public async Task SavingOtherSettingsDoesNotRequireRegisteringAnUnchangedUnavailableShortcut()
+    {
+        int prepares = 0;
+        var model = new SettingsViewModel(ConfigPath, [], (_, _, _) => { }, prepareHotkey: _ =>
+        { prepares++; throw new InvalidDataException("Fixture occupied shortcut"); }) { ChunkSeconds = "90" };
+        await model.SaveAsync();
+        Assert.True(model.Saved); Assert.Equal(0, prepares);
+        Assert.Equal(90, ConfigurationLoader.Load(ConfigPath).Settings.ChunkSeconds);
+    }
+
+    private sealed class HotkeyFixture : IDisposable
+    {
+        internal App App { get; } = (App)Avalonia.Application.Current!;
+        internal MainViewModel Model { get; }
+        internal Dictionary<int, (uint Modifiers, uint Key)> Registered { get; } = [];
+        private readonly System.Reflection.FieldInfo field = typeof(App).GetField("hotkey", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        private readonly object? original;
+        private readonly Func<string, int, RecordingHotkey>? originalFactory;
+        private readonly string originalShortcut;
+        internal HotkeyFixture()
+        {
+            Model = (MainViewModel)typeof(App).GetField("model", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(App)!;
+            original = field.GetValue(App); originalFactory = App.HotkeyFactory; originalShortcut = Model.RecordingShortcut;
+            App.HotkeyFactory = (text, id) => new RecordingHotkey(123, text, id, (_, slot, modifiers, key) =>
+            {
+                if (Registered.Values.Contains((modifiers, key))) return false;
+                Registered.Add(slot, (modifiers, key)); return true;
+            }, (_, slot) => Registered.Remove(slot));
+            field.SetValue(App, App.HotkeyFactory(RecordingHotkey.DefaultShortcut, RecordingHotkey.Id));
+            Model.SetRecordingShortcut(RecordingHotkey.DefaultShortcut);
+        }
+        public void Dispose()
+        {
+            ((RecordingHotkey?)field.GetValue(App))?.Dispose();
+            field.SetValue(App, original); App.HotkeyFactory = originalFactory; Model.SetRecordingShortcut(originalShortcut);
+        }
+    }
+
+    [AvaloniaFact]
     public async Task BothPromptEditorsLoadRelativeFilesAndSaveExactUtf8WithoutRestart()
     {
         string before = File.ReadAllText(ConfigPath);

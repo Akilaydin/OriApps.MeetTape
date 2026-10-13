@@ -13,11 +13,13 @@ public sealed record DeviceChoice(string? Id, string Label)
 public sealed class SettingsViewModel : INotifyPropertyChanged
 {
     private string original;
+    private string originalRecordingHotkey;
     private string[] originalFields;
     private PromptDocument transcriptionDocument;
     private PromptDocument summaryDocument;
     private readonly Action<string, string, EnvironmentVariableTarget>? setKey;
     private readonly Func<LoadedConfiguration, Task>? applySettings;
+    private readonly Func<string, Action<bool>>? prepareHotkey;
     public string ConfigurationPath { get; }
     public IReadOnlyList<DeviceChoice> Microphones { get; }
     public IReadOnlyList<DeviceChoice> PlaybackDevices { get; }
@@ -25,6 +27,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     public DeviceChoice Playback { get; set; }
     public string MeetingsRoot { get; set; }
     public string FfmpegPath { get; set; }
+    public string RecordingHotkey { get; set; }
     public bool Trim { get; set; }
     public bool Transcribe { get; set; }
     public bool Summary { get; set; }
@@ -53,16 +56,19 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
 
     public SettingsViewModel(string path, IReadOnlyList<AudioDevice> devices,
         Action<string, string, EnvironmentVariableTarget>? setKey = null,
-        Func<LoadedConfiguration, Task>? applySettings = null)
+        Func<LoadedConfiguration, Task>? applySettings = null, Func<string, Action<bool>>? prepareHotkey = null)
     {
         ConfigurationPath = Path.GetFullPath(path);
         this.setKey = setKey;
         this.applySettings = applySettings;
+        this.prepareHotkey = prepareHotkey;
         original = File.ReadAllText(ConfigurationPath);
         var settings = ConfigurationLoader.Parse(original, ConfigurationPath, validatePrompts: false).Settings;
         var json = JsonNode.Parse(original)!;
         MeetingsRoot = settings.MeetingsRoot;
         FfmpegPath = json["capture"]?["ffmpegPath"]?.GetValue<string>() ?? "ffmpeg";
+        RecordingHotkey = MeetTape.RecordingHotkey.Parse(settings.RecordingHotkey).Text;
+        originalRecordingHotkey = RecordingHotkey;
         Trim = settings.Stages.Trim; Transcribe = settings.Stages.Transcribe; Summary = settings.Stages.Summary;
         ChunkSeconds = settings.ChunkSeconds.ToString(CultureInfo.InvariantCulture);
         TranscriptionEndpoint = settings.Transcription.Endpoint; TranscriptionModel = settings.Transcription.Model;
@@ -80,7 +86,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     }
 
     private string[] Fields() => [Microphone.Id ?? "", Playback.Id ?? "", MeetingsRoot, FfmpegPath,
-        Trim.ToString(), Transcribe.ToString(), Summary.ToString(), ChunkSeconds,
+        Trim.ToString(), Transcribe.ToString(), Summary.ToString(), ChunkSeconds, RecordingHotkey,
         TranscriptionEndpoint, TranscriptionModel, TranscriptionPrompt, TranscriptionKeyVariable,
         SummaryEndpoint, SummaryModel, SummaryPrompt, SummaryKeyVariable];
 
@@ -110,8 +116,10 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     {
         if (!CanSave) return;
         CanSave = false; Saved = false; Changed();
+        Action<bool>? finishHotkey = null;
         try
         {
+            RecordingHotkey = MeetTape.RecordingHotkey.Parse(RecordingHotkey).Text;
             if (!int.TryParse(ChunkSeconds, NumberStyles.None, CultureInfo.InvariantCulture, out int seconds))
                 throw new InvalidDataException("Chunk duration must be a whole number between 1 and 340.");
             var json = JsonNode.Parse(original)!.AsObject();
@@ -120,6 +128,8 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             json["capture"]!["microphoneDeviceId"] = Microphone.Id;
             json["capture"]!["playbackDeviceId"] = Playback.Id;
             json["capture"]!["ffmpegPath"] = FfmpegPath.Trim();
+            if (json.ContainsKey("recordingHotkey") || RecordingHotkey != MeetTape.RecordingHotkey.DefaultShortcut)
+                json["recordingHotkey"] = RecordingHotkey;
             json["stages"] = new JsonObject { ["trim"] = Trim, ["transcribe"] = Transcribe, ["summary"] = Summary };
             json["chunkSeconds"] = seconds;
             json["transcription"] = Api(TranscriptionEndpoint, TranscriptionModel, TranscriptionPrompt, TranscriptionKeyVariable);
@@ -132,6 +142,8 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             AddPromptEdit(editedPrompts, summaryDocument, SummaryPrompt);
             string updated = JsonNode.DeepEquals(json, JsonNode.Parse(original)) ? original :
                 json.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) + (original.EndsWith('\n') ? Environment.NewLine : "");
+            _ = ConfigurationLoader.Parse(updated, ConfigurationPath, validatePrompts: false);
+            if (RecordingHotkey != originalRecordingHotkey) finishHotkey = prepareHotkey?.Invoke(RecordingHotkey);
             var result = await Task.Run(() =>
             {
                 string? error = ConfigurationStore.Save(ConfigurationPath, original, updated, keys, setKey, editedPrompts);
@@ -147,7 +159,9 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
                 return (Error: error, ConfigurationSaved: configurationSaved);
             });
             string? error = result.Error;
-            if (result.ConfigurationSaved) original = updated;
+            if (result.ConfigurationSaved) { original = updated; originalRecordingHotkey = RecordingHotkey; }
+            var completeHotkey = finishHotkey; finishHotkey = null;
+            completeHotkey?.Invoke(result.ConfigurationSaved);
             Saved = error is null;
             Message = error ?? "Saved. Capture changes apply to the next recording; running jobs keep their saved parameters. Resume uses current API settings. Only edited prompts were saved.";
             if (Saved)
@@ -160,7 +174,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         catch (InvalidDataException ex) { Message = ex.Message; }
         catch (Exception) { Message = Saved ? "Settings saved, but could not be applied to the running app. Reopen Settings and Save to retry; current recording retained." :
             "Cannot save all settings or prompts. Check paths and permissions; remaining edits are retained. Some files may already have been saved; secrets are not logged."; }
-        finally { CanSave = true; Changed(); }
+        finally { finishHotkey?.Invoke(false); CanSave = true; Changed(); }
     }
 
     private void AddPromptEdit(List<PromptDocument> edits, PromptDocument document, string configuredPath)

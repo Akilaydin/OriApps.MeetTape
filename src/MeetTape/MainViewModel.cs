@@ -9,6 +9,15 @@ public sealed class MainViewModel : INotifyPropertyChanged
 {
     private readonly IDesktopController? controller;
     private readonly Action<OperationNotice>? notifyRecording;
+    private string recordingShortcut = RecordingHotkey.DefaultShortcut;
+    public string RecordingShortcut => recordingShortcut;
+    public string RecordingShortcutText => recordingShortcut + " · Start / Stop";
+    internal void SetRecordingShortcut(string shortcut)
+    {
+        string text = RecordingHotkey.Parse(shortcut).Text;
+        if (recordingShortcut == text) return;
+        recordingShortcut = text; Changed();
+    }
     private bool notificationActive;
     private readonly Queue<string> warnings = new();
     private readonly Queue<OperationNotice> processingIssues = new();
