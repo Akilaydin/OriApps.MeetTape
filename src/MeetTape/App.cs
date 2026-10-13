@@ -52,7 +52,7 @@ public sealed class App : Application
             var exit = new NativeMenuItem("Exit");
             exit.Click += async (_, _) => await ExitAsync();
             menu.Items.Add(status); menu.Items.Add(processingStatus); menu.Items.Add(open); menu.Items.Add(record); menu.Items.Add(exit);
-            using var iconStream = AssetLoader.Open(new Uri("avares://MeetTape/Assets/MeetTape.png"));
+            using var iconStream = AssetLoader.Open(new Uri("avares://MeetTape/Assets/MeetTape.ico"));
             var icon = new WindowIcon(iconStream);
             window.Icon = icon;
             tray = new TrayIcon { Icon = icon, ToolTipText = model.TrayText, Menu = menu };
@@ -97,7 +97,8 @@ public sealed class App : Application
                     var details = window!.FindControl<TextBox>("DiagnosticDetails")!;
                     details.SelectAll();
                     if (details.SelectedText != model.DiagnosticText || !Equals(status!.Header, model.CaptureText)
-                        || !Equals(processingStatus!.Header, model.ProcessingText) || tray!.ToolTipText != model.TrayText)
+                        || !Equals(processingStatus!.Header, model.ProcessingText) || tray!.ToolTipText != model.TrayText
+                        || window!.Icon is null || !ReferenceEquals(window.Icon, tray.Icon))
                     { timer.Stop(); desktop!.Shutdown(1); return; }
                 }
                 if (tick == 5) { timer.Stop(); await ExitAsync(); }

@@ -79,6 +79,23 @@ try {
     if (-not (Test-Path -LiteralPath $uninstallKey)) { throw 'Windows uninstaller is not registered.' }
     $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'MeetTape.lnk'
     if (-not [IO.File]::Exists($shortcut)) { throw 'Start menu shortcut missing.' }
+    $shell = New-Object -ComObject WScript.Shell
+    try {
+        $link = $shell.CreateShortcut($shortcut) # Read our existing CI-created shortcut; do not Save.
+        $location = $link.IconLocation
+        if ([string]::IsNullOrWhiteSpace($location)) { $location = $link.TargetPath }
+        [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($link)
+        $iconExecutable = $location -replace ',\s*-?\d+\s*$', ''
+        $iconExecutable = [Environment]::ExpandEnvironmentVariables($iconExecutable.Trim('"'))
+        $installationPrefix = [IO.Path]::GetFullPath($install).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+        if (-not [IO.Path]::GetFullPath($iconExecutable).StartsWith($installationPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Start menu icon must reference this isolated installation.'
+        }
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-Desktop.ps1') -ExecutablePath $iconExecutable -IconOnly
+        if ($LASTEXITCODE -ne 0) { throw 'Installed shortcut icon checks failed.' }
+    } finally { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell) }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-Desktop.ps1') -ExecutablePath (Join-Path $install 'Update.exe') -IconOnly
+    if ($LASTEXITCODE -ne 0) { throw 'Installed updater icon checks failed.' }
     Invoke-Native (Join-Path $install 'current/MeetTape.exe') @('--ui-smoke')
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-Desktop.ps1') -ExecutablePath (Join-Path $install 'current/MeetTape.exe') -SkipNativeWindow
     if ($LASTEXITCODE -ne 0) { throw 'Installed GUI startup failed.' }
@@ -91,6 +108,8 @@ try {
     if ([IO.File]::ReadAllText((Join-Path $install 'current/sq.version')) -cne $oldMarker) { throw 'Restart auto-applied pending update.' }
     Invoke-Native (Join-Path $install 'Update.exe') @('apply', '--package', $pending, '--norestart', '--silent')
     if ([IO.File]::ReadAllText((Join-Path $install 'current/sq.version')) -notmatch '<version>1.0.1</version>') { throw 'Second version was not applied.' }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-Desktop.ps1') -ExecutablePath (Join-Path $install 'current/MeetTape.exe') -SkipNativeWindow
+    if ($LASTEXITCODE -ne 0) { throw 'Updated GUI/icon checks failed.' }
     Invoke-Native (Join-Path $install 'Update.exe') @('uninstall', '--silent')
     if ([IO.Directory]::Exists((Join-Path $install 'current'))) { throw 'Uninstall retained application binaries.' }
     if ((Test-Path -LiteralPath $uninstallKey) -or [IO.File]::Exists($shortcut)) { throw 'Uninstall retained registry entry/shortcut.' }
