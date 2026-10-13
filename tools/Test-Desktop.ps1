@@ -38,10 +38,11 @@ public static class MeetTapeIconProbe {
             using (var actual = actualIcon.ToBitmap())
             using (var expected = expectedIcon.ToBitmap()) {
                 if (actual.Width != size || actual.Height != size || expected.Width != size || expected.Height != size)
-                    return false;
+                    throw new InvalidOperationException(String.Format("Icon dimensions at {0}px: actual {1}x{2}, source {3}x{4}.", size, actual.Width, actual.Height, expected.Width, expected.Height));
                 for (int y = 0; y < size; y++) for (int x = 0; x < size; x++) {
                     var a = actual.GetPixel(x, y); var b = expected.GetPixel(x, y);
-                    if (b.A == 255 && (a.R != b.R || a.G != b.G || a.B != b.B)) return false;
+                    if (b.A == 255 && (a.R != b.R || a.G != b.G || a.B != b.B))
+                        throw new InvalidOperationException(String.Format("Icon pixel differs at {0}px ({1},{2}): actual {3}, source {4}.", size, x, y, a, b));
                 }
                 return true;
             }
