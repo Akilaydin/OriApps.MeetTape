@@ -228,8 +228,16 @@ public sealed class ProcessingJobs : IDisposable
                         data = Update(data, stage, StageState.Running);
                         SessionStore.Save(directory, data);
                         var audio = await new AudioChunker(currentConfig.Settings.Capture.FfmpegPath).PrepareAsync(directory, data, token);
-                        data = Update(data with { Audio = audio }, stage, StageState.Completed, audio.Chunks.Count, audio.Chunks.Count);
-                        SessionStore.Save(directory, data);
+                        try
+                        {
+                            data = Update(data with { Audio = audio }, stage, StageState.Completed, audio.Chunks.Count, audio.Chunks.Count);
+                            SessionStore.Save(directory, data);
+                        }
+                        catch
+                        {
+                            AudioTrimmer.DiscardAttempt(directory, audio.RelativeDirectory);
+                            throw;
+                        }
                     }
                     AudioChunker.ValidateManifest(data);
                     stage = "transcribe";

@@ -100,8 +100,16 @@ public sealed class PostRecordingWorkflow(string ffmpegPath) : IDisposable
             SessionStore.Save(selected, Update(current, StageState.Running, error: null));
             TrimParameters choice = a == 0 && b == duration ? new(0, duration, false) { Decision = decision } :
                 await currentTrimmer.ApplyAsync(selected, a, b, duration, decision, token);
-            token.ThrowIfCancellationRequested();
-            SessionStore.Save(selected, Update(current with { Trim = choice }, StageState.Completed, error: null));
+            try
+            {
+                token.ThrowIfCancellationRequested();
+                SessionStore.Save(selected, Update(current with { Trim = choice }, StageState.Completed, error: null));
+            }
+            catch
+            {
+                if (choice.RelativeDirectory is { } relative) AudioTrimmer.DiscardAttempt(selected, relative);
+                throw;
+            }
             Report(new(NoticeKind.Information, "Trim choice saved; originals retained.", current.Id));
         });
     }

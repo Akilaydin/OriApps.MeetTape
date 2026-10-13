@@ -61,20 +61,47 @@ public sealed class AudioTrimmer(string ffmpegPath)
         string destination = Path.Combine(directory, relative);
         cancellationToken.ThrowIfCancellationRequested();
         Directory.CreateDirectory(destination);
-        foreach (string name in new[] { "me.mp3", "them.mp3" })
+        try
         {
-            string target = Path.Combine(destination, name);
-            string filter = FormattableString.Invariant($"atrim=start_sample={first}:end_sample={limit},asetpts=PTS-STARTPTS");
-            await RunAsync(ffmpegPath, ["-hide_banner", "-nostats", "-nostdin", "-v", "error", "-n", "-i",
-                Path.Combine(directory, name), "-af", filter, "-ar", "48000", "-ac", "1", "-c:a", "libmp3lame",
-                "-b:a", "96k", "-write_xing", "1", target], null, cancellationToken);
-            using var stream = new FileStream(target, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
-            if (stream.Length == 0) throw new RecordingException("Trim output is empty; originals retained.");
-            stream.Flush(flushToDisk: true);
+            foreach (string name in new[] { "me.mp3", "them.mp3" })
+            {
+                string target = Path.Combine(destination, name);
+                string filter = FormattableString.Invariant($"atrim=start_sample={first}:end_sample={limit},asetpts=PTS-STARTPTS");
+                await RunAsync(ffmpegPath, ["-hide_banner", "-nostats", "-nostdin", "-v", "error", "-n", "-i",
+                    Path.Combine(directory, name), "-af", filter, "-ar", "48000", "-ac", "1", "-c:a", "libmp3lame",
+                    "-b:a", "96k", "-write_xing", "1", target], null, cancellationToken);
+                using var stream = new FileStream(target, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+                if (stream.Length == 0) throw new RecordingException("Trim output is empty; originals retained.");
+                stream.Flush(flushToDisk: true);
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            return new(first / (double)SampleRate, limit / (double)SampleRate, true)
+            { Decision = decision, RelativeDirectory = relative.Replace('\\', '/') };
         }
-        cancellationToken.ThrowIfCancellationRequested();
-        return new(first / (double)SampleRate, limit / (double)SampleRate, true)
-        { Decision = decision, RelativeDirectory = relative.Replace('\\', '/') };
+        catch (Exception error) when (error is not AudioPreparationShutdownException)
+        {
+            DiscardAttempt(directory, relative);
+            throw;
+        }
+    }
+
+    internal static void DiscardAttempt(string directory, string relative)
+    {
+        try
+        {
+            string path = Path.TrimEndingDirectorySeparator(AudioChunker.ResolveProcessed(directory, relative));
+            var data = SessionStore.Read(directory);
+            if (new[] { data.Trim.RelativeDirectory, data.Audio?.RelativeDirectory }.Any(selected => selected is not null
+                && string.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(Path.Combine(directory, selected))), path, StringComparison.OrdinalIgnoreCase))) return;
+            if (!Directory.Exists(path)) return;
+            if (File.GetAttributes(path).HasFlag(FileAttributes.ReparsePoint)
+                || Directory.EnumerateFileSystemEntries(path).Any(entry => File.GetAttributes(entry).HasFlag(FileAttributes.ReparsePoint)))
+                throw new InvalidDataException("Attempt became a linked directory/file; cleanup refused.");
+            Directory.Delete(path, recursive: true);
+            AppDiagnostics.Info("preparation", "Discarded unselected audio attempt");
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException or ArgumentException)
+        { AppDiagnostics.Error("preparation", "Discard unselected audio attempt; files retained", error); }
     }
 
     public static void Validate(double start, double end, double duration)
