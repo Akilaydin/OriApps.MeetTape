@@ -15,3 +15,5 @@ Wait for Codex review and assess findings against the code and current requireme
 Evaluate new reviews after updates. Merge only with successful checks and no unaddressed substantive findings. If review fails or is unavailable, report the limitation; silence is not approval.
 
 Promote reviewed `main` to `release` via a pull request with passing CI. Each push to `release` publishes a new GitHub Release; do not push to `release` directly.
+
+Use **Create a merge commit** for promotions between these long-lived branches. Squash or rebase merging loses the shared ancestry needed for later promotions and can cause conflicts over already released changes.
