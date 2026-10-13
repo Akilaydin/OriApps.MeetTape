@@ -16,6 +16,8 @@ The tray keeps recording status first and shows a separate short processing stat
 
 The Meetings context menu offers Delete recording for a selected finalized meeting whose processing is completed or explicitly canceled. Confirmation shows its title/date and warns that the entire folder and all audio, metadata, checkpoints and documents move to Windows Recycle Bin. Cancel retains the meeting. Capture, unfinished naming, active preparation/jobs, invalid or changed identity/path and linked folders/files refuse deletion. Only a direct child of a known meetings root is accepted; configuration and unrelated folders are protected. An unavailable Recycle Bin reports failure without a permanent-delete fallback. Success removes the meeting and selection; other meetings remain available.
 
+Failed or Interrupted recordings can also be explicitly deleted after capture and related operations finish. Their partial files use the same confirmation, folder ownership checks and Recycle Bin path; running jobs/stages still block deletion.
+
 ## Updates
 
 Significant failures show a readable cause and an available recovery action. Technical exception context and workflow transitions are saved in `%LOCALAPPDATA%\MeetTape\Logs`, retained after restart and bounded to five 1 MiB files. Logs are accessed directly through the filesystem, with no log-view UI. API keys, prompts, transcripts and audio payloads are not logged; credential values and URL credentials are redacted. Logging is nonblocking for capture and best-effort when storage is unavailable.

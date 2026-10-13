@@ -69,6 +69,35 @@ public sealed class DeletionTests : IDisposable
         Assert.True(File.Exists(Path.Combine(directory, "me.mp3")));
     }
 
+    [Theory]
+    [InlineData(RecordingState.Failed)]
+    [InlineData(RecordingState.Interrupted)]
+    public async Task FailedAndInterruptedRecordingsUseExistingSafeRecyclePath(RecordingState state)
+    {
+        string directory = Session(JobState.Paused), other = Session();
+        var data = SessionStore.Read(directory) with { RecordingState = state };
+        SessionStore.Save(directory, data);
+        Assert.True(SessionRemoval.CanDelete(data));
+        Assert.False(SessionRemoval.CanDelete(data with { JobState = JobState.Running }));
+        Assert.False(SessionRemoval.CanDelete(data with { Stages = new(data.Stages) { ["prepare"] = new(true, StageState.Running) } }));
+        var files = Directory.GetFiles(directory, "*", SearchOption.AllDirectories)
+            .ToDictionary(path => Path.GetRelativePath(directory, path), File.ReadAllBytes);
+        var controller = new DesktopController(config) { RecycleRecording = (source, _) =>
+        {
+            string destination = Path.Combine(root, "Fixture bin");
+            Directory.Move(source, destination); return destination;
+        } };
+        try
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(() => controller.DeleteRecordingAsync(directory, Guid.NewGuid()));
+            await controller.DeleteRecordingAsync(directory, data.Id);
+            Assert.False(Directory.Exists(directory));
+            Assert.True(Directory.Exists(other));
+            foreach (var file in files) Assert.Equal(file.Value, File.ReadAllBytes(Path.Combine(root, "Fixture bin", file.Key)));
+        }
+        finally { await controller.ShutdownAsync(); }
+    }
+
     [Fact]
     public void LeaseAndRecycleFailuresRetainAllAudioAndMetadataAndAllowRetry()
     {
