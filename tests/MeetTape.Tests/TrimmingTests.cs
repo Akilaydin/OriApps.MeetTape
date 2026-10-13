@@ -146,7 +146,8 @@ public sealed class TrimmingTests : IDisposable
         Assert.Equal(StageState.Paused, failed.Stages["trim"].Status);
         Assert.Null(failed.Trim.RelativeDirectory);
         Assert.False(failed.Trim.Applied);
-        Assert.Contains(notices, notice => notice.Kind == NoticeKind.Warning && notice.Message.Contains("check originals, FFmpeg"));
+        Assert.Contains(notices, notice => notice.Kind == NoticeKind.Warning && notice.Message.Contains("Cannot start FFmpeg")
+            && notice.Message.Contains("missing"));
         Assert.True(File.Exists(Path.Combine(directory, "me.mp3")));
     }
 
