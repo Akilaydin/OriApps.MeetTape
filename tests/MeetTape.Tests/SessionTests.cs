@@ -6,6 +6,58 @@ namespace MeetTape.Tests;
 public sealed class SessionTests : IDisposable
 {
     [Theory]
+    [InlineData("Weekly sync", 5100, "Weekly sync", "01h25m")]
+    [InlineData("", 0, "Unnamed meeting", "00h00m")]
+    [InlineData("  Обзор команды 🌍  ", 7199.9, "Обзор команды 🌍", "01h59m")]
+    [InlineData("CON: план / этап? . ", 3600, "CON_ план _ этап_", "01h00m")]
+    public void FinalFolderUsesTitleLocalStartAndAudioDurationWithoutChangingIdentityOrOriginals(
+        string title, double seconds, string safeTitle, string duration)
+    {
+        var local = new DateTime(2026, 10, 13, 10, 30, 0);
+        var data = Data() with { RecordingState = RecordingState.Recorded, DurationSeconds = seconds,
+            StartedAtUtc = new DateTimeOffset(local, TimeZoneInfo.Local.GetUtcOffset(local)).ToUniversalTime() };
+        var created = SessionStore.Create(root, data); created.Lease.Dispose();
+        byte[] audio = [1, 2, 3];
+        File.WriteAllBytes(Path.Combine(created.Directory, "me.mp3"), audio);
+        File.WriteAllBytes(Path.Combine(created.Directory, "them.mp3"), audio);
+        var culture = System.Globalization.CultureInfo.CurrentCulture;
+        string named;
+        try
+        {
+            System.Globalization.CultureInfo.CurrentCulture = new("ar-SA");
+            named = PostRecordingWorkflow.SetTitle(created.Directory, title);
+        }
+        finally { System.Globalization.CultureInfo.CurrentCulture = culture; }
+        Assert.Equal($"{safeTitle}_13.10.2026 10-30 {duration}", Path.GetFileName(named));
+        Assert.DoesNotContain(data.Id.ToString("N"), Path.GetFileName(named));
+        Assert.Equal(data.Id, SessionStore.Read(named).Id);
+        Assert.Equal(data.StartedAtUtc, SessionStore.Read(named).StartedAtUtc);
+        Assert.Equal(seconds, SessionStore.Read(named).DurationSeconds);
+        Assert.Equal(audio, File.ReadAllBytes(Path.Combine(named, "me.mp3")));
+        Assert.Equal(audio, File.ReadAllBytes(Path.Combine(named, "them.mp3")));
+        Assert.False(Directory.Exists(created.Directory));
+        Assert.Equal(named, PostRecordingWorkflow.SetTitle(named, title));
+    }
+
+    [Fact]
+    public void TitleLengthValidationAndNamingOneMeetingPreserveOtherExistingFolders()
+    {
+        var data = Data() with { RecordingState = RecordingState.Recorded, DurationSeconds = 1 };
+        var first = SessionStore.Create(root, data); first.Lease.Dispose();
+        var historical = SessionStore.Create(root, data with { Id = Guid.NewGuid() }); historical.Lease.Dispose();
+        byte[] metadata = File.ReadAllBytes(Path.Combine(first.Directory, "session.json"));
+        byte[] previous = File.ReadAllBytes(Path.Combine(historical.Directory, "session.json"));
+        Assert.Throws<InvalidOperationException>(() => PostRecordingWorkflow.SetTitle(first.Directory, new string('x', 201)));
+        Assert.Equal(metadata, File.ReadAllBytes(Path.Combine(first.Directory, "session.json")));
+        string title = string.Concat(Enumerable.Repeat("😀", 100));
+        string named = PostRecordingWorkflow.SetTitle(first.Directory, title);
+        Assert.StartsWith(title + "_", Path.GetFileName(named));
+        Assert.DoesNotContain('\uFFFD', Path.GetFileName(named));
+        Assert.True(Directory.Exists(historical.Directory));
+        Assert.Equal(previous, File.ReadAllBytes(Path.Combine(historical.Directory, "session.json")));
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public void UnavailableHistoricalRootDoesNotAbortDiscoveryOfCurrentRoot(bool permissions)

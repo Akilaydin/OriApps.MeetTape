@@ -291,7 +291,7 @@ public sealed class EncodingTests : IDisposable
             Assert.True((await controller.ReadAsync()).Capture.IsActive);
             Assert.Equal(recordedContract, SessionStore.Read(previous).Processing);
             sources[0].Me.Emit(); sources[0].Them.Emit();
-            await controller.StopAsync();
+            previous = (await controller.StopAsync())!;
             Assert.Equal(RecordingState.Recorded, SessionStore.Read(previous).RecordingState);
             byte[] originalMe = File.ReadAllBytes(Path.Combine(previous, "me.mp3"));
             byte[] originalThem = File.ReadAllBytes(Path.Combine(previous, "them.mp3"));
@@ -309,7 +309,7 @@ public sealed class EncodingTests : IDisposable
             Assert.Equal(2, snapshot.Sessions.Count);
             Assert.Contains(snapshot.Sessions, session => session.Directory == previous);
             sources[1].Me.Emit(); sources[1].Them.Emit();
-            await controller.StopAsync();
+            current = (await controller.StopAsync())!;
             Assert.Equal(originalMe, File.ReadAllBytes(Path.Combine(previous, "me.mp3")));
             Assert.Equal(originalThem, File.ReadAllBytes(Path.Combine(previous, "them.mp3")));
             Assert.Equal((await DecodeAsync(Path.Combine(current, "me.mp3"))).Length,

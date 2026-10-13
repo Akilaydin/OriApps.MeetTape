@@ -7,6 +7,32 @@ namespace MeetTape.Tests;
 
 public sealed class JobTests : IDisposable
 {
+    [Fact]
+    public async Task RenamedPausedMeetingCanResumeAndPublishTranscriptFromItsExistingRelativeChunks()
+    {
+        string directory = Session(120);
+        var data = SessionStore.Read(directory);
+        byte[] original = File.ReadAllBytes(Path.Combine(directory, "me.mp3"));
+        using (var failed = new Handler((_, _) => Task.FromResult(Response(400))))
+        using (var http = new HttpClient(failed))
+        using (var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "fixture-key"))
+            await jobs.ProcessSessionAsync(directory, default);
+        Assert.Equal(JobState.Paused, SessionStore.Read(directory).JobState);
+        string named = PostRecordingWorkflow.SetTitle(directory, "Development review");
+        using var success = new Handler((_, _) => Task.FromResult(Response()));
+        using var client = new HttpClient(success);
+        using var resumed = new ProcessingJobs(config, () => false, client, readKey: _ => "fixture-key");
+        resumed.Resume(named);
+        await resumed.ProcessSessionAsync(named, default);
+        Assert.Equal(JobState.Completed, SessionStore.Read(named).JobState);
+        Assert.Equal(data.Id, SessionStore.Read(named).Id);
+        Assert.Equal(data.Audio!.Chunks, SessionStore.Read(named).Audio!.Chunks);
+        Assert.Equal(original, File.ReadAllBytes(Path.Combine(named, "me.mp3")));
+        Assert.True(File.Exists(Path.Combine(named, "transcription.md")));
+        await resumed.ProcessSessionAsync(named, default);
+        Assert.Equal(1, success.Calls); Assert.False(Directory.Exists(directory));
+    }
+
     private readonly string root = Path.Combine(Path.GetTempPath(), "MeetTapeJobs-" + Guid.NewGuid().ToString("N"));
     private readonly LoadedConfiguration config;
     private const string Valid = "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"[00:01] Me: test\"}}]}";

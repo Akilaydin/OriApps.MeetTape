@@ -91,11 +91,27 @@ public sealed class DesktopController : IDesktopController
         await RunAsync(() =>
         {
             capture.Stop();
-            if (capture.Status.Error is null) result = awaitingTitle = capture.RecordingDirectory;
+            if (capture.Status.Error is null)
+            {
+                awaitingTitle = capture.RecordingDirectory;
+                result = awaitingTitle = FinalizeFolderName();
+            }
             else Fail(capture.Status.Error);
             if (awaitingTitle is null) jobs.Start();
         });
         return result;
+    }
+
+    private string? FinalizeFolderName()
+    {
+        if (capture.RecordingDirectory is not { } directory) return null;
+        try
+        {
+            var data = SessionStore.Read(directory);
+            capture.RecordingDirectory = PostRecordingWorkflow.SetTitle(directory, data.Title ?? "");
+            return capture.RecordingDirectory;
+        }
+        catch (RecordingException error) { throw new InvalidOperationException(error.Message); }
     }
 
     public Task PrepareAsync(string directory, string? title) => RunAsync(() =>
@@ -200,7 +216,18 @@ public sealed class DesktopController : IDesktopController
                 finally
                 {
                     try { preparation.CancelAndWait(); }
-                    finally { capture.Dispose(); }
+                    finally
+                    {
+                        bool recording = capture.Status.IsActive;
+                        capture.Dispose();
+                        if (capture.Status.Error is null && (recording || awaitingTitle is not null))
+                        {
+                            awaitingTitle = capture.RecordingDirectory;
+                            try { _ = FinalizeFolderName(); awaitingTitle = null; }
+                            catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidOperationException)
+                            { Fail("Cannot apply readable folder name; finalized recording kept in its original folder. Check collisions and permissions."); }
+                        }
+                    }
                 }
                 preparation.Dispose();
                 jobs.Dispose();
