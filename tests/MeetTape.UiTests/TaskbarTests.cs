@@ -5,6 +5,17 @@ namespace MeetTape.UiTests;
 
 public sealed class TaskbarTests
 {
+    [Fact]
+    public void IconRedrawWaitsForButtonCreationAndThenRestoresTheCurrentCaptureState()
+    {
+        var calls = new List<bool>();
+        using var indicator = new RecordingTaskbar(calls.Add, ready: false);
+        indicator.Update(true); indicator.Restore(created: false);
+        Assert.Empty(calls);
+        indicator.Restore(); indicator.Restore(created: false); indicator.Update(false);
+        Assert.Equal(new[] { true, true, false }, calls);
+    }
+
     [AvaloniaFact]
     public void CaptureTransitionsReachTheTaskbarEvenWhenWindowIconsAlreadyMatch()
     {

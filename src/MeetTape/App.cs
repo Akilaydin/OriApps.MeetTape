@@ -227,6 +227,8 @@ public sealed class App : Application
             taskbarCreated = true;
             taskbar?.Restore();
         }
+        else if (message is 0x0080 or 0x02E0 or 0x031A)
+            Dispatcher.UIThread.Post(() => taskbar?.Restore(created: false), DispatcherPriority.Background);
         return 0;
     }
 

@@ -12,7 +12,7 @@ internal sealed class RecordingTaskbar : IDisposable
     private bool ready;
     internal bool Applied { get; private set; }
 
-    internal RecordingTaskbar(Action<bool> set) { this.set = set; ready = true; }
+    internal RecordingTaskbar(Action<bool> set, bool ready = true) { this.set = set; this.ready = ready; }
 
     internal RecordingTaskbar(nint window)
     {
@@ -49,7 +49,11 @@ internal sealed class RecordingTaskbar : IDisposable
         else if (App.Smoke) Console.Error.WriteLine("Taskbar overlay waiting for button creation.");
     }
 
-    internal void Restore() { ready = true; if (!disposed && state.HasValue) Apply(); }
+    internal void Restore(bool created = true)
+    {
+        if (created) ready = true;
+        if (!disposed && ready && state.HasValue) Apply();
+    }
     private void Apply()
     {
         try { set(state == true); Applied = true; }
