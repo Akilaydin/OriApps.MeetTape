@@ -5,6 +5,27 @@ namespace MeetTape.Tests;
 
 public sealed class SummaryTests : IDisposable
 {
+    [Fact]
+    public async Task RenamedMeetingCanRequestSummaryWithoutChangingTranscriptOrIdentity()
+    {
+        var (directory, config) = await SessionAsync();
+        var data = SessionStore.Read(directory);
+        byte[] transcript = File.ReadAllBytes(Path.Combine(directory, "transcription.md"));
+        string named = PostRecordingWorkflow.SetTitle(directory, data.Title ?? "");
+        config = config with { Settings = config.Settings with { Summary = config.Settings.Summary with
+            { PromptFile = Path.Combine(named, "summary-prompt.md") } } };
+        using var handler = new Handler((_, _) => Task.FromResult(Reply()));
+        using var http = new HttpClient(handler);
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "fixture-key");
+        jobs.RequestSummary(named);
+        await jobs.ProcessSessionAsync(named, default);
+        Assert.Equal(1, handler.Calls);
+        Assert.True(File.Exists(Path.Combine(named, "summary.md")));
+        Assert.Equal(transcript, File.ReadAllBytes(Path.Combine(named, "transcription.md")));
+        Assert.Equal(data.Id, SessionStore.Read(named).Id);
+        Assert.False(Directory.Exists(directory));
+    }
+
     private readonly TranscriptTests fixture = new();
     private static HttpResponseMessage Reply(int status = 200) => new((HttpStatusCode)status)
         { Content = new StringContent(status == 200 ? "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"# Decisions\\n- Retry after 300 seconds.\"}}]}" : "private error") };

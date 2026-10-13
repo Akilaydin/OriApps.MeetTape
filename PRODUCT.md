@@ -46,6 +46,8 @@ Successful Summary results are checkpointed before publication. Repeated request
 
 Each recording has a unique folder and stable session ID under `meetingsRoot`:
 
+New captures may use a temporary internal name. Stop or Exit gives finalized audio an `Unnamed meeting_dd.MM.yyyy HH-mm HHhMMm` folder; saving a title replaces only the name prefix. Start time is local, duration uses saved audio and whole hours/minutes. Windows-invalid filename characters are replaced while ordinary Unicode/spaces remain. Folder names contain no UUID or collision suffix. Existing destinations are preserved with a naming error; Stop retains the original path and naming gate for a different title. Existing sessions are not renamed in bulk, and their UUID/file schema stays unchanged.
+
 - `me.mp3`, `them.mp3`: preserved source recordings.
 - `session.json`: identity, title, capture parameters, selected interval, stages, progress and diagnostics.
 - `processed/`: selected trim derivatives and stereo chunks when needed.

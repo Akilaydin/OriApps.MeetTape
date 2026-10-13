@@ -28,6 +28,8 @@ To uninstall, use **Exit** in every MeetTape window/tray, then remove **MeetTape
 
 ## Output
 
+Final folders use `Weekly sync_13.10.2026 10-30 01h25m`: title, local start time and audio duration in whole hours/minutes. Empty titles use `Unnamed meeting`; an existing destination is never overwritten or given an automatic suffix. The session UUID stays in `session.json`.
+
 ```text
 <session-folder>/
   me.mp3             # Original microphone audio
