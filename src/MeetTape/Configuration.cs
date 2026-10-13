@@ -7,6 +7,7 @@ public sealed record Configuration
 {
     public required string MeetingsRoot { get; init; }
     public CaptureSettings Capture { get; init; } = new();
+    public string RecordingHotkey { get; init; } = MeetTape.RecordingHotkey.DefaultShortcut;
     public StageSettings Stages { get; init; } = new();
     public int ChunkSeconds { get; init; } = 120;
     public required ApiSettings Transcription { get; init; }
@@ -100,6 +101,7 @@ public static class ConfigurationLoader
             throw new InvalidDataException("stages.summary requires stages.transcribe to be enabled.");
         if (string.IsNullOrWhiteSpace(settings.Capture.FfmpegPath))
             throw new InvalidDataException("capture.ffmpegPath is required.");
+        _ = RecordingHotkey.Parse(settings.RecordingHotkey);
         ValidateApi(settings.Transcription, "transcription");
         ValidateApi(settings.Summary, "summary");
 

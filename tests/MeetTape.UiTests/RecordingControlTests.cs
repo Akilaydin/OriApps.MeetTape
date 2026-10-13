@@ -5,6 +5,46 @@ namespace MeetTape.UiTests;
 
 public sealed class RecordingControlTests
 {
+    [Theory]
+    [InlineData("ctrl + alt + F10", 3u, 0x79u, "Ctrl+Alt+F10")]
+    [InlineData("Win+Alt+K", 9u, 0x4Bu, "Alt+Win+K")]
+    [InlineData("F10", 0u, 0x79u, "F10")]
+    public void ConfiguredShortcutUsesFrameworkParsingAndWindowsVirtualKeys(string text, uint modifiers, uint key, string expected)
+    {
+        var parsed = RecordingHotkey.Parse(text);
+        Assert.Equal((modifiers, key, expected), parsed);
+        int released = 0;
+        using var hotkey = new RecordingHotkey(123, text, RecordingHotkey.Id + 1, (_, id, nativeModifiers, nativeKey) =>
+        {
+            Assert.Equal(RecordingHotkey.Id + 1, id); Assert.Equal(modifiers | 0x4000u, nativeModifiers); Assert.Equal(key, nativeKey);
+            return true;
+        }, (_, id) => { Assert.Equal(RecordingHotkey.Id + 1, id); released++; return true; });
+        Assert.Equal(expected, hotkey.Shortcut);
+        Assert.True(hotkey.Matches(0x0312, RecordingHotkey.Id + 1));
+        Assert.False(hotkey.Matches(0x0312, RecordingHotkey.Id));
+        hotkey.Dispose(); Assert.Equal(1, released);
+    }
+
+    [Theory]
+    [InlineData(null)] [InlineData("")] [InlineData("Ctrl")] [InlineData("A")]
+    [InlineData("Ctrl+A+B")] [InlineData("Ctrl++ +B")] [InlineData("Ctrl+Unknown")]
+    [InlineData("Ctrl+LeftCtrl")]
+    public void InvalidShortcutsCannotReserveAnyWindowsKey(string? text)
+    {
+        Assert.Throws<InvalidDataException>(() => RecordingHotkey.Parse(text));
+    }
+
+    [WindowsCiFact, Trait("Category", "NativeWindows")]
+    public void WindowsCanReserveACandidateWhileKeepingTheOriginalShortcutRegistered()
+    {
+        _ = PeekMessage(out _, 0, 0, 0, 0);
+        using var original = new RecordingHotkey(0);
+        using var candidate = new RecordingHotkey(0, "Ctrl+Alt+F10", RecordingHotkey.Id + 1);
+        Assert.False(RegisterOnOtherThread());
+        Assert.True(candidate.Matches(0x0312, RecordingHotkey.Id + 1));
+        original.Dispose(); Assert.True(RegisterOnOtherThread());
+    }
+
     [Fact]
     public void CancellationCallbackExposesTheRequiredWindowsComInterface()
     {

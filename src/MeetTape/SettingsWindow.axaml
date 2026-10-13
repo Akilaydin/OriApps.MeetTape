@@ -16,6 +16,9 @@
             <ComboBox ItemsSource="{Binding PlaybackDevices}" SelectedItem="{Binding Playback}" HorizontalAlignment="Stretch" />
             <TextBlock Text="Meetings folder" /><TextBox Name="MeetingsFolder" Text="{Binding MeetingsRoot}" />
             <TextBlock Text="FFmpeg executable" /><TextBox Text="{Binding FfmpegPath}" />
+            <TextBlock Text="Recording hotkey (Start / Stop)" />
+            <TextBox Name="RecordingHotkey" Text="{Binding RecordingHotkey}" PlaceholderText="Ctrl+Shift+F9" />
+            <TextBlock Text="Enter a combination, e.g. Ctrl+Alt+F10. Save applies it immediately." TextWrapping="Wrap" Opacity="0.7" />
           </StackPanel>
         </ScrollViewer>
       </TabItem>
