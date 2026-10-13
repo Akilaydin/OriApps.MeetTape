@@ -25,6 +25,7 @@
 
   <ItemGroup>
     <AvaloniaResource Include="../../assets/MeetTape.ico" Link="Assets/MeetTape.ico" />
+    <AvaloniaResource Include="../../assets/MeetTape-recording.ico" Link="Assets/MeetTape-recording.ico" />
   </ItemGroup>
 
   <ItemGroup>

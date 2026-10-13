@@ -16,6 +16,8 @@ The first call in Program.Main is `VelopackApp.Build().SetAutoApplyOnStartup(fal
 
 ## Capture
 
+App loads the original and prepared recording ICO once and switches tray/window icons from MainViewModel.IsRecording. Both assets include 16–256px sizes; icon changes occur only when the selected variant changes. The permanent executable icon remains the original asset.
+
 ```text
 AudioDevices → WasapiPacketCapture → CaptureCoordinator
     → Mp3Recorder → Mp3Track → PcmTimeline → FfmpegEncoder
