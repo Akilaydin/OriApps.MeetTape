@@ -46,6 +46,7 @@ internal sealed class RecordingTaskbar : IDisposable
         if (disposed || state == active) return;
         state = active;
         if (ready) Apply();
+        else if (App.Smoke) Console.Error.WriteLine("Taskbar overlay waiting for button creation.");
     }
 
     internal void Restore() { ready = true; if (!disposed && state.HasValue) Apply(); }
