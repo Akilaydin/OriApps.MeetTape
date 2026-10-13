@@ -33,7 +33,7 @@ public sealed class DesktopController : IDesktopController
     private readonly CaptureCoordinator capture;
     private readonly PostRecordingWorkflow preparation;
     private readonly ProcessingJobs jobs;
-    internal Func<string, string> RecycleRecording { get; set; } = WindowsRecycleBin.Recycle;
+    internal Func<string, Guid, string> RecycleRecording { get; set; } = (directory, id) => WindowsRecycleBin.Recycle(directory, id);
     private readonly SemaphoreSlim gate = new(1);
     private volatile bool closing;
     private string? awaitingTitle;
@@ -159,7 +159,8 @@ public sealed class DesktopController : IDesktopController
         if (awaitingTitle is not null) throw new InvalidOperationException("Finish naming the stopped recording before deleting.");
         if (!preparation.Completion.IsCompleted && string.Equals(preparation.SelectedDirectory, directory, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Cancel this meeting's preparation before deleting.");
-        jobs.RemoveInactiveSession(directory, () => SessionRemoval.Recycle(directory, id, jobs.MeetingsRoots, config.Directory, RecycleRecording));
+        jobs.RemoveInactiveSession(directory, () => SessionRemoval.Recycle(directory, id, jobs.MeetingsRoots, config.Directory, RecycleRecording,
+            [config.Resolve(config.Settings.Transcription.PromptFile), config.Resolve(config.Settings.Summary.PromptFile)]));
         Publish(new(NoticeKind.Information, "Recording moved to Windows Recycle Bin.", id));
     });
 

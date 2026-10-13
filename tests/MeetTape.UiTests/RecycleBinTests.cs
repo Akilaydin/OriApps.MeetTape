@@ -10,20 +10,36 @@ public sealed class RecycleBinTests
     {
         string root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../dist/recycle-tests/" + Guid.NewGuid().ToString("N")));
         string recording = Path.Combine(root, "Meetings", "Disposable meeting");
+        ConfigurationBootstrap.Initialize(Path.Combine(root, "config.json"), Path.Combine(root, "Meetings"));
+        var config = ConfigurationLoader.Load(Path.Combine(root, "config.json"));
+        var data = new SessionData
+        {
+            Id = Guid.NewGuid(), StartedAtUtc = DateTimeOffset.UtcNow, DurationSeconds = 2,
+            RecordingState = RecordingState.Recorded, JobState = JobState.Canceled,
+            Capture = new(null, null, new(48000, 32, 1, "float"), new(48000, 32, 1, "float")),
+            Processing = new(120, config.Settings.Transcription, config.Settings.Summary, config.Directory),
+            Stages = new() { ["transcribe"] = new(true, StageState.Pending) }
+        };
         Directory.CreateDirectory(recording);
         File.WriteAllBytes(Path.Combine(recording, "me.mp3"), [1, 2, 3]);
         File.SetAttributes(Path.Combine(recording, "me.mp3"), FileAttributes.ReadOnly);
-        File.WriteAllText(Path.Combine(recording, "session.json"), "Disposable fixture metadata");
+        SessionStore.Save(recording, data);
+        byte[] metadata = File.ReadAllBytes(Path.Combine(recording, "session.json"));
         Directory.CreateDirectory(Path.Combine(recording, "chunks"));
         File.WriteAllText(Path.Combine(recording, "chunks", "checkpoint.json"), "Disposable checkpoint");
         try
         {
-            string recycled = WindowsRecycleBin.Recycle(recording);
+            Assert.Throws<InvalidOperationException>(() => WindowsRecycleBin.Recycle(recording, Guid.NewGuid()));
+            Assert.True(Directory.Exists(recording));
+            string recycled = "";
+            SessionRemoval.Recycle(recording, data.Id, [config.MeetingsRoot], config.Directory, (source, id) =>
+                recycled = WindowsRecycleBin.Recycle(source, id));
             Assert.False(Directory.Exists(recording));
             Assert.Contains("$Recycle.Bin", recycled, StringComparison.OrdinalIgnoreCase);
             Assert.Equal(new byte[] { 1, 2, 3 }, File.ReadAllBytes(Path.Combine(recycled, "me.mp3")));
-            Assert.Equal("Disposable fixture metadata", File.ReadAllText(Path.Combine(recycled, "session.json")));
+            Assert.Equal(metadata, File.ReadAllBytes(Path.Combine(recycled, "session.json")));
             Assert.Equal("Disposable checkpoint", File.ReadAllText(Path.Combine(recycled, "chunks", "checkpoint.json")));
+            Assert.Empty(SessionStore.Discover(config.MeetingsRoot));
         }
         finally
         {
@@ -48,10 +64,10 @@ public sealed class RecycleBinTests
         {
             using var process = Process.Start(start)!;
             process.WaitForExit(); Assert.Equal(0, process.ExitCode);
-            Assert.Throws<InvalidOperationException>(() => SessionRemoval.Recycle(junction, Guid.NewGuid(), [meetings], root, _ => throw new Exception("Must not recycle link")));
+            Assert.Throws<InvalidOperationException>(() => SessionRemoval.Recycle(junction, Guid.NewGuid(), [meetings], root, (_, _) => throw new Exception("Must not recycle link")));
             string recording = Path.Combine(meetings, "real-meeting"); Directory.CreateDirectory(recording);
             Directory.Move(junction, Path.Combine(recording, "linked-child"));
-            Assert.Throws<InvalidOperationException>(() => SessionRemoval.Recycle(recording, Guid.NewGuid(), [meetings], root, _ => throw new Exception("Must not recycle child link")));
+            Assert.Throws<InvalidOperationException>(() => SessionRemoval.Recycle(recording, Guid.NewGuid(), [meetings], root, (_, _) => throw new Exception("Must not recycle child link")));
             Assert.Equal("Unrelated fixture", File.ReadAllText(Path.Combine(foreign, "keep.txt")));
         }
         finally

@@ -5,13 +5,13 @@ namespace MeetTape;
 
 internal static class WindowsRecycleBin
 {
-    internal static string Recycle(string directory)
+    internal static string Recycle(string directory, Guid? expectedId = null)
     {
         string? destination = null;
         Exception? failure = null;
         var thread = new Thread(() =>
         {
-            try { destination = RecycleCore(directory); }
+            try { destination = RecycleCore(directory, expectedId); }
             catch (Exception error) { failure = error; }
         }) { IsBackground = true, Name = "MeetTape recycle recording" };
         thread.SetApartmentState(ApartmentState.STA);
@@ -20,7 +20,7 @@ internal static class WindowsRecycleBin
         return destination!;
     }
 
-    private static string RecycleCore(string directory)
+    private static string RecycleCore(string directory, Guid? expectedId)
     {
         IShellItem? source = null, parent = null, bin = null, recycled = null;
         object? handler = null;
@@ -34,6 +34,7 @@ internal static class WindowsRecycleBin
             parent.BindToHandler(0, ref transferHandler, ref transferId, out handler);
             var binId = new Guid("B7534046-3ECB-4C18-BE4E-64CD4CB7D6AC");
             Marshal.ThrowExceptionForHR(SHGetKnownFolderItem(ref binId, 0, 0, ref itemId, out bin));
+            if (expectedId is { } id) SessionRemoval.ValidateRecording(directory, id);
             // RecycleItem has a recycle destination; unlike DeleteItem it has no permanent-delete fallback.
             Marshal.ThrowExceptionForHR(((ITransferSource)handler).RecycleItem(source, bin, 0, out recycled));
             if (recycled is null) throw new IOException("Windows did not return a recycled item.");

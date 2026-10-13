@@ -10,14 +10,14 @@ internal static class SessionRemoval
         && !ProcessingJobs.Eligible(data) && !ProcessingJobs.CanCancel(data);
 
     internal static void Recycle(string directory, Guid id, IReadOnlyList<string> roots, string configurationDirectory,
-        Func<string, string> recycle)
+        Func<string, Guid, string> recycle, IReadOnlyList<string>? protectedFiles = null)
     {
         if (!Path.IsPathFullyQualified(directory) || id == Guid.Empty)
             throw new InvalidOperationException("Refresh and select a saved recording before deleting.");
         directory = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory));
         string parent = Path.GetDirectoryName(directory) ?? "";
         if (!roots.Any(root => string.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(root)), parent, StringComparison.OrdinalIgnoreCase))
-            || Within(configurationDirectory, directory))
+            || Within(configurationDirectory, directory) || protectedFiles?.Any(path => Within(path, directory)) == true)
             throw new InvalidOperationException("Only a meeting folder directly inside a known meetings root can be deleted.");
 
         var pins = new List<SafeFileHandle>();
@@ -35,16 +35,11 @@ internal static class SessionRemoval
             ValidateTree(directory);
             using (var lease = new FileStream(Path.Combine(directory, ".session.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
             {
-                var data = SessionStore.Read(directory);
-                if (data.Id != id) throw new InvalidOperationException("The selected recording changed. Refresh and confirm it again.");
-                if (!CanDelete(data)) throw new InvalidOperationException("Cancel this meeting's unfinished processing before deleting.");
-                ValidateTree(directory);
+                ValidateRecording(directory, id);
             }
             // Windows directory moves require closed child handles; the controller/scheduler still exclude this session.
-            ValidateTree(directory);
-            if (SessionStore.Read(directory).Id != id)
-                throw new InvalidOperationException("The selected recording changed. Refresh and confirm it again.");
-            _ = recycle(directory);
+            ValidateRecording(directory, id);
+            _ = recycle(directory, id);
             if (Directory.Exists(directory)) throw new IOException("Recycle did not remove the recording folder.");
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or Win32Exception or COMException)
@@ -54,6 +49,14 @@ internal static class SessionRemoval
 
     private static bool Within(string path, string directory) => string.Equals(Path.GetFullPath(path), directory, StringComparison.OrdinalIgnoreCase)
         || Path.GetFullPath(path).StartsWith(directory + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+
+    internal static void ValidateRecording(string directory, Guid id)
+    {
+        ValidateTree(directory);
+        var data = SessionStore.Read(directory);
+        if (data.Id != id) throw new InvalidOperationException("The selected recording changed. Refresh and confirm it again.");
+        if (!CanDelete(data)) throw new InvalidOperationException("Cancel this meeting's unfinished processing before deleting.");
+    }
 
     private static void RejectLink(string path)
     {

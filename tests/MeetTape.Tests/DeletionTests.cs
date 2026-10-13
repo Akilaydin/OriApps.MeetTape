@@ -37,7 +37,7 @@ public sealed class DeletionTests : IDisposable
         string directory = Session(), other = Session();
         var originals = Directory.GetFiles(directory, "*", SearchOption.AllDirectories).ToDictionary(path => Path.GetRelativePath(directory, path), File.ReadAllBytes);
         byte[] otherMetadata = File.ReadAllBytes(Path.Combine(other, "session.json"));
-        var controller = new DesktopController(config) { RecycleRecording = source =>
+        var controller = new DesktopController(config) { RecycleRecording = (source, _) =>
         {
             string bin = Path.Combine(root, "Fixture bin"); Directory.CreateDirectory(bin);
             string moved = Path.Combine(bin, "Recording"); Directory.Move(source, moved); return moved;
@@ -64,7 +64,7 @@ public sealed class DeletionTests : IDisposable
         string directory = Session(state);
         var data = SessionStore.Read(directory);
         byte[] metadata = File.ReadAllBytes(Path.Combine(directory, "session.json"));
-        Assert.Throws<InvalidOperationException>(() => SessionRemoval.Recycle(directory, data.Id, [Meetings], root, _ => throw new Exception("Must not recycle")));
+        Assert.Throws<InvalidOperationException>(() => SessionRemoval.Recycle(directory, data.Id, [Meetings], root, (_, _) => throw new Exception("Must not recycle")));
         Assert.Equal(metadata, File.ReadAllBytes(Path.Combine(directory, "session.json")));
         Assert.True(File.Exists(Path.Combine(directory, "me.mp3")));
     }
@@ -75,9 +75,9 @@ public sealed class DeletionTests : IDisposable
         string directory = Session(); var id = SessionStore.Read(directory).Id;
         byte[] metadata = File.ReadAllBytes(Path.Combine(directory, "session.json"));
         using (var lease = new FileStream(Path.Combine(directory, ".session.lock"), FileMode.Open, FileAccess.ReadWrite, FileShare.None))
-            Assert.Throws<InvalidOperationException>(() => SessionRemoval.Recycle(directory, id, [Meetings], root, _ => throw new Exception("Must not recycle")));
+            Assert.Throws<InvalidOperationException>(() => SessionRemoval.Recycle(directory, id, [Meetings], root, (_, _) => throw new Exception("Must not recycle")));
         foreach (Exception failure in new Exception[] { new IOException("Fixture bin unavailable"), new UnauthorizedAccessException() })
-            Assert.Throws<InvalidOperationException>(() => SessionRemoval.Recycle(directory, id, [Meetings], root, _ => throw failure));
+            Assert.Throws<InvalidOperationException>(() => SessionRemoval.Recycle(directory, id, [Meetings], root, (_, _) => throw failure));
         Assert.Equal(metadata, File.ReadAllBytes(Path.Combine(directory, "session.json")));
         Assert.Equal(new byte[] { 1, 2, 3 }, File.ReadAllBytes(Path.Combine(directory, "me.mp3")));
     }
@@ -87,8 +87,8 @@ public sealed class DeletionTests : IDisposable
     {
         string directory = Session(); Guid id = SessionStore.Read(directory).Id;
         foreach (string path in new[] { Meetings, root, Path.Combine(directory, "chunks"), Path.Combine(root, "foreign") })
-            Assert.Throws<InvalidOperationException>(() => SessionRemoval.Recycle(path, id, [Meetings], root, _ => throw new Exception("Must not recycle")));
-        Assert.Throws<InvalidOperationException>(() => SessionRemoval.Recycle(directory, id, [Meetings], directory, _ => throw new Exception("Must not recycle config")));
+            Assert.Throws<InvalidOperationException>(() => SessionRemoval.Recycle(path, id, [Meetings], root, (_, _) => throw new Exception("Must not recycle")));
+        Assert.Throws<InvalidOperationException>(() => SessionRemoval.Recycle(directory, id, [Meetings], directory, (_, _) => throw new Exception("Must not recycle config")));
         Assert.True(File.Exists(Path.Combine(root, "config.json")));
         Assert.True(File.Exists(Path.Combine(directory, "me.mp3")));
     }
@@ -98,7 +98,7 @@ public sealed class DeletionTests : IDisposable
     {
         string directory = Session(); Guid id = SessionStore.Read(directory).Id;
         using var capture = new CaptureCoordinator(() => new(new Source(), new Source()));
-        var controller = new DesktopController(config, capture) { RecycleRecording = _ => throw new Exception("Must not recycle during capture") };
+        var controller = new DesktopController(config, capture) { RecycleRecording = (_, _) => throw new Exception("Must not recycle during capture") };
         try
         {
             await controller.StartAsync();
@@ -110,13 +110,33 @@ public sealed class DeletionTests : IDisposable
     }
 
     [Fact]
+    public async Task FolderContainingACurrentConfiguredPromptCannotBeRecycled()
+    {
+        string directory = Session(); Guid id = SessionStore.Read(directory).Id;
+        var updated = config with { Settings = config.Settings with { Transcription = config.Settings.Transcription with { PromptFile = Path.Combine(directory, "transcription.md") } } };
+        bool called = false;
+        var controller = new DesktopController(updated) { RecycleRecording = (source, _) =>
+        {
+            called = true;
+            string moved = Path.Combine(root, "Fixture bin"); Directory.Move(source, moved); return moved;
+        } };
+        try
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(() => controller.DeleteRecordingAsync(directory, id));
+            Assert.False(called);
+            Assert.True(File.Exists(Path.Combine(directory, "transcription.md")));
+        }
+        finally { await controller.ShutdownAsync(); }
+    }
+
+    [Fact]
     public void CompletedMeetingCanBeRecycledAndAncestorReplacementIsBlockedDuringTheMove()
     {
         string directory = Session(JobState.Completed);
         var data = SessionStore.Read(directory);
         SessionStore.Save(directory, data with { Stages = new() { ["transcribe"] = new(true, StageState.Completed), ["assemble"] = new(true, StageState.Completed) } });
         string bin = Path.Combine(root, "Fixture bin"); Directory.CreateDirectory(bin);
-        SessionRemoval.Recycle(directory, data.Id, [Meetings], root, source =>
+        SessionRemoval.Recycle(directory, data.Id, [Meetings], root, (source, _) =>
         {
             Assert.Throws<IOException>(() => Directory.Move(Meetings, Meetings + "-swapped"));
             string moved = Path.Combine(bin, "completed"); Directory.Move(source, moved); return moved;
