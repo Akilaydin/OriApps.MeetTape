@@ -140,6 +140,64 @@ public sealed class WindowTests
         model.Detach();
     }
 
+    [AvaloniaFact]
+    public async Task CancelAfterStopSkipsNamingAndTrimAndAllowsNextRecording()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var model = new MainViewModel(fake);
+        var window = new MainWindow { DataContext = model };
+        window.Show(); await model.RefreshAsync();
+        Click(window, "RecordButton");
+        Click(window, "RecordButton");
+        Assert.True(model.IsNaming);
+        Assert.True(window.FindControl<Button>("CancelNamedRecording")!.IsEnabled);
+        Click(window, "CancelNamedRecording");
+        await WaitFor(() => model.CanRecord);
+        Assert.False(model.IsNaming);
+        Assert.Equal(1, fake.Cancels);
+        Assert.Equal(0, fake.Prepares);
+        Assert.Equal("Canceled", Assert.Single(model.Sessions).Status);
+        Assert.Equal("Processing canceled: 1", model.ProcessingText);
+        model.SelectedSession = model.Sessions[0];
+        Assert.True(model.CanPrepare);
+        Assert.False(model.CanResume);
+        Assert.False(window.FindControl<Button>("CancelSessionProcessing")!.IsVisible);
+        Click(window, "RecordButton");
+        Assert.Equal(2, fake.Starts);
+        Close(window, model);
+    }
+
+    [AvaloniaTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CancelSelectedProcessingKeepsOtherCaptureAndExposesExplicitResume(bool recording)
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var session = fake.Snapshot.Sessions[0];
+        var data = session.Data! with { JobState = JobState.Running, Stages = new(session.Data!.Stages)
+            { ["trim"] = new(true, StageState.Completed), ["transcribe"] = new(true, StageState.Running) } };
+        fake.Snapshot = fake.Snapshot with { Sessions = [session with { Data = data }],
+            Capture = fake.Snapshot.Capture with { IsActive = recording, RecordingDirectory = Path.Combine(fixture.Root, "other-recording") } };
+        var model = new MainViewModel(fake);
+        var window = new MainWindow { DataContext = model };
+        window.Show(); await model.RefreshAsync();
+        model.SelectedSession = model.Sessions[0];
+        Assert.True(model.CanCancelProcessing);
+        Click(window, "CancelSessionProcessing");
+        await WaitFor(() => fake.Cancels == 1 && !model.IsBusy);
+        Assert.Equal(recording, model.IsRecording);
+        Assert.Equal("Canceled", model.SelectedSession!.Status);
+        Assert.Equal(!recording, model.CanResume);
+        Assert.Contains("canceled", model.ProcessingText);
+        Assert.False(model.HasProcessingErrors);
+        Assert.Equal(0, fake.Stops); Assert.Equal(0, fake.Summaries);
+        await model.CancelSelectedProcessingAsync();
+        Assert.Equal(1, fake.Cancels);
+        Close(window, model);
+    }
+
     [AvaloniaTheory]
     [InlineData("transcription.md")]
     [InlineData("summary.md")]
@@ -1078,7 +1136,7 @@ public sealed class WindowTests
     private sealed class FakeController : IDesktopController
     {
         public DesktopSnapshot Snapshot { get; set; }
-        public int Starts, Stops, Summaries, Resumes, Shutdowns, Prepares;
+        public int Starts, Stops, Summaries, Resumes, Shutdowns, Prepares, Cancels;
         public bool FailStart;
         public string? Title;
         public TrimDecision? Decision;
@@ -1138,6 +1196,14 @@ public sealed class WindowTests
             return Task.CompletedTask;
         }
         public Task ResumeAsync(string directory) { Resumes++; return Task.CompletedTask; }
+        public Task CancelProcessingAsync(string directory)
+        {
+            Cancels++;
+            Snapshot = Snapshot with { AwaitingTitleDirectory = Snapshot.AwaitingTitleDirectory == directory ? null : Snapshot.AwaitingTitleDirectory,
+                Sessions = Snapshot.Sessions.Select(session => session.Directory == directory ? session with
+                    { Data = session.Data! with { JobState = JobState.Canceled, Error = null, Retry = null } } : session).ToArray() };
+            return Task.CompletedTask;
+        }
         public Task SummaryAsync(string directory)
         {
             Summaries++;

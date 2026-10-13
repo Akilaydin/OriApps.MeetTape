@@ -40,6 +40,15 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         get
         {
+            int canceled = snapshot.Sessions.Count(s => s.Data?.JobState == JobState.Canceled);
+            string active = ActiveProcessingText;
+            return canceled == 0 ? active : active == "No active jobs" ? $"Processing canceled: {canceled}" : $"{active}; {canceled} canceled";
+        }
+    }
+    private string ActiveProcessingText
+    {
+        get
+        {
             if (IsRecording) return HasProcessingErrors || snapshot.Sessions.Any(s => s.Data is { RecordingState: RecordingState.Recorded, JobState: JobState.Paused })
                 ? "Processing deferred; jobs paused" : "Processing deferred during recording";
             if (snapshot.AwaitingTitleDirectory is not null) return "Processing deferred: finish naming";
@@ -68,7 +77,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                     _ => "Processing queued"
                 };
             }
-            if (meetings.Any(s => s.Stages.TryGetValue("trim", out var trim) && trim.Enabled && trim.Status != StageState.Completed))
+            if (meetings.Any(s => s.JobState != JobState.Canceled && s.Stages.TryGetValue("trim", out var trim) && trim.Enabled && trim.Status != StageState.Completed))
                 return "Waiting for trim choice";
             return meetings.Any(s => s.JobState == JobState.Completed) ? "Processing complete" : "No active jobs";
         }
@@ -79,6 +88,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public bool CanProcess => controller is not null && !busy && !updating && !shutdownStarted && !snapshot.Capture.IsActive && selected is not null && NamingDirectory is null;
     public bool CanPrepare => CanProcess && selected!.NeedsPreparation;
     public bool CanResume => CanProcess && selected!.CanResume;
+    public bool HasCancelableSelection => selected?.CanCancel == true;
+    public bool CanCancelProcessing => controller is not null && !busy && !updating && !shutdownStarted && NamingDirectory is null
+        && HasCancelableSelection && (!snapshot.Capture.IsActive || !string.Equals(selected!.Directory, snapshot.Capture.RecordingDirectory, StringComparison.OrdinalIgnoreCase));
+    public bool CanCancelNamedRecording => CanName && controller is not null && !shutdownStarted && !snapshot.Capture.IsActive;
     public bool CanSummary => CanProcess && snapshot.SummaryEnabled && selected!.CanRequestSummary;
     public string SummaryLabel => selected?.CanRestoreSummary == true ? "Restore Summary" : "Request Summary";
     public bool CanOpen => selected is not null;
@@ -160,7 +173,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public bool CanStartNextRecording => CanName && controller is not null && !shutdownStarted && !snapshot.Capture.IsActive;
     public bool ShowTrim => snapshot.Suggestion is not null && snapshot.PreparationDirectory is { } directory
         && snapshot.Sessions.Any(s => s.Directory == directory && s.Data?.Stages.TryGetValue("trim", out var trim) == true
-            && trim.Enabled && trim.Status != StageState.Completed);
+            && s.Data.JobState != JobState.Canceled && trim.Enabled && trim.Status != StageState.Completed);
     public bool CanTrim => ShowTrim && !busy && !updating && !snapshot.Preparing && !snapshot.Capture.IsActive;
     public string TrimText => snapshot.Suggestion is { } found ?
         FormattableString.Invariant($"Suggested interval: {found.StartSeconds:F3} – {found.EndSeconds:F3} seconds. Originals retained.") : "";
@@ -243,7 +256,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             }
             snapshot = updated;
             foreach (var meeting in updated.Sessions)
-                if (meeting.Data is { JobState: JobState.Completed, Error: null } completed) ClearProcessingIssues(completed.Id);
+                if (meeting.Data is { JobState: JobState.Completed or JobState.Canceled, Error: null } completed) ClearProcessingIssues(completed.Id);
             allSessions = updated.Sessions.OrderByDescending(s => s.Data?.StartedAtUtc).Select(SessionRow.From).ToArray();
             UpdateSessionList();
             if (snapshot.AwaitingTitleDirectory is { } awaiting && NamingDirectory is null)
@@ -357,6 +370,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public Task ResumeAsync() => CanResume ? ExecuteAsync(() => controller!.ResumeAsync(selected!.Directory)) : Task.CompletedTask;
     public Task SummaryAsync() => CanSummary ? ExecuteAsync(() => controller!.SummaryAsync(selected!.Directory)) : Task.CompletedTask;
+    public Task CancelSelectedProcessingAsync() => CanCancelProcessing
+        ? ExecuteAsync(() => controller!.CancelProcessingAsync(selected!.Directory)) : Task.CompletedTask;
+    public Task CancelNamedRecordingAsync() => CanCancelNamedRecording ? ExecuteAsync(async () =>
+    {
+        await controller!.CancelProcessingAsync(NamingDirectory!);
+        NamingDirectory = null;
+    }) : Task.CompletedTask;
 
     public async Task ExecuteAsync(Func<Task> action)
     {
@@ -434,6 +454,7 @@ public sealed record SessionRow(string Directory, Guid? Id, string Title, string
     public bool CanResume { get; init; }
     public bool CanRequestSummary { get; init; }
     public bool CanRestoreSummary { get; init; }
+    public bool CanCancel { get; init; }
     public static SessionRow From(StoredSession session)
     {
         var data = session.Data;
@@ -442,6 +463,7 @@ public sealed record SessionRow(string Directory, Guid? Id, string Title, string
         data?.Stages.TryGetValue("transcribe", out transcription);
         bool needsPreparation = data?.RecordingState == RecordingState.Recorded && trim?.Enabled == true && trim.Status != StageState.Completed;
         string status = data is null ? "Invalid metadata" : data.RecordingState != RecordingState.Recorded ? data.RecordingState.ToString() :
+            data.JobState == JobState.Canceled ? "Canceled" :
             needsPreparation ? "Awaiting trim choice" : data.Retry is { } retry ? $"Retry {retry.Attempts}: {retry.NextAttemptUtc.ToLocalTime():HH:mm:ss}" :
             data.JobState == JobState.Paused ? "Paused" : data.Stages.Values.All(s => !s.Enabled || s.Status is StageState.Completed or StageState.AwaitingRequest) ?
             "Completed" : data.JobState.ToString();
@@ -457,7 +479,9 @@ public sealed record SessionRow(string Directory, Guid? Id, string Title, string
             session.Diagnostic, needsPreparation, hasTranscript, hasSummary)
         {
             CanResume = data is not null && ProcessingJobs.CanResume(data),
+            CanCancel = data is not null && ProcessingJobs.CanCancel(data),
             CanRequestSummary = data is not null && ProcessingJobs.HasPublishedTranscription(data) && hasTranscript && !hasSummary
+                && data.JobState != JobState.Canceled
                 && (canRestoreSummary || summary is null || summary.Status is StageState.Disabled or StageState.AwaitingRequest),
             CanRestoreSummary = canRestoreSummary
         };
