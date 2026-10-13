@@ -205,6 +205,8 @@ public sealed class App : Application
         if (taskbar is not null || window?.TryGetPlatformHandle()?.Handle is not { } handle || handle == 0) return;
         try
         {
+            _ = ChangeWindowMessageFilterEx(handle, taskbarButtonCreated, 1, 0);
+            if (Smoke) Console.Error.WriteLine($"Taskbar shell handle: {GetShellWindow()}.");
             taskbar = new RecordingTaskbar(handle);
             taskbar.Update(model.IsRecording);
             if (taskbarCreated) taskbar.Restore();
@@ -228,6 +230,11 @@ public sealed class App : Application
 
     [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "RegisterWindowMessageW", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
     private static extern uint RegisterWindowMessage(string message);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static extern bool ChangeWindowMessageFilterEx(nint window, uint message, uint action, nint change);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern nint GetShellWindow();
 
     private void InitializeHotkey()
     {
