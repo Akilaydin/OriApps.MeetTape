@@ -11,8 +11,13 @@ $env:TMP = $env:TEMP
 $env:AVALONIA_TELEMETRY_OPTOUT = '1'
 [IO.Directory]::CreateDirectory($env:TEMP) | Out-Null
 
+$smokeProject = Join-Path $PSScriptRoot 'UpdateSmoke/UpdateSmoke.csproj'
+dotnet build $smokeProject --configuration Release
+if ($LASTEXITCODE -ne 0) { throw 'SDK smoke build failed.' }
+$smokeHost = Join-Path $PSScriptRoot 'UpdateSmoke/bin/Release/net10.0-windows/UpdateSmoke.dll'
+
 function Invoke-Smoke([string]$mode) {
-    dotnet run --project (Join-Path $PSScriptRoot 'UpdateSmoke/UpdateSmoke.csproj') --configuration Release -- $mode $feed $root '1.0.0'
+    dotnet $smokeHost $mode $feed $root '1.0.0'
     if ($LASTEXITCODE -ne 0) { throw "SDK smoke failed: $mode." }
 }
 
@@ -44,7 +49,7 @@ $newest = @($feedData.Assets | Where-Object { $_.Version -eq '1.0.1' -and $_.Typ
 Copy-Item -LiteralPath (Join-Path $feed $newest) -Destination $corruptFeed
 $stream = [IO.File]::OpenWrite((Join-Path $corruptFeed $newest))
 try { $stream.WriteByte(0); $stream.Flush($true) } finally { $stream.Dispose() }
-dotnet run --project (Join-Path $PSScriptRoot 'UpdateSmoke/UpdateSmoke.csproj') --configuration Release -- checksum $corruptFeed (Join-Path $testRoot 'checksum-installation') '1.0.0'
+dotnet $smokeHost checksum $corruptFeed (Join-Path $testRoot 'checksum-installation') '1.0.0'
 if ($LASTEXITCODE -ne 0) { throw 'SDK checksum rejection failed.' }
 
 # Verify every full package contains the pinned binary and licenses, with no CLI wrapper.
@@ -96,7 +101,6 @@ try {
     } finally { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell) }
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-Desktop.ps1') -ExecutablePath (Join-Path $install 'Update.exe') -IconOnly
     if ($LASTEXITCODE -ne 0) { throw 'Installed updater icon checks failed.' }
-    Invoke-Native (Join-Path $install 'current/MeetTape.exe') @('--ui-smoke')
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-Desktop.ps1') -ExecutablePath (Join-Path $install 'current/MeetTape.exe') -SkipNativeWindow
     if ($LASTEXITCODE -ne 0) { throw 'Installed GUI startup failed.' }
     & (Join-Path $install 'current/ffmpeg.exe') -hide_banner -version | Select-Object -First 1

@@ -37,3 +37,10 @@ Do not report:
 
 Every finding must describe a concrete failure scenario.
 If no qualifying issues exist, report no findings.
+
+## Fast task execution
+
+- Run one focused local validation pass. Broaden it only for a new failure, changed code or unresolved risk.
+- Poll CI and review together, no more often than once per minute while unchanged. Act immediately on actionable feedback; avoid separate repeated status queries.
+- After the same failure repeats, inspect its logs and diagnose locally before another full CI run. Scheduler diagnosis is limited to two repeats; never turn a confirmed application defect into an optional test.
+- Use the risk-based CI and review rules in CONTRIBUTING.md. Do not introduce a watcher or self-hosted runner for this workflow.
