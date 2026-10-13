@@ -77,6 +77,13 @@ public sealed class TranscriptAssembler
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
 
+    internal static void ValidateChunk(string text, AudioChunk chunk)
+    {
+        try { _ = Parse(text, chunk, CancellationToken.None); }
+        catch (RegexMatchTimeoutException)
+        { throw new InvalidDataException("Timed transcript parsing exceeded its limit."); }
+    }
+
     private static List<Utterance> Parse(string text, AudioChunk chunk, CancellationToken token)
     {
         if (text.Trim() == ChatApiClient.NoSpeechMarker) return [];
