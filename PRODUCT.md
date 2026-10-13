@@ -24,7 +24,7 @@ Existing API keys are never loaded into controls. New keys use masked fields and
 
 API requests use the named Process environment key, falling back to the Windows User environment when the Process value is absent. Missing or empty enabled prompt files do not disable recording; they pause the affected processing stage with a safe diagnostic. Fix the prompt file or key, save changed settings, then use Resume; completed chunks are retained.
 
-The default transcription prompt targets Russian (`ru`) and remains user-editable. `stages.summary` requires `stages.transcribe`; chunkSeconds accepts 1–340 seconds. Restart also restores eligible saved jobs and presents unfinished trim selection through Name / Trim; no new Summary request is inferred from startup.
+All shipped UI messages and prompt instructions are in English. The default transcription prompt still targets Russian (`ru`), and the default Summary requests Russian output; the instruction language does not change the speech/result language. New transcript preambles are English, while utterances keep their source text. First-use defaults are user-editable; existing custom prompts and published documents are never overwritten by template updates. `stages.summary` requires `stages.transcribe`; chunkSeconds accepts 1–340 seconds. Restart also restores eligible saved jobs and presents unfinished trim selection through Name / Trim; no new Summary request is inferred from startup.
 
 ## Trimming and transcription
 

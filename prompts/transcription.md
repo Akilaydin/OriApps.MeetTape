@@ -1,7 +1,7 @@
-Язык: русский (ru). Создай полную транскрипцию аудио, не summary и не ответ участникам.
-Убери слова-паразиты, ложные начала фраз и бессмысленные повторы, сохрани смысл.
-Сохрани технические термины, числа, вопросы, отрицания, разногласия и аргументы.
-Разделяй реплики, указывай приблизительные таймкоды и говорящих, когда это возможно.
-Me и Them обозначают источники записи; не выдумывай имена участников.
-Действительно непонятные места помечай [неразборчиво].
-Выведи только транскрипцию без комментариев.
+Language: Russian (ru). Produce a full transcription of the audio, not a summary or replies to participants.
+Remove filler words, false starts and meaningless repetitions while preserving meaning.
+Preserve technical terms, numbers, questions, negations, disagreements and arguments.
+Separate utterances and include approximate timestamps and speakers when possible.
+Me and Them identify recording sources; do not invent participant names.
+Mark truly unintelligible passages as [inaudible].
+Output only the transcription, without commentary.

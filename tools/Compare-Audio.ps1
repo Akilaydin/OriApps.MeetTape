@@ -107,12 +107,12 @@ try {
     if ([string]::IsNullOrWhiteSpace($key)) { $key = [Environment]::GetEnvironmentVariable($settings.transcription.apiKeyEnvironmentVariable, 'User') }
     if ([string]::IsNullOrWhiteSpace($key)) { throw 'API key unavailable; no request made.' }
     $basePrompt = [IO.File]::ReadAllText([IO.Path]::GetFullPath($settings.transcription.promptFile, $configurationDirectory))
-    $formatPrompt = ' Каждая реплика на отдельной строке: [MM:SS] Me/Them/Unknown: текст. Таймкоды относительные, от начала данного аудио. Не выдумывай имена; если источник неясен, используй Unknown.'
+    $formatPrompt = ' Each utterance on its own line: [MM:SS] Me/Them/Unknown: text. Timestamps are relative to the start of this audio. Do not invent names; use Unknown if the source is unclear.'
     $variants = @(
-        @{ Name='mono'; Path=(Join-Path $run 'mono.mp3'); Hint=' Моно смесь микрофона Me и системного звука Them.' },
-        @{ Name='stereo'; Path=(Join-Path $run 'stereo.mp3'); Hint=' Стерео: левый канал — микрофон Me, правый — системный звук Them. Me может содержать акустическое эхо Them; одинаковую речь выводи один раз.' },
-        @{ Name='me'; Path=(Join-Path $session 'me.mp3'); Hint=' Отдельная дорожка микрофона Me. Она может содержать эхо динамиков; транскрибируй всю слышимую речь, не пропускай тихую речь.' },
-        @{ Name='them'; Path=(Join-Path $session 'them.mp3'); Hint=' Отдельная дорожка системного звука Them.' }
+        @{ Name='mono'; Path=(Join-Path $run 'mono.mp3'); Hint=' A mono mix of the Me microphone and Them system playback.' },
+        @{ Name='stereo'; Path=(Join-Path $run 'stereo.mp3'); Hint=' Stereo: left is the Me microphone, right is Them system playback. Me may contain acoustic echoes of Them; output identical speech only once.' },
+        @{ Name='me'; Path=(Join-Path $session 'me.mp3'); Hint=' Separate Me microphone track. It may contain speaker echoes; transcribe all audible speech, including quiet speech.' },
+        @{ Name='them'; Path=(Join-Path $session 'them.mp3'); Hint=' Separate Them system playback track.' }
     )
     $client = [Net.Http.HttpClient]::new()
     $client.Timeout = [TimeSpan]::FromMinutes(5)
