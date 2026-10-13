@@ -184,11 +184,51 @@ public sealed class TrimmingTests : IDisposable
         string collision = Path.Combine(root, $"collision_{data.StartedAtUtc.ToLocalTime():dd.MM.yyyy HH-mm} 00h00m");
         Directory.CreateDirectory(collision);
         File.WriteAllText(Path.Combine(collision, "keep.txt"), "untouched");
-        byte[] before = File.ReadAllBytes(Path.Combine(directory, "session.json"));
-        Assert.Throws<RecordingException>(() => PostRecordingWorkflow.SetTitle(directory, "collision"));
-        Assert.Equal(before, File.ReadAllBytes(Path.Combine(directory, "session.json")));
+        directory = PostRecordingWorkflow.SetTitle(directory, "collision");
+        Assert.Equal("collision", SessionStore.Read(directory).Title);
+        Assert.Equal(data.Id, SessionStore.Read(directory).Id);
+        Assert.EndsWith(" (2)", directory);
         Assert.Equal("untouched", File.ReadAllText(Path.Combine(collision, "keep.txt")));
         Assert.Throws<InvalidOperationException>(() => PostRecordingWorkflow.SetTitle(directory, "invalid\ntitle"));
+    }
+
+    [Fact]
+    public async Task SameMinuteUnnamedMeetingsChooseDifferentFoldersAndRetainAllFiles()
+    {
+        string first = await SessionAsync([], []), second = await SessionAsync([], []);
+        var firstData = SessionStore.Read(first);
+        SessionStore.Save(second, SessionStore.Read(second) with { StartedAtUtc = firstData.StartedAtUtc });
+        var secondData = SessionStore.Read(second);
+        var firstFiles = Directory.GetFiles(first).ToDictionary(path => Path.GetFileName(path), File.ReadAllBytes);
+        var secondFiles = Directory.GetFiles(second).ToDictionary(path => Path.GetFileName(path), File.ReadAllBytes);
+        var named = await Task.WhenAll(Task.Run(() => PostRecordingWorkflow.SetTitle(first, "")),
+            Task.Run(() => PostRecordingWorkflow.SetTitle(second, "")));
+        Assert.NotEqual(named[0], named[1]);
+        Assert.All(named, path => Assert.StartsWith("Unnamed meeting_", Path.GetFileName(path)));
+        Assert.Contains(named, path => path.EndsWith(" (2)", StringComparison.Ordinal));
+        Assert.Equal(firstData.Id, SessionStore.Read(named[0]).Id);
+        Assert.Equal(secondData.Id, SessionStore.Read(named[1]).Id);
+        foreach (var file in firstFiles) Assert.Equal(file.Value, File.ReadAllBytes(Path.Combine(named[0], file.Key)));
+        foreach (var file in secondFiles) Assert.Equal(file.Value, File.ReadAllBytes(Path.Combine(named[1], file.Key)));
+        Assert.Equal(named[0], PostRecordingWorkflow.SetTitle(named[0], ""));
+        Assert.Equal(named[1], PostRecordingWorkflow.SetTitle(named[1], ""));
+    }
+
+    [Fact]
+    public async Task OccupiedDirectoryAndFileSuffixesArePreservedBeforeChoosingNextName()
+    {
+        string directory = await SessionAsync([], []);
+        var data = SessionStore.Read(directory);
+        string stem = Path.Combine(root, $"Unnamed meeting_{data.StartedAtUtc.ToLocalTime():dd.MM.yyyy HH-mm} 00h00m");
+        foreach (string path in new[] { stem, stem + " (2)" })
+        { Directory.CreateDirectory(path); File.WriteAllText(Path.Combine(path, "keep.txt"), "unchanged"); }
+        File.WriteAllText(stem + " (3)", "existing file");
+        string named = PostRecordingWorkflow.SetTitle(directory, "");
+        Assert.Equal(stem + " (4)", named);
+        Assert.Equal(data.Id, SessionStore.Read(named).Id);
+        Assert.Equal("unchanged", File.ReadAllText(Path.Combine(stem, "keep.txt")));
+        Assert.Equal("unchanged", File.ReadAllText(Path.Combine(stem + " (2)", "keep.txt")));
+        Assert.Equal("existing file", File.ReadAllText(stem + " (3)"));
     }
 
     [Fact]
@@ -246,7 +286,7 @@ public sealed class TrimmingTests : IDisposable
     }
 
     [Fact]
-    public async Task DefaultNameCollisionRetainsAudioAndNamingGateAndCanRecoverWithChosenTitle()
+    public async Task DefaultNameCollisionUsesUniqueFolderAndAllowsNormalContinue()
     {
         var controller = new DesktopController(RecordingConfiguration(), openSources: _ => new(new Source(), new Source()));
         try
@@ -255,22 +295,24 @@ public sealed class TrimmingTests : IDisposable
             var initial = (await controller.ReadAsync()).Sessions.Single();
             string collision = Path.Combine(root, $"Unnamed meeting_{initial.Data!.StartedAtUtc.ToLocalTime():dd.MM.yyyy HH-mm} 00h00m");
             Directory.CreateDirectory(collision); File.WriteAllText(Path.Combine(collision, "keep.txt"), "Untouched");
-            var error = await Assert.ThrowsAsync<InvalidOperationException>(controller.StopAsync);
-            Assert.Contains("already exists", error.Message);
-            Assert.True(Directory.Exists(initial.Directory));
+            string named = (await controller.StopAsync())!;
+            Assert.EndsWith(" (2)", named);
+            Assert.False(Directory.Exists(initial.Directory));
             Assert.Equal("Untouched", File.ReadAllText(Path.Combine(collision, "keep.txt")));
             var stopped = await controller.ReadAsync();
             Assert.False(stopped.Capture.IsActive); Assert.Null(stopped.Capture.Error);
-            Assert.Equal(initial.Directory, stopped.AwaitingTitleDirectory);
-            Assert.True(File.Exists(Path.Combine(initial.Directory, "me.mp3")));
-            Assert.True(File.Exists(Path.Combine(initial.Directory, "them.mp3")));
+            Assert.Equal(named, stopped.AwaitingTitleDirectory);
+            Assert.True(File.Exists(Path.Combine(named, "me.mp3")));
+            Assert.True(File.Exists(Path.Combine(named, "them.mp3")));
             await Assert.ThrowsAsync<InvalidOperationException>(controller.StartAsync);
-            await controller.PrepareAsync(initial.Directory, "Different title");
-            var named = Assert.Single(SessionStore.Discover(root));
-            Assert.StartsWith("Different title_", Path.GetFileName(named.Directory));
-            Assert.Equal(initial.Data.Id, named.Data!.Id);
-            Assert.Equal(named.Directory, (await controller.ReadAsync()).Capture.RecordingDirectory);
+            await controller.PrepareAsync(named, "");
+            var saved = Assert.Single(SessionStore.Discover(root));
+            Assert.Equal(named, saved.Directory);
+            Assert.Equal(initial.Data.Id, saved.Data!.Id);
+            Assert.Equal(named, (await controller.ReadAsync()).Capture.RecordingDirectory);
             Assert.Null((await controller.ReadAsync()).AwaitingTitleDirectory);
+            await controller.StartAsync();
+            Assert.True((await controller.ReadAsync()).Capture.IsActive);
         }
         finally { await controller.ShutdownAsync(); }
     }
@@ -283,7 +325,7 @@ public sealed class TrimmingTests : IDisposable
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task ExitAfterDefaultNameCollisionStillCompletesAndRetainsFinalizedSource(bool stopFirst)
+    public async Task ExitAfterDefaultNameCollisionCompletesWithUniqueFinalizedFolder(bool stopFirst)
     {
         var controller = new DesktopController(RecordingConfiguration(), openSources: _ => new(new Source(), new Source()));
         var notices = new List<OperationNotice>();
@@ -292,18 +334,19 @@ public sealed class TrimmingTests : IDisposable
         var initial = (await controller.ReadAsync()).Sessions.Single();
         string collision = Path.Combine(root, $"Unnamed meeting_{initial.Data!.StartedAtUtc.ToLocalTime():dd.MM.yyyy HH-mm} 00h00m");
         Directory.CreateDirectory(collision); File.WriteAllText(Path.Combine(collision, "keep.txt"), "Untouched");
-        if (stopFirst) await Assert.ThrowsAsync<InvalidOperationException>(controller.StopAsync);
-        byte[]? audio = stopFirst ? File.ReadAllBytes(Path.Combine(initial.Directory, "me.mp3")) : null;
+        string? stoppedDirectory = stopFirst ? await controller.StopAsync() : null;
+        byte[]? audio = stoppedDirectory is not null ? File.ReadAllBytes(Path.Combine(stoppedDirectory, "me.mp3")) : null;
         await controller.ShutdownAsync();
         await controller.ShutdownAsync();
         var saved = Assert.Single(SessionStore.Discover(root));
-        Assert.Equal(initial.Directory, saved.Directory);
+        Assert.NotEqual(initial.Directory, saved.Directory);
+        Assert.EndsWith(" (2)", saved.Directory);
         Assert.Equal(initial.Data.Id, saved.Data!.Id);
         Assert.Equal(RecordingState.Recorded, saved.Data.RecordingState);
         if (audio is not null) Assert.Equal(audio, File.ReadAllBytes(Path.Combine(saved.Directory, "me.mp3")));
         Assert.True(saved.MePresent && saved.ThemPresent);
         Assert.Equal("Untouched", File.ReadAllText(Path.Combine(collision, "keep.txt")));
-        Assert.Contains(notices, n => n.Kind == NoticeKind.Error);
+        Assert.DoesNotContain(notices, n => n.Kind == NoticeKind.Error);
     }
 
     [Fact]
