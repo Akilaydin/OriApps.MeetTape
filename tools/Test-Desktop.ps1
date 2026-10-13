@@ -70,7 +70,7 @@ if ($SkipNativeWindow) {
     $smoke = Start-Process -FilePath $executable -ArgumentList '--ui-smoke' -WorkingDirectory $testRoot -PassThru -WindowStyle $smokeStyle -RedirectStandardError $smokeError
     try {
         if (-not $smoke.WaitForExit(20000)) { throw 'Published GUI did not complete its startup/lifetime/Exit smoke.' }
-        if ($smoke.ExitCode -ne 0) { Get-Content -LiteralPath $smokeError; throw 'Published GUI smoke failed.' }
+        if ($smoke.ExitCode -ne 0) { Get-Content -LiteralPath $smokeError; throw "Published GUI smoke failed (exit code $($smoke.ExitCode))." }
         Write-Output 'Published WinExe: isolated GUI startup, full diagnostic text selection, desktop lifetime and explicit Exit passed.'
     } finally {
         if (-not $smoke.HasExited) { $smoke.Kill(); [void]$smoke.WaitForExit(5000) }

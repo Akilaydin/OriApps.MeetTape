@@ -126,6 +126,7 @@ public sealed class App : Application
             timer.Tick += async (_, _) =>
             {
                 tick++;
+                Console.Error.WriteLine($"Icon smoke tick {tick} begins; taskbarApplied={taskbar?.Applied}, buttonCreated={taskbarCreated}.");
                 if (tick == 1 || tick == 4)
                 {
                     model.RefreshCapture(new(true, TimeSpan.FromSeconds(tick), 0, 0, null));
@@ -154,7 +155,7 @@ public sealed class App : Application
                 {
                     model.RefreshCapture(new(false, TimeSpan.FromSeconds(1), 0, 0, null));
                     if (!ReferenceEquals(tray!.Icon, idleIcon) || !ReferenceEquals(window!.Icon, idleIcon) || taskbar?.Applied != true)
-                    { timer.Stop(); desktop!.Shutdown(1); return; }
+                    { Console.Error.WriteLine($"Icon smoke tick {tick} failed; taskbarApplied={taskbar?.Applied}, buttonCreated={taskbarCreated}."); timer.Stop(); desktop!.Shutdown(1); return; }
                     timer.Stop(); await ExitAsync();
                 }
             };
