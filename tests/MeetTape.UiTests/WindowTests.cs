@@ -794,13 +794,17 @@ public sealed class WindowTests
         Assert.Empty(model.NewTranscriptionKey);
         var window = new SettingsWindow { DataContext = model };
         window.Show();
+        var sections = window.FindControl<TabControl>("SettingsSections")!;
+        sections.SelectedIndex = 1;
         window.FindControl<TextBox>("ChunkDuration")!.Text = "9999";
         Click(window, "SaveSettings"); await WaitFor(() => model.CanSave);
         Assert.False(model.Saved); Assert.Empty(writes);
         Assert.Equal(original, File.ReadAllText(fixture.ConfigPath));
         Assert.Contains("chunkSeconds", window.FindControl<TextBlock>("SettingsMessage")!.Text);
         window.FindControl<TextBox>("ChunkDuration")!.Text = "90";
+        sections.SelectedIndex = 0;
         window.FindControl<ComboBox>("MicrophoneChoice")!.SelectedIndex = 1;
+        sections.SelectedIndex = 2;
         var key = window.FindControl<TextBox>("TranscriptionKey")!;
         Assert.Equal('●', key.PasswordChar);
         key.Text = "fixture-secret-4821";
@@ -939,6 +943,8 @@ public sealed class WindowTests
         var settings = new SettingsWindow { DataContext = new SettingsViewModel(fixture.ConfigPath, [], (_, _, _) => { }) };
         settings.Show();
         using (var frame = settings.CaptureRenderedFrame()) { Assert.NotNull(frame); frame.Save(Path.Combine(output, "settings.png"), PngBitmapEncoderOptions.Default); }
+        settings.FindControl<TabControl>("SettingsSections")!.SelectedIndex = 2;
+        using (var frame = settings.CaptureRenderedFrame()) { Assert.NotNull(frame); frame.Save(Path.Combine(output, "settings-prompts.png"), PngBitmapEncoderOptions.Default); }
         settings.Close(); Close(window, model);
         Application.Current!.RequestedThemeVariant = ThemeVariant.Default;
     }

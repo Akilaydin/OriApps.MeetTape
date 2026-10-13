@@ -39,10 +39,16 @@ public sealed record LoadedConfiguration(Configuration Settings, string Director
 {
     public string MeetingsRoot => Resolve(Settings.MeetingsRoot);
     public string Resolve(string path) => Path.GetFullPath(path, Directory);
-    public string ReadPrompt(ApiSettings api, string stage = "API")
+    public string ReadPrompt(ApiSettings api, string stage = "API") => ReadPrompt(api, stage, null);
+
+    internal string ReadPrompt(ApiSettings api, string stage, IReadOnlyDictionary<string, string>? edits)
     {
         string prompt;
-        try { prompt = File.ReadAllText(Resolve(api.PromptFile)); }
+        try
+        {
+            string path = Resolve(api.PromptFile);
+            prompt = edits is not null && edits.TryGetValue(path, out string? edited) ? edited : File.ReadAllText(path);
+        }
         catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
         { throw new InvalidDataException($"The {stage} prompt file was not found. Check its path in Settings."); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
@@ -68,7 +74,8 @@ public static class ConfigurationLoader
     internal static LoadedConfiguration LoadForCapture(string path) =>
         Parse(File.ReadAllText(Path.GetFullPath(path)), path, validatePrompts: false);
 
-    internal static LoadedConfiguration Parse(string json, string path, bool validatePrompts)
+    internal static LoadedConfiguration Parse(string json, string path, bool validatePrompts,
+        IReadOnlyDictionary<string, string>? promptEdits = null)
     {
         string fullPath = Path.GetFullPath(path);
         Configuration settings;
@@ -105,9 +112,9 @@ public static class ConfigurationLoader
         if (validatePrompts)
         {
             if (settings.Stages.Transcribe)
-                _ = loaded.ReadPrompt(settings.Transcription, "transcription");
+                _ = loaded.ReadPrompt(settings.Transcription, "transcription", promptEdits);
             if (settings.Stages.Summary)
-                _ = loaded.ReadPrompt(settings.Summary, "summary");
+                _ = loaded.ReadPrompt(settings.Summary, "summary", promptEdits);
         }
         return loaded;
     }

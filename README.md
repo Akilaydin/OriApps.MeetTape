@@ -10,7 +10,7 @@ Copyright (C) 2026 OriApps. Licensed under GPL-3.0-only.
 
 ## Workflow
 
-1. Open **MeetTape** from the Start menu, or run `MeetTape.exe`. First use opens Settings. Select microphone/playback devices, meetings folder, FFmpeg and API stages. Newly entered API keys are hidden and stored in Windows user environment variables; existing prompts are retained. Exit and reopen after changing settings.
+1. Open **MeetTape** from the Start menu, or run `MeetTape.exe`. First use opens Settings. Select microphone/playback devices, meetings folder, FFmpeg and API stages. Newly entered API keys are hidden and stored in Windows user environment variables; prompts can be edited under **API & prompts**. Save applies settings without restarting; active capture keeps its streams and the next recording uses the changes.
 2. Click **Start recording** → **Stop**. Enter an optional title, then **Continue** or **Start next recording** to immediately record another meeting. Unfinished trimming remains available through **Name / Trim** afterward. If trimming is enabled, choose **Accept**, **Skip**, or a manual shared interval. Closing the window hides it to the tray and keeps recording; **Exit** finalizes capture and saves background work.
 3. Follow session progress, retry/errors and resume paused work in the window. Open the meeting folder or completed documents. **Request Summary** explicitly starts the optional Summary stage after a complete transcript exists.
 
