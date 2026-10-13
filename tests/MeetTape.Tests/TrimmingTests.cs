@@ -238,6 +238,12 @@ public sealed class TrimmingTests : IDisposable
             await controller.StartAsync();
             Assert.True((await controller.ReadAsync()).Capture.IsActive);
             Assert.Equal(JobState.Canceled, SessionStore.Read(directory).JobState);
+            string? next;
+            try { next = await controller.StopAsync(); }
+            catch (InvalidOperationException error) when (error.Message == "Named session directory already exists; refusing to overwrite.")
+            { next = (await controller.ReadAsync()).AwaitingTitleDirectory; }
+            Assert.NotNull(next);
+            await controller.PrepareAsync(next, "Next meeting");
         }
         finally { await controller.ShutdownAsync(); }
     }
