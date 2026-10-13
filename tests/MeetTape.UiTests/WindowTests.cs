@@ -24,6 +24,123 @@ public static class TestApp
 public sealed class WindowTests
 {
     [AvaloniaFact]
+    public async Task FinalizedMetadataFailureStillNotifiesInterruptionThroughActualController()
+    {
+        using var fixture = new Fixture();
+        using var capture = new CaptureCoordinator(() => new(new CaptureSource(), new CaptureSource()));
+        capture.Finished += _ => throw new IOException("Fixture session.json failure");
+        using var http = new HttpClient(new NoRequests());
+        var controller = new DesktopController(ConfigurationLoader.Load(fixture.ConfigPath), capture, http);
+        var notices = new List<OperationNotice>();
+        var model = new MainViewModel(controller, notices.Add);
+        try
+        {
+            await model.RefreshAsync(); await model.ToggleFromHotkeyAsync();
+            Dispatcher.UIThread.RunJobs();
+            Assert.Equal("Recording started", Assert.Single(notices).Message);
+            await model.ToggleFromHotkeyAsync(); Dispatcher.UIThread.RunJobs();
+            Assert.False(capture.Status.IsActive); Assert.NotNull(capture.Status.Error);
+            Assert.Equal(2, notices.Count);
+            Assert.Equal("Recording interrupted", notices[1].Message);
+            Assert.Equal(NoticeKind.Error, notices[1].Kind);
+            Assert.DoesNotContain("session.json", notices[1].Message);
+        }
+        finally { await controller.ShutdownAsync(); model.Detach(); }
+    }
+
+    [AvaloniaFact]
+    public async Task HotkeySharesTogglePathAndWaitsForSuccessfulStartAndStopWhileHidden()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture) { StartCompletion = new(), StopCompletion = new() };
+        var notices = new List<OperationNotice>();
+        var model = new MainViewModel(fake, notices.Add);
+        var window = new MainWindow { DataContext = model };
+        window.Show(); await model.RefreshAsync(); window.Hide();
+        Task start = model.ToggleFromHotkeyAsync();
+        await model.ToggleFromHotkeyAsync(); await model.ToggleAsync();
+        Assert.Equal(1, fake.Starts); Assert.Equal(0, fake.Stops);
+        Dispatcher.UIThread.RunJobs(); Assert.Empty(notices);
+        fake.StartCompletion.SetResult(); await start;
+        Dispatcher.UIThread.RunJobs();
+        Assert.Equal("Recording started", Assert.Single(notices).Message);
+        Assert.False(window.IsVisible);
+        Task stop = model.ToggleFromHotkeyAsync();
+        await model.ToggleFromHotkeyAsync(); await model.ToggleAsync();
+        Dispatcher.UIThread.RunJobs(); Assert.Single(notices);
+        fake.StopCompletion.SetResult(); await stop;
+        Dispatcher.UIThread.RunJobs();
+        Assert.Equal("Recording stopped", notices[1].Message);
+        Assert.Equal(1, fake.Stops); Assert.True(model.IsNaming);
+        Assert.False(window.IsVisible);
+        await model.ToggleFromHotkeyAsync(); Dispatcher.UIThread.RunJobs();
+        Assert.Equal(1, fake.Starts); Assert.Equal(1, fake.Stops);
+        Assert.Equal("Name / Trim needed in MeetTape", notices[2].Message);
+        Assert.Contains("Finish Name / Trim", model.InfoText);
+        fake.StartCompletion = null;
+        await model.StartNextRecordingAsync(); Dispatcher.UIThread.RunJobs();
+        Assert.Equal("Recording started", notices[3].Message);
+        Assert.Equal(2, fake.Starts); Assert.Equal(1, fake.Prepares);
+        Assert.False(window.IsVisible);
+        Close(window, model);
+    }
+
+    [AvaloniaFact]
+    public async Task RecordingNoticesIgnoreDuplicateEventsAndFailedStartAndRedactCaptureFailure()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture) { FailStart = true };
+        var notices = new List<OperationNotice>();
+        var model = new MainViewModel(fake, notices.Add);
+        await model.RefreshAsync(); await model.ToggleFromHotkeyAsync();
+        fake.ReportCapture(fake.Snapshot.Capture with { Error = "PRIVATE failed start" });
+        Dispatcher.UIThread.RunJobs(); Assert.Empty(notices); Assert.True(model.HasError);
+        fake.FailStart = false; await model.ToggleAsync();
+        fake.ReportCapture(fake.Snapshot.Capture);
+        fake.ReportCapture(fake.Snapshot.Capture with { IsActive = false, Error = "PRIVATE device failure" });
+        fake.ReportCapture(fake.Snapshot.Capture with { IsActive = false, Error = "PRIVATE device failure" });
+        Dispatcher.UIThread.RunJobs();
+        Assert.Equal(new[] { "Recording started", "Recording interrupted" }, notices.Select(n => n.Message));
+        Assert.Equal(NoticeKind.Error, notices[1].Kind);
+        Assert.All(notices, n => { Assert.Null(n.SessionId); Assert.DoesNotContain("PRIVATE", n.Message); });
+        model.Detach(); fake.ReportCapture(fake.Snapshot.Capture);
+        Dispatcher.UIThread.RunJobs(); Assert.Equal(2, notices.Count);
+    }
+
+    [AvaloniaFact]
+    public async Task NotificationFailureCannotBlockRecordingAndHotkeyCannotStartDuringExit()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var model = new MainViewModel(fake, _ => throw new IOException("PRIVATE notifier error"));
+        await model.RefreshAsync(); await model.ToggleFromHotkeyAsync();
+        Dispatcher.UIThread.RunJobs();
+        Assert.True(model.IsRecording); Assert.False(model.HasError);
+        Assert.Contains("notification unavailable", model.InfoText);
+        Assert.DoesNotContain("PRIVATE", model.DiagnosticText);
+        fake.ShutdownCompletion = new();
+        Task<bool> exit = model.ShutdownAsync();
+        await model.ToggleFromHotkeyAsync(); Assert.Equal(1, fake.Starts); Assert.Equal(0, fake.Stops);
+        fake.ShutdownCompletion.SetResult(); Assert.True(await exit);
+        await model.ToggleFromHotkeyAsync(); Assert.Equal(1, fake.Starts);
+        model.Detach();
+    }
+
+    [AvaloniaFact]
+    public async Task RestoredAwaitingTitleBlocksHotkeyAndShowsSafeNotice()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        fake.Snapshot = fake.Snapshot with { AwaitingTitleDirectory = fixture.SessionDirectory };
+        var notices = new List<OperationNotice>();
+        var model = new MainViewModel(fake, notices.Add);
+        await model.RefreshAsync(); await model.ToggleFromHotkeyAsync();
+        Assert.Equal(0, fake.Starts);
+        Assert.Equal(NoticeKind.Warning, Assert.Single(notices).Kind);
+        model.Detach();
+    }
+
+    [AvaloniaFact]
     public async Task CancelAfterStopSkipsNamingAndTrimAndAllowsNextRecording()
     {
         using var fixture = new Fixture();
@@ -1026,8 +1143,12 @@ public sealed class WindowTests
         public double? StartSeconds, EndSeconds;
         public TaskCompletionSource? ShutdownCompletion;
         public TaskCompletionSource? PrepareCompletion;
+        public TaskCompletionSource? StartCompletion;
+        public TaskCompletionSource? StopCompletion;
         public event Action<OperationNotice>? Notice;
+        public event Action<CaptureStatus>? RecordingChanged;
         public void Report(OperationNotice notice) => Notice?.Invoke(notice);
+        public void ReportCapture(CaptureStatus status) => RecordingChanged?.Invoke(status);
         public FakeController(Fixture fixture)
         {
             var config = ConfigurationLoader.Load(fixture.ConfigPath);
@@ -1044,16 +1165,21 @@ public sealed class WindowTests
                 [new(fixture.SessionDirectory, data, true, true, null)], null, null, false, null) { SummaryEnabled = true };
         }
         public Task<DesktopSnapshot> ReadAsync() => Task.FromResult(Snapshot);
-        public Task StartAsync()
+        public async Task StartAsync()
         {
             if (FailStart) throw new IOException("private-secret diagnostic");
-            Starts++; Snapshot = Snapshot with { Capture = new(true, TimeSpan.FromSeconds(9), 100, 100, null) }; return Task.CompletedTask;
+            Starts++;
+            if (StartCompletion is not null) await StartCompletion.Task;
+            Snapshot = Snapshot with { Capture = new(true, TimeSpan.FromSeconds(9), 100, 100, null) };
+            ReportCapture(Snapshot.Capture);
         }
-        public Task<string?> StopAsync()
+        public async Task<string?> StopAsync()
         {
+            if (StopCompletion is not null) await StopCompletion.Task;
             Stops++; string directory = Snapshot.Sessions[0].Directory;
             Snapshot = Snapshot with { Capture = Snapshot.Capture with { IsActive = false }, AwaitingTitleDirectory = directory };
-            return Task.FromResult<string?>(directory);
+            ReportCapture(Snapshot.Capture);
+            return directory;
         }
         public async Task PrepareAsync(string directory, string? title)
         {
@@ -1089,6 +1215,7 @@ public sealed class WindowTests
         {
             Shutdowns++; if (ShutdownCompletion is not null) await ShutdownCompletion.Task;
             Snapshot = Snapshot with { Capture = Snapshot.Capture with { IsActive = false } };
+            ReportCapture(Snapshot.Capture);
         }
     }
 

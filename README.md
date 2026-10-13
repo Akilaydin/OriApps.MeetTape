@@ -16,6 +16,8 @@ Copyright (C) 2026 OriApps. Licensed under GPL-3.0-only.
 
 Launching MeetTape again reopens its existing window and keeps that instance's recording or processing running.
 
+**Ctrl+Shift+F9** toggles Start/Stop while MeetTape runs, including when hidden in the tray. Finish Name / Trim after Stop before starting again. Windows notifications confirm actual recording transitions without focusing the window; status remains available in the window/tray if notifications are suppressed. If the shortcut is occupied, use the buttons or tray.
+
 Shipped UI text and prompt instructions are in English. The editable transcription prompt still targets Russian (`ru`), and the default Summary still requests Russian output; translating instructions does not translate your meeting content. Updates preserve custom prompts and existing documents. Enabled transcription uploads audio to your configured API; Summary uploads the completed transcript. The bounded startup GitHub version check does not block recording.
 
 ## Installation

@@ -8,6 +8,8 @@ namespace MeetTape;
 public sealed class MainViewModel : INotifyPropertyChanged
 {
     private readonly IDesktopController? controller;
+    private readonly Action<OperationNotice>? notifyRecording;
+    private bool notificationActive;
     private readonly Queue<string> warnings = new();
     private readonly Queue<OperationNotice> processingIssues = new();
     private DesktopSnapshot snapshot = new(new(false, TimeSpan.Zero, 0, 0, null), [], null, null, false, null);
@@ -180,10 +182,29 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string PreparationText => snapshot.Preparing ? "Preparing audio… Start can cancel preparation." : "";
     public event PropertyChangedEventHandler? PropertyChanged;
 
-    public MainViewModel(IDesktopController? controller = null)
+    public MainViewModel(IDesktopController? controller = null, Action<OperationNotice>? notifyRecording = null)
     {
         this.controller = controller;
-        if (controller is not null) controller.Notice += OnNotice;
+        this.notifyRecording = notifyRecording;
+        if (controller is not null)
+        {
+            controller.Notice += OnNotice;
+            controller.RecordingChanged += OnRecordingChanged;
+        }
+    }
+
+    private void OnRecordingChanged(CaptureStatus status) => Dispatcher.UIThread.Post(() =>
+    {
+        if (status.IsActive == notificationActive) return;
+        notificationActive = status.IsActive;
+        SendRecordingNotification(new(status.Error is null ? NoticeKind.Information : NoticeKind.Error,
+            status.IsActive ? "Recording started" : status.Error is null ? "Recording stopped" : "Recording interrupted"));
+    });
+
+    private void SendRecordingNotification(OperationNotice notice)
+    {
+        try { notifyRecording?.Invoke(notice); }
+        catch (Exception) { SetInfo("Windows notification unavailable. Use the window or tray for recording status."); }
     }
 
     private void OnNotice(OperationNotice notice) => Dispatcher.UIThread.Post(() =>
@@ -295,6 +316,17 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
     });
 
+    public Task ToggleFromHotkeyAsync()
+    {
+        if (CanRecord) return ToggleAsync();
+        if (IsNaming || snapshot.AwaitingTitleDirectory is not null)
+        {
+            SetInfo("Finish Name / Trim in the MeetTape window before starting another recording.");
+            SendRecordingNotification(new(NoticeKind.Warning, "Name / Trim needed in MeetTape"));
+        }
+        return Task.CompletedTask;
+    }
+
     public void PrepareSelected()
     {
         if (CanPrepare) BeginNaming(selected!.Directory, selected.Title == "Unnamed meeting" ? "" : selected.Title);
@@ -405,7 +437,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public void SetError(string message) { ErrorText = message; Changed(); }
     public void SetInfo(string message) { InfoText = message; Changed(); }
-    public void Detach() { if (controller is not null) controller.Notice -= OnNotice; }
+    public void Detach()
+    {
+        if (controller is not null)
+        {
+            controller.Notice -= OnNotice;
+            controller.RecordingChanged -= OnRecordingChanged;
+        }
+    }
     private void Changed() => PropertyChanged?.Invoke(this, new(null));
 }
 

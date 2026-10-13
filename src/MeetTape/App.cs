@@ -26,6 +26,8 @@ public sealed class App : Application
     private bool initialized;
     private bool initializingController;
     private IAppUpdates? updates;
+    private RecordingHotkey? hotkey;
+    private RecordingNotifications? notifications;
 
     public override void Initialize() => Styles.Add(new FluentTheme());
 
@@ -40,7 +42,11 @@ public sealed class App : Application
             window.OpenSettings = OpenSettingsAsync;
             window.ExitApplication = ExitAsync;
             window.UpdateApplication = UpdateAsync;
-            window.Opened += async (_, _) => await InitializeAsync();
+            window.Opened += async (_, _) =>
+            {
+                await InitializeAsync();
+                if (!Smoke && StartupError is null) InitializeHotkey();
+            };
             Instance?.Listen(() => Dispatcher.UIThread.Post(() => { if (!allowShutdown) ShowWindow(); }));
             var menu = new NativeMenu();
             status = new NativeMenuItem(model.CaptureText) { IsEnabled = false };
@@ -56,6 +62,9 @@ public sealed class App : Application
             var icon = new WindowIcon(iconStream);
             window.Icon = icon;
             tray = new TrayIcon { Icon = icon, ToolTipText = model.TrayText, Menu = menu };
+            if (!Smoke && StartupError is null)
+                notifications = new(() => Dispatcher.UIThread.Post(() =>
+                { if (!allowShutdown) model.SetInfo("Windows notifications unavailable. Use the window or tray for recording status."); }));
             tray.Clicked += (_, _) => ShowWindow();
             TrayIcon.SetIcons(this, [tray]);
             model.PropertyChanged += ModelChanged;
@@ -65,7 +74,13 @@ public sealed class App : Application
                 e.Cancel = true;
                 _ = ExitAsync();
             };
-            desktop.Exit += (_, _) => { timer?.Stop(); model.Detach(); tray.Dispose(); };
+            desktop.Exit += (_, _) =>
+            {
+                hotkey?.Dispose();
+                Win32Properties.RemoveWndProcHookCallback(window, HotkeyMessage);
+                notifications?.Dispose();
+                timer?.Stop(); model.Detach(); tray.Dispose();
+            };
         }
         base.OnFrameworkInitializationCompleted();
     }
@@ -74,7 +89,7 @@ public sealed class App : Application
     {
         if (status is not null) status.Header = model.CaptureText;
         if (processingStatus is not null) processingStatus.Header = model.ProcessingText;
-        if (record is not null) { record.Header = model.RecordLabel; record.IsEnabled = model.CanRecord; }
+        if (record is not null) { record.Header = model.RecordLabel + " (Ctrl+Shift+F9)"; record.IsEnabled = model.CanRecord; }
         if (tray is not null) tray.ToolTipText = model.TrayText;
     }
 
@@ -114,7 +129,7 @@ public sealed class App : Application
             controller = new DesktopController(config);
             model.PropertyChanged -= ModelChanged;
             model.Detach();
-            model = new MainViewModel(controller);
+            model = new MainViewModel(controller, notice => notifications?.Show(notice));
             model.PropertyChanged += ModelChanged;
             window!.DataContext = model;
             await controller.InitializeAsync();
@@ -145,6 +160,33 @@ public sealed class App : Application
     }
 
     private static string ConfigPath => ConfigurationBootstrap.UserConfigurationPath;
+
+    private void InitializeHotkey()
+    {
+        if (hotkey is not null || window is null) return;
+        try
+        {
+            nint handle = window.TryGetPlatformHandle()?.Handle ?? 0;
+            if (handle == 0) throw new InvalidOperationException("Ctrl+Shift+F9 is unavailable. Use Start/Stop buttons or the tray.");
+            hotkey = new(handle);
+            Win32Properties.AddWndProcHookCallback(window, HotkeyMessage);
+        }
+        catch (Exception)
+        {
+            hotkey?.Dispose(); hotkey = null;
+            model.SetInfo("Ctrl+Shift+F9 is unavailable or already in use. Start/Stop buttons and tray remain available.");
+        }
+    }
+
+    private nint HotkeyMessage(nint handle, uint message, nint wParam, nint lParam, ref bool handled)
+    {
+        if (hotkey?.Matches(message, wParam) == true)
+        {
+            handled = true;
+            Dispatcher.UIThread.Post(async () => await model.ToggleFromHotkeyAsync());
+        }
+        return 0;
+    }
 
     private async Task OpenSettingsAsync()
     {
