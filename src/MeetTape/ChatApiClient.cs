@@ -12,6 +12,7 @@ public sealed class ChatApiException(ApiFailureKind kind, string message, HttpSt
     public ApiFailureKind Kind { get; } = kind;
     public HttpStatusCode? Status { get; } = status;
     public TimeSpan? RetryAfter { get; } = retryAfter;
+    internal bool EmptyChoices { get; init; }
 }
 public sealed record TranscriptionReply(string Text, string AudioSha256);
 
@@ -177,12 +178,28 @@ public sealed class ChatApiClient(HttpClient client, Func<bool> captureActive,
                     && content.GetString() is { } text && !string.IsNullOrWhiteSpace(text)) return text;
             }
             AppDiagnostics.Info("api", $"Rejected response HTTP {(int)status}; bytes={raw.Length}; {DescribeRejectedResponse(root)}");
+            if (status == HttpStatusCode.OK && root.ValueKind == JsonValueKind.Object
+                && root.TryGetProperty("choices", out var emptyChoices) && emptyChoices.ValueKind == JsonValueKind.Array
+                && emptyChoices.GetArrayLength() == 0 && !HasProviderBlock(root))
+                throw new ChatApiException(ApiFailureKind.InvalidResponse, "API HTTP 200 returned empty choices; result not accepted.", status)
+                    { EmptyChoices = true };
         }
         catch (JsonException)
         {
             AppDiagnostics.Info("api", $"Rejected response HTTP {(int)status}; bytes={raw.Length}; reason=invalid-json");
         }
         throw new ChatApiException(ApiFailureKind.InvalidResponse, "API returned malformed, empty or incomplete transcription; result not accepted.");
+    }
+
+    private static bool HasProviderBlock(JsonElement root)
+    {
+        if (root.TryGetProperty("error", out var error) && error.ValueKind != JsonValueKind.Null) return true;
+        foreach (string name in new[] { "promptFeedback", "prompt_feedback" })
+            if (root.TryGetProperty(name, out var feedback) && feedback.ValueKind == JsonValueKind.Object)
+                foreach (string reason in new[] { "blockReason", "block_reason" })
+                    if (feedback.TryGetProperty(reason, out var block) && block.ValueKind != JsonValueKind.Null
+                        && (block.ValueKind != JsonValueKind.String || !string.IsNullOrWhiteSpace(block.GetString()))) return true;
+        return false;
     }
 
     private static string DescribeRejectedResponse(JsonElement root)

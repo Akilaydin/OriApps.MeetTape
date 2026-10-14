@@ -266,12 +266,16 @@ public sealed class ProcessingJobs : IDisposable
                                 result = new(data.Id, chunk, reply.AudioSha256, data.Processing.Transcription.Model,
                                     Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(prompt + ChatApiClient.SourceInstruction))), reply.Text);
                             }
-                            catch (ChatApiException ex) when (ex.Kind == ApiFailureKind.Transient)
+                            catch (ChatApiException ex) when (ex.Kind == ApiFailureKind.Transient || ex.EmptyChoices)
                             {
-                                AppDiagnostics.Error("processing", $"Transcribe chunk {chunk.Index}; retry", ex);
                                 token.ThrowIfCancellationRequested();
                                 attempts = Math.Min(attempts + 1, 30);
+                                if (ex.EmptyChoices && attempts >= 3)
+                                    throw new ChatApiException(ApiFailureKind.InvalidResponse,
+                                        $"Chunk {chunk.Index}: API returned empty choices after {attempts} attempts; automatic retry stopped. " +
+                                        "Check the provider/settings, then Resume; valid earlier chunks are retained.", ex.Status);
                                 var backoff = Backoff(attempts, ex.RetryAfter);
+                                AppDiagnostics.Error("processing", $"Transcribe chunk {chunk.Index}; attempt {attempts}; retry in {backoff.TotalSeconds:F0}s", ex);
                                 data = data with { Retry = new(chunk.Index, attempts, utcNow() + backoff), Error = ex.Message };
                                 SessionStore.Save(directory, data);
                                 Report($"Job {data.Id}: chunk {chunk.Index} transient failure; retry in {backoff.TotalSeconds:F0}s. {ex.Message}", NoticeKind.Warning, data.Id);
