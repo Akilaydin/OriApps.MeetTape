@@ -2,7 +2,7 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 public sealed class ProcessingJobs : IDisposable
 {
@@ -152,9 +152,10 @@ public sealed class ProcessingJobs : IDisposable
         PauseAndWait();
         using var lease = Lease(directory);
         var data = SessionStore.Read(directory);
-        if (!config.Settings.Stages.Summary) throw new InvalidOperationException("Summary disabled; enable Summary in Settings before requesting it.");
         if (!HasPublishedTranscription(data))
             throw new InvalidOperationException("Summary requires a complete published transcription.md.");
+        if (data.Stages.TryGetValue("summary", out var requested) && requested.Status is StageState.Pending or StageState.Running or StageState.Paused)
+            throw new InvalidOperationException("Summary already requested; use Resume for a paused request.");
         if (data.Stages.TryGetValue("summary", out var summary) && summary.Status == StageState.Completed && File.Exists(Path.Combine(directory, "summary.md")))
             throw new InvalidOperationException("Summary already saved; repeated request retains it without a new API call.");
         SessionStore.Save(directory, data with { Stages = new(data.Stages) { ["summary"] = new(true, StageState.Pending) },
@@ -262,16 +263,21 @@ public sealed class ProcessingJobs : IDisposable
                             {
                                 token.ThrowIfCancellationRequested();
                                 var reply = await api.TranscribeAsync(data.Processing.Transcription, prompt,
-                                    AudioChunker.ResolveProcessed(directory, chunk.RelativePath), token);
+                                    AudioChunker.ResolveProcessed(directory, chunk.RelativePath), token,
+                                    $"session={data.Id}; chunk={chunk.Index}; attempt={Math.Min(attempts + 1, 31)}");
                                 result = new(data.Id, chunk, reply.AudioSha256, data.Processing.Transcription.Model,
                                     Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(prompt + ChatApiClient.SourceInstruction))), reply.Text);
                             }
-                            catch (ChatApiException ex) when (ex.Kind == ApiFailureKind.Transient)
+                            catch (ChatApiException ex) when (ex.Kind == ApiFailureKind.Transient || ex.EmptyChoices)
                             {
-                                AppDiagnostics.Error("processing", $"Transcribe chunk {chunk.Index}; retry", ex);
                                 token.ThrowIfCancellationRequested();
                                 attempts = Math.Min(attempts + 1, 30);
+                                if (ex.EmptyChoices && attempts >= 3)
+                                    throw new ChatApiException(ApiFailureKind.InvalidResponse,
+                                        $"Chunk {chunk.Index}: API returned empty choices after {attempts} attempts; automatic retry stopped. " +
+                                        "Check the provider/settings, then Resume; valid earlier chunks are retained.", ex.Status);
                                 var backoff = Backoff(attempts, ex.RetryAfter);
+                                AppDiagnostics.Error("processing", $"Transcribe chunk {chunk.Index}; attempt {attempts}; retry in {backoff.TotalSeconds:F0}s", ex);
                                 data = data with { Retry = new(chunk.Index, attempts, utcNow() + backoff), Error = ex.Message };
                                 SessionStore.Save(directory, data);
                                 Report($"Job {data.Id}: chunk {chunk.Index} transient failure; retry in {backoff.TotalSeconds:F0}s. {ex.Message}", NoticeKind.Warning, data.Id);
@@ -431,7 +437,8 @@ public sealed class ProcessingJobs : IDisposable
             int attempts = data.Retry?.ChunkIndex == 0 ? data.Retry.Attempts : 0;
             try
             {
-                string text = await api.SummarizeAsync(data.Processing.Summary, prompt, transcript, token);
+                string text = await api.SummarizeAsync(data.Processing.Summary, prompt, transcript, token,
+                    $"session={data.Id}; attempt={Math.Min(attempts + 1, 31)}");
                 result = new(data.Id, data.TranscriptSha256!, data.Processing.Summary.Model,
                     Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(prompt))), text);
                 ChunkStore.SaveFile(checkpoint, result);

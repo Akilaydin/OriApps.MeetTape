@@ -1,7 +1,7 @@
 using System.Buffers.Binary;
 using NAudio.CoreAudioApi;
 
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 public sealed class PcmTimeline(Stream destination, long origin100ns)
 {

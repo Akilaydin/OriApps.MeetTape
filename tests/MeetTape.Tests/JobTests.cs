@@ -10,6 +10,9 @@ public sealed class JobTests : IDisposable
     [Fact]
     public async Task RecycledStorageFailureDoesNotLeaveReplacementBlockedInTheScheduler()
     {
+        string logDirectory = Path.Combine(root, "logs");
+        using var log = new FileDiagnostics(logDirectory);
+        using var logScope = AppDiagnostics.Use(log);
         string directory = Session();
         bool fail = true;
         using var handler = new Handler((_, _) =>
@@ -33,7 +36,12 @@ public sealed class JobTests : IDisposable
         var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
         while (SessionStore.Read(directory).JobState != JobState.Completed)
         {
-            Assert.True(DateTimeOffset.UtcNow < deadline, "A removed session's storage failure must not block a new identity at its old path.");
+            if (DateTimeOffset.UtcNow >= deadline)
+            {
+                log.Dispose();
+                Assert.Fail($"Replacement session did not complete; calls={handler.Calls}; state={SessionStore.Read(directory).JobState}; scheduler={jobs.Completion.Status}. " +
+                    File.ReadAllText(Path.Combine(logDirectory, "meettape.log")));
+            }
             await Task.Delay(10);
         }
         jobs.PauseAndWait();
@@ -301,6 +309,147 @@ public sealed class JobTests : IDisposable
         Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
         Assert.Equal(300, ProcessingJobs.Backoff(100, TimeSpan.FromHours(1)).TotalSeconds);
         Assert.Equal(1, ProcessingJobs.Backoff(1, TimeSpan.FromSeconds(-5)).TotalSeconds);
+    }
+
+    [Fact]
+    public async Task ApiDiagnosticsCorrelateSessionChunkAndPersistedAttemptWithRetryDecision()
+    {
+        string directory = Session(120);
+        var now = DateTimeOffset.UtcNow;
+        using (var log = new FileDiagnostics(Path.Combine(root, "logs")))
+        using (AppDiagnostics.Use(log))
+        {
+            using var handler = new Handler((call, _) => Task.FromResult(call == 1 ? Response(429) : Response()));
+            using var http = new HttpClient(handler);
+            using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "fixture-key", utcNow: () => now);
+            await jobs.ProcessSessionAsync(directory, default);
+            now = SessionStore.Read(directory).Retry!.NextAttemptUtc;
+            await jobs.ProcessSessionAsync(directory, default);
+            Assert.Equal(2, handler.Calls);
+            Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
+        }
+        string logged = File.ReadAllText(Path.Combine(root, "logs", "meettape.log"));
+        Assert.Contains("session=" + SessionStore.Read(directory).Id, logged);
+        Assert.Contains("chunk=1; attempt=1", logged);
+        Assert.Contains("chunk=1; attempt=2", logged);
+        Assert.Contains("decision=retry", logged);
+        Assert.Contains("decision=accepted", logged);
+        Assert.DoesNotContain("fixture-key", logged);
+        Assert.DoesNotContain("[00:01] Me: test", logged);
+    }
+
+    [Fact]
+    public async Task EmptyChoicesRetriesOnlyFailedChunkAfterRestartWithoutManualResume()
+    {
+        string directory = Session();
+        var now = DateTimeOffset.UtcNow;
+        byte[] original = File.ReadAllBytes(Path.Combine(directory, "me.mp3"));
+        using var handler = new Handler((call, _) => Task.FromResult(call == 2
+            ? new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"choices\":[]}") }
+            : Response()));
+        using var http = new HttpClient(handler);
+        using (var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key", utcNow: () => now))
+            await jobs.ProcessSessionAsync(directory, default);
+        var deferred = SessionStore.Read(directory);
+        Assert.NotEqual(JobState.Paused, deferred.JobState);
+        var retry = Assert.IsType<RetryProgress>(deferred.Retry);
+        Assert.Equal(2, retry.ChunkIndex);
+        Assert.Equal(1, retry.Attempts);
+        Assert.Equal(1, (retry.NextAttemptUtc - now).TotalSeconds);
+        byte[] checkpoint = File.ReadAllBytes(ChunkStore.PathFor(directory, 1));
+        using var restarted = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key", utcNow: () => now);
+        await restarted.ProcessSessionAsync(directory, default);
+        Assert.Equal(2, handler.Calls);
+        now = retry.NextAttemptUtc;
+        await restarted.ProcessSessionAsync(directory, default);
+        Assert.Equal(4, handler.Calls);
+        Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
+        Assert.Null(SessionStore.Read(directory).Retry);
+        Assert.Equal(checkpoint, File.ReadAllBytes(ChunkStore.PathFor(directory, 1)));
+        Assert.Equal(original, File.ReadAllBytes(Path.Combine(directory, "me.mp3")));
+        Assert.True(File.Exists(Path.Combine(directory, "transcription.md")));
+    }
+
+    [Fact]
+    public async Task PersistentEmptyChoicesStopsAfterThreeRequestsAcrossRestartsThenAllowsExplicitResume()
+    {
+        string directory = Session(120);
+        var now = DateTimeOffset.UtcNow;
+        using var handler = new Handler((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            { Content = new StringContent("{\"choices\":[]}") }));
+        using var http = new HttpClient(handler);
+        for (int attempt = 1; attempt <= 3; attempt++)
+        {
+            using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key", utcNow: () => now);
+            await jobs.ProcessSessionAsync(directory, default);
+            Assert.Equal(attempt, handler.Calls);
+            var saved = SessionStore.Read(directory);
+            if (attempt < 3)
+            {
+                Assert.NotEqual(JobState.Paused, saved.JobState);
+                var retry = Assert.IsType<RetryProgress>(saved.Retry);
+                Assert.Equal(attempt, retry.Attempts);
+                Assert.Equal(attempt, (retry.NextAttemptUtc - now).TotalSeconds);
+                now = retry.NextAttemptUtc;
+            }
+            else
+            {
+                Assert.Equal(JobState.Paused, saved.JobState);
+                Assert.Contains("3", saved.Error);
+                Assert.Contains("empty choices", saved.Error);
+                Assert.Contains("Resume", saved.Error);
+            }
+        }
+        using (var restarted = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key", utcNow: () => now))
+            await restarted.ProcessSessionAsync(directory, default);
+        Assert.Equal(3, handler.Calls);
+        Assert.False(File.Exists(ChunkStore.PathFor(directory, 1)));
+        using var success = new Handler((_, _) => Task.FromResult(Response()));
+        using var resumedHttp = new HttpClient(success);
+        using var resumed = new ProcessingJobs(config, () => false, resumedHttp, readKey: _ => "test-key", utcNow: () => now);
+        resumed.Resume(directory);
+        await resumed.ProcessSessionAsync(directory, default);
+        Assert.Equal(1, success.Calls);
+        Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
+    }
+
+    [Theory]
+    [InlineData("{\"choices\":[],\"promptFeedback\":{\"blockReason\":\"SAFETY\"}}")]
+    [InlineData("{\"choices\":[],\"error\":{\"code\":\"blocked\"}}")]
+    [InlineData("{\"choices\":null}")]
+    [InlineData("{}")]
+    [InlineData("not-json")]
+    public async Task BlockedOrMalformedRepliesPauseWithoutEmptyChoicesRetry(string raw)
+    {
+        string directory = Session(120);
+        using var handler = new Handler((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            { Content = new StringContent(raw) }));
+        using var http = new HttpClient(handler);
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key");
+        await jobs.ProcessSessionAsync(directory, default);
+        await jobs.ProcessSessionAsync(directory, default);
+        Assert.Equal(1, handler.Calls);
+        Assert.Equal(JobState.Paused, SessionStore.Read(directory).JobState);
+        Assert.Null(SessionStore.Read(directory).Retry);
+    }
+
+    [Fact]
+    public async Task CancelDuringEmptyChoicesBackoffMakesNoFurtherRequestsAfterRestart()
+    {
+        string directory = Session(120);
+        using var handler = new Handler((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            { Content = new StringContent("{\"choices\":[]}") }));
+        using var http = new HttpClient(handler);
+        using (var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key"))
+        {
+            await jobs.ProcessSessionAsync(directory, default);
+            Assert.NotNull(SessionStore.Read(directory).Retry);
+            jobs.Cancel(directory);
+        }
+        using var restarted = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key");
+        await restarted.ProcessSessionAsync(directory, default);
+        Assert.Equal(1, handler.Calls);
+        Assert.Equal(JobState.Canceled, SessionStore.Read(directory).JobState);
     }
 
     [Fact]

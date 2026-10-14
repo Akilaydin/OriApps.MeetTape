@@ -5,6 +5,37 @@ namespace MeetTape.Tests;
 
 public sealed class SessionTests : IDisposable
 {
+    [Fact]
+    public void ConcurrentMetadataDiscoveryDoesNotPauseAtomicProgressWrites()
+    {
+        var data = Data() with { Title = new string('x', 32000) };
+        var created = SessionStore.Create(root, data); created.Lease.Dispose();
+        bool stop = false;
+        var failures = new System.Collections.Concurrent.ConcurrentQueue<Exception>();
+        var readers = Enumerable.Range(0, 3).Select(_ => new Thread(() =>
+        {
+            while (!Volatile.Read(ref stop))
+            {
+                try { Assert.Equal(data.Id, SessionStore.Read(created.Directory).Id); }
+                catch (Exception ex) { failures.Enqueue(ex); }
+                Thread.Sleep(1);
+            }
+        }) { IsBackground = true }).ToArray();
+        foreach (var reader in readers) reader.Start();
+        try
+        {
+            for (int index = 0; index < 300; index++) SessionStore.Save(created.Directory, data with { Error = index.ToString() });
+        }
+        finally
+        {
+            Volatile.Write(ref stop, true);
+            foreach (var reader in readers) Assert.True(reader.Join(TimeSpan.FromSeconds(5)));
+        }
+        Assert.Empty(failures);
+        Assert.Equal("299", SessionStore.Read(created.Directory).Error);
+        Assert.Empty(Directory.GetFiles(created.Directory, ".session-*"));
+    }
+
     [Theory]
     [InlineData("Weekly sync", 5100, "Weekly sync", "01h25m")]
     [InlineData("", 0, "Unnamed meeting", "00h00m")]
@@ -143,14 +174,17 @@ public sealed class SessionTests : IDisposable
         Assert.Empty(cache);
     }
 
-    [Fact]
-    public void MetadataExistsBeforeSourcesStartAndStopPreservesIdentityAndOriginals()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MetadataExistsBeforeSourcesStartAndStopPreservesIdentityAndOriginals(bool automaticSummary)
     {
         string? directory = null;
         Guid id = Guid.Empty;
         var me = new Source();
         var them = new Source();
-        var recorder = new Mp3Recorder(configuration, () => new(me, them));
+        var recorder = new Mp3Recorder(configuration with { Settings = configuration.Settings with
+            { Stages = configuration.Settings.Stages with { Summary = automaticSummary } } }, () => new(me, them));
         using var capture = recorder.Capture;
         me.BeforeStart = () =>
         {
@@ -168,7 +202,7 @@ public sealed class SessionTests : IDisposable
         Assert.Equal(RecordingState.Recorded, completed.RecordingState);
         Assert.Equal(capture.Status.Duration.TotalSeconds, completed.DurationSeconds);
         Assert.Equal(StageState.AwaitingUser, completed.Stages["trim"].Status);
-        Assert.Equal(StageState.Disabled, completed.Stages["summary"].Status);
+        Assert.Equal(automaticSummary ? StageState.Pending : StageState.Disabled, completed.Stages["summary"].Status);
         string mePath = Path.Combine(directory!, "me.mp3");
         byte[] original = File.ReadAllBytes(mePath);
         Assert.Throws<UnauthorizedAccessException>(() => File.WriteAllText(mePath, "overwrite"));

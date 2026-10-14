@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Security.Cryptography;
 
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 public sealed record ChunkResult(Guid SessionId, AudioChunk Chunk, string AudioSha256, string Model, string PromptSha256, string Text);
 

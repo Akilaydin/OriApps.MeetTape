@@ -1,7 +1,7 @@
 using System.Text;
 using System.Globalization;
 
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 public sealed class PostRecordingWorkflow(string ffmpegPath) : IDisposable
 {

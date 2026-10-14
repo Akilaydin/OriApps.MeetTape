@@ -1,7 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 internal static class ConfigurationStore
 {

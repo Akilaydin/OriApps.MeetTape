@@ -1,10 +1,11 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 public static class SessionStore
 {
+    private static readonly object metadataGate = new();
     private static readonly JsonSerializerOptions Options = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -31,6 +32,11 @@ public static class SessionStore
 
     public static void Save(string directory, SessionData data, bool overwrite = true)
     {
+        lock (metadataGate) SaveCore(directory, data, overwrite);
+    }
+
+    private static void SaveCore(string directory, SessionData data, bool overwrite)
+    {
         string temporary = Path.Combine(directory, ".session-" + Guid.NewGuid().ToString("N") + ".tmp");
         try
         {
@@ -53,6 +59,11 @@ public static class SessionStore
     }
 
     public static SessionData Read(string directory)
+    {
+        lock (metadataGate) return ReadCore(directory);
+    }
+
+    private static SessionData ReadCore(string directory)
     {
         using var stream = new FileStream(Path.Combine(directory, "session.json"), FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
         SessionData? data;

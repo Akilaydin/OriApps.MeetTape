@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 public sealed record TrimSuggestion(double StartSeconds, double EndSeconds, bool HasActivity);
 public sealed class AudioPreparationShutdownException(string message) : InvalidOperationException(message);

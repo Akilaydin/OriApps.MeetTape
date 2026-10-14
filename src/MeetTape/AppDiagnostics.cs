@@ -8,7 +8,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Channels;
 
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 internal static class AppDiagnostics
 {

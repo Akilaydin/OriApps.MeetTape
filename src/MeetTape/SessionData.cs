@@ -1,6 +1,6 @@
 using NAudio.Wave;
 
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 public enum RecordingState { Recording, Recorded, Interrupted, Failed }
 public enum JobState { NotStarted, Running, Paused, Completed, Canceled }

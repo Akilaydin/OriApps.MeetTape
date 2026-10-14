@@ -1,7 +1,7 @@
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 internal static class WindowsRecycleBin
 {

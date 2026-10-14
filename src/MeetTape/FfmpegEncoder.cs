@@ -1,6 +1,6 @@
 using System.Diagnostics;
 
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 public sealed class FfmpegEncoder : IDisposable
 {

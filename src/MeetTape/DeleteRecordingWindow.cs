@@ -3,7 +3,7 @@ using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
 
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 public sealed class DeleteRecordingWindow : Window
 {

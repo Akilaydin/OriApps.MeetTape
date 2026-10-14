@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 internal sealed class RecordingTaskbar : IDisposable
 {

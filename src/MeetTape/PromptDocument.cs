@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 internal sealed class PromptDocument
 {

@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Threading.Channels;
 
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 public sealed class Mp3Track
 {
