@@ -10,6 +10,9 @@ public sealed class JobTests : IDisposable
     [Fact]
     public async Task RecycledStorageFailureDoesNotLeaveReplacementBlockedInTheScheduler()
     {
+        string logDirectory = Path.Combine(root, "logs");
+        using var log = new FileDiagnostics(logDirectory);
+        using var logScope = AppDiagnostics.Use(log);
         string directory = Session();
         bool fail = true;
         using var handler = new Handler((_, _) =>
@@ -33,9 +36,12 @@ public sealed class JobTests : IDisposable
         var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
         while (SessionStore.Read(directory).JobState != JobState.Completed)
         {
-            Assert.True(DateTimeOffset.UtcNow < deadline,
-                $"A removed session's storage failure must not block a new identity at its old path. " +
-                $"State={SessionStore.Read(directory).JobState}; error={SessionStore.Read(directory).Error}; scheduler={jobs.Completion.Status}; fault={jobs.Completion.Exception}");
+            if (DateTimeOffset.UtcNow >= deadline)
+            {
+                log.Dispose();
+                Assert.Fail($"Replacement session did not complete; calls={handler.Calls}; state={SessionStore.Read(directory).JobState}; scheduler={jobs.Completion.Status}. " +
+                    File.ReadAllText(Path.Combine(logDirectory, "meettape.log")));
+            }
             await Task.Delay(10);
         }
         jobs.PauseAndWait();
