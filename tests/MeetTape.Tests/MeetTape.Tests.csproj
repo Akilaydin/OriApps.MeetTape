@@ -16,6 +16,15 @@
   <ItemGroup>
     <Using Include="Xunit" />
     <Using Include="OriApps.MeetTape" />
+    <Using Include="OriApps.MeetTape.Api" />
+    <Using Include="OriApps.MeetTape.Audio" />
+    <Using Include="OriApps.MeetTape.Desktop" />
+    <Using Include="OriApps.MeetTape.Diagnostics" />
+    <Using Include="OriApps.MeetTape.Platform.Windows" />
+    <Using Include="OriApps.MeetTape.Processing" />
+    <Using Include="OriApps.MeetTape.Sessions" />
+    <Using Include="OriApps.MeetTape.Settings" />
+    <Using Include="OriApps.MeetTape.Updates" />
     <ProjectReference Include="../../src/MeetTape/MeetTape.csproj" />
   </ItemGroup>
 

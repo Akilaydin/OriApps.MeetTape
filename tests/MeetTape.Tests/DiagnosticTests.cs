@@ -10,6 +10,21 @@ public sealed class DiagnosticTests : IDisposable
 {
     private readonly string root = Path.Combine(Path.GetTempPath(), "MeetTapeDiagnostics-" + Guid.NewGuid().ToString("N"));
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AddingOverlappingSecretsRetainsLongestFirstRedaction(bool reverse)
+    {
+        await using var log = new FileDiagnostics(root);
+        string[] secrets = ["fixture", "fixture-key", "fixture-key-long"];
+        foreach (string secret in reverse ? secrets.Reverse() : secrets) log.ProtectSecret(secret);
+        log.ProtectSecret("fixture-key-long");
+        log.Write("Information", "fixture", "fixture-key-long");
+        await log.DisposeAsync();
+        using var document = JsonDocument.Parse(File.ReadAllText(Path.Combine(root, "meettape.log")));
+        Assert.Equal("[redacted]", document.RootElement.GetProperty("stage").GetString());
+    }
+
     [Fact]
     public async Task AsyncDisposalJoinsAnInFlightWriterBeforeExclusiveReadAndCleanup()
     {

@@ -1,3 +1,5 @@
+using OriApps.MeetTape.Desktop;
+using OriApps.MeetTape.Diagnostics;
 using Avalonia;
 using Velopack;
 

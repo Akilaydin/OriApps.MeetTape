@@ -57,7 +57,7 @@ jobs:
         if: steps.scope.outputs.software == 'true'
         shell: pwsh
         run: |
-          ./tools/Get-FFmpeg.ps1
+          ./tools/Dependencies/Get-FFmpeg.ps1
           $env:PATH = (Join-Path $PWD 'dist/ffmpeg') + [IO.Path]::PathSeparator + $env:PATH
           (Join-Path $PWD 'dist/ffmpeg') >> $env:GITHUB_PATH
           ffmpeg -hide_banner -version
@@ -75,7 +75,7 @@ jobs:
       - name: Run isolated scheduler regression with bounded diagnostics
         if: steps.scope.outputs.software == 'true' && !cancelled()
         shell: pwsh
-        run: ./tools/Test-Scheduler.ps1
+        run: ./tools/Tests/Test-Scheduler.ps1
 
       - name: Run Avalonia Headless scenarios and render snapshots
         if: steps.scope.outputs.software == 'true'
@@ -103,7 +103,7 @@ jobs:
         run: |
           dotnet publish src/MeetTape/MeetTape.csproj --configuration Release --runtime win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false --output dist/publish
           if ($LASTEXITCODE -ne 0) { throw 'Publish failed.' }
-          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/Test-Desktop.ps1 -ExecutablePath dist/publish/MeetTape.exe -SkipNativeWindow
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/Tests/Test-Desktop.ps1 -ExecutablePath dist/publish/MeetTape.exe -SkipNativeWindow
           if ($LASTEXITCODE -ne 0) { throw 'Published executable tests failed.' }
 
       - uses: actions/upload-artifact@v4
@@ -159,14 +159,14 @@ jobs:
             dotnet tool install vpk --version 1.2.161 --tool-path dist/vpk
             if ($LASTEXITCODE -ne 0) { throw 'Cannot install pinned vpk.' }
           }
-          ./tools/Build-Package.ps1 -Version 1.0.0 -VpkPath ./dist/vpk/vpk.exe
+          ./tools/Packaging/Build-Package.ps1 -Version 1.0.0 -VpkPath ./dist/vpk/vpk.exe
           Copy-Item -LiteralPath dist/releases/OriApps.MeetTape-win-Setup.exe -Destination dist/releases/first-Setup.exe
-          ./tools/Build-Package.ps1 -Version 1.0.1 -VpkPath ./dist/vpk/vpk.exe
+          ./tools/Packaging/Build-Package.ps1 -Version 1.0.1 -VpkPath ./dist/vpk/vpk.exe
       - name: Test SDK restart, isolated install, update and uninstall
         if: steps.scope.outputs.package == 'true'
         shell: pwsh
         run: |
-          try { ./tools/Test-Package.ps1 -InstallOnCi *> dist/package-smoke.log }
+          try { ./tools/Packaging/Test-Package.ps1 -InstallOnCi *> dist/package-smoke.log }
           finally { Get-Content -LiteralPath dist/package-smoke.log }
       - uses: actions/upload-artifact@v4
         if: steps.scope.outputs.package == 'true' && !cancelled()
