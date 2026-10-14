@@ -12,13 +12,21 @@ public sealed partial class SettingsWindow : Window
     internal Func<Task<bool>>? ConfirmDiscard { get; set; }
     internal Func<string> LogsDirectory { get; set; } = () => AppDiagnostics.DirectoryPath;
     internal Action<string>? OpenFolder { get; set; }
+    private IAppUpdates? aboutUpdates;
+    private Func<Task>? requestUpdate;
+    private MainViewModel? aboutViewModel;
+    private MainViewModel AboutModel => (MainViewModel)this.FindControl<StackPanel>("AboutPanel")!.DataContext!;
 
     public SettingsWindow()
     {
         AvaloniaXamlLoader.Load(this);
+        var about = this.FindControl<StackPanel>("AboutPanel")!;
+        about.DataContext = new MainViewModel(); about.IsEnabled = false;
         Closed += (_, _) => (DataContext as SettingsViewModel)?.ClearSecrets();
+        Closed += (_, _) => { if (aboutViewModel is not null) aboutViewModel.PropertyChanged -= AboutStateChanged; };
         Closing += async (_, e) =>
         {
+            if (AboutModel.IsUpdating) { e.Cancel = true; return; }
             if (DataContext is not SettingsViewModel settings) return;
             if (!settings.CanSave) { e.Cancel = true; return; }
             if (discardConfirmed || !settings.HasUnsavedChanges) return;
@@ -59,6 +67,28 @@ public sealed partial class SettingsWindow : Window
     private void LoadTranscriptionPromptClick(object? sender, RoutedEventArgs e) => ((SettingsViewModel)DataContext!).LoadTranscriptionPrompt();
     private void LoadSummaryPromptClick(object? sender, RoutedEventArgs e) => ((SettingsViewModel)DataContext!).LoadSummaryPrompt();
     private void CloseClick(object? sender, RoutedEventArgs e) => Close();
+    internal void ConfigureAbout(MainViewModel model, IAppUpdates updates, Func<Task> update)
+    {
+        if (aboutViewModel is not null) aboutViewModel.PropertyChanged -= AboutStateChanged;
+        aboutViewModel = model; aboutViewModel.PropertyChanged += AboutStateChanged;
+        aboutUpdates = updates; requestUpdate = update;
+        model.CurrentVersion = updates.CurrentVersion;
+        var about = this.FindControl<StackPanel>("AboutPanel")!;
+        about.DataContext = model; about.IsEnabled = true;
+        AboutStateChanged(null, new(null));
+    }
+    private void AboutStateChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e) => IsEnabled = aboutViewModel?.IsUpdating != true;
+    private async void CheckUpdatesClick(object? sender, RoutedEventArgs e)
+    {
+        if (aboutUpdates is not null) await AboutModel.CheckUpdatesAsync(aboutUpdates);
+    }
+    private async void UpdateClick(object? sender, RoutedEventArgs e)
+    {
+        if (!AboutModel.CanApplyUpdate || requestUpdate is null) return;
+        if (DataContext is SettingsViewModel settings && (!settings.CanSave || settings.HasUnsavedChanges))
+        { AboutModel.UpdateStatus = "Save settings or discard edits before updating MeetTape."; return; }
+        await requestUpdate();
+    }
     private void OpenLogsFolderClick(object? sender, RoutedEventArgs e)
     {
         var error = this.FindControl<TextBlock>("LogsFolderError")!;

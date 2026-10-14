@@ -454,7 +454,7 @@ public sealed class SettingsTests : IDisposable
         window.ConfirmDiscard = () => { confirmations++; return Task.FromResult(false); };
         window.Show();
         var tabs = window.FindControl<TabControl>("SettingsSections")!;
-        Assert.Equal(3, tabs.ItemCount);
+        Assert.Equal(4, tabs.ItemCount);
         window.FindControl<TextBox>("MeetingsFolder")!.Text = "Unsaved folder";
         window.Close();
         Assert.True(window.IsVisible);
