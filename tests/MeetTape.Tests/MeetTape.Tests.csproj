@@ -15,6 +15,7 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
+    <Using Include="OriApps.MeetTape" />
     <ProjectReference Include="../../src/MeetTape/MeetTape.csproj" />
   </ItemGroup>
 
