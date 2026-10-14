@@ -1,0 +1,17 @@
+name: CI Stability
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stability:
+    strategy:
+      fail-fast: false
+      matrix:
+        pass: [1, 2, 3]
+    uses: ./.github/workflows/ci.yml
+    with:
+      stability-run: ${{ format('pass-{0}', matrix.pass) }}
