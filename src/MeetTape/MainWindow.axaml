@@ -78,7 +78,7 @@
               <StackPanel Grid.Column="1" Spacing="8" VerticalAlignment="Center">
                 <Button Name="RecordButton" Classes="record" Classes.recording="{Binding IsRecording}"
                         Content="{Binding RecordLabel}" IsEnabled="{Binding CanRecord}" IsVisible="{Binding !IsNaming}"
-                        Click="RecordClick" Width="190" Height="56" HorizontalContentAlignment="Center" />
+                        Click="RecordClick" Width="190" Height="42" HorizontalContentAlignment="Center" />
                 <TextBlock Name="RecordingShortcut" Text="{Binding RecordingShortcutText}" Foreground="#7C8AA3"
                            FontSize="11" HorizontalAlignment="Center" />
               </StackPanel>
@@ -174,8 +174,8 @@
                           <TextBlock Text="{Binding DisplayStatus}" Foreground="{Binding StatusForeground}" FontSize="12" />
                         </Border>
                         <Button Grid.Column="4" Name="SessionActions" Content="&#x22EE;" Click="SessionActionsClick"
-                                Width="30" Height="32" Padding="0" FontSize="20" CornerRadius="6" VerticalAlignment="Center"
-                                Background="#F5F7FB" BorderBrush="#D4DDEA" BorderThickness="1" />
+                                Width="25" Height="32" Padding="0" FontSize="20" CornerRadius="6"
+                                Background="#F5F7FB" BorderBrush="#D4DDEA" BorderThickness="1" HorizontalContentAlignment="Center" VerticalContentAlignment="Center"/>
                       </Grid>
                     </Border>
                   </DataTemplate>
