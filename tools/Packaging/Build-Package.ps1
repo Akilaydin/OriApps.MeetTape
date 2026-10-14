@@ -13,7 +13,7 @@ if ([IO.Directory]::Exists($publish)) { throw "Publish directory already exists:
 if ([IO.File]::Exists((Join-Path $output "OriApps.MeetTape-$Version-full.nupkg"))) { throw 'Package version already exists; refusing to replace it.' }
 
 $env:AVALONIA_TELEMETRY_OPTOUT = '1'
-dotnet publish (Join-Path $repository 'src/MeetTape/MeetTape.csproj') --configuration Release --runtime win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -p:RuntimeFrameworkVersion=10.0.12 "-p:Version=$Version" --output $publish
+dotnet publish (Join-Path $repository 'src/MeetTape/MeetTape.csproj') --configuration Release --runtime win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false "-p:Version=$Version" --output $publish
 if ($LASTEXITCODE -ne 0) { throw 'Publish failed.' }
 
 & (Join-Path $PSScriptRoot '../Dependencies/Get-FFmpeg.ps1')

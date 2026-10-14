@@ -268,6 +268,27 @@ public sealed class WindowTests
     }
 
     [AvaloniaFact]
+    public async Task ReminderStartOnlyReportsRealSuccessAndNeverStopsActiveRecording()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture) { FailStart = true };
+        var model = new MainViewModel(fake);
+        await model.RefreshAsync();
+
+        Assert.False(await model.StartOnlyAsync());
+        Assert.True(model.HasError);
+        Assert.Equal(0, fake.Starts);
+        fake.FailStart = false;
+        Assert.True(await model.StartOnlyAsync());
+        Assert.Equal(1, fake.Starts);
+        Assert.True(model.IsRecording);
+        Assert.False(await model.StartOnlyAsync());
+        Assert.Equal(1, fake.Starts);
+        Assert.Equal(0, fake.Stops);
+        model.Detach();
+    }
+
+    [AvaloniaFact]
     public async Task NotificationFailureCannotBlockRecordingAndHotkeyCannotStartDuringExit()
     {
         using var fixture = new Fixture();

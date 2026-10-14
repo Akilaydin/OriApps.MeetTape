@@ -35,6 +35,7 @@ public sealed class App : Application
     private bool openingSettings;
     private bool initialized;
     private bool initializingController;
+    private bool controllerReady;
     private IAppUpdates? updates;
     private RecordingHotkey? hotkey;
     private bool hotkeyHooked;
@@ -221,12 +222,13 @@ public sealed class App : Application
             return;
         }
         initializingController = true;
+        controllerReady = false;
         try
         {
             if (!File.Exists(ConfigPath)) await OpenSettingsAsync();
             var config = await Task.Run(() => ConfigurationLoader.LoadForCapture(ConfigPath));
             reminderScheduler = new ReminderScheduler(Path.Combine(Path.GetDirectoryName(ConfigPath)!, "reminder-progress.json"), config.Settings.Reminders);
-            reminderScheduler.Alert += alert => reminderNotifications?.Show(alert);
+            reminderScheduler.Alert = alert => reminderNotifications?.Show(alert) == true;
             controller = new DesktopController(config);
             model.PropertyChanged -= ModelChanged;
             model.Detach();
@@ -261,16 +263,10 @@ public sealed class App : Application
                 finally { readingCapture = false; }
             };
             timer.Start();
-            if (pendingReminderActions.Count > 0)
-            {
-                var actions = pendingReminderActions.ToArray();
-                pendingReminderActions.Clear();
-                foreach (var action in actions)
-                    await HandleReminderActionAsync(action.Id, action.Occurrence, action.Action);
-            }
             updates = new AppUpdates();
             model.ReleaseText = await StartupReleaseNotice.GetAsync(updates);
             model.SetInfo("Close hides the window. Use tray Exit to stop MeetTape.");
+            controllerReady = true;
         }
         catch (Exception error)
         {
@@ -278,6 +274,20 @@ public sealed class App : Application
             model.SetError(AppDiagnostics.UserMessage(error, "Cannot load settings or prompts. Open Settings; check configuration paths and permissions."));
         }
         finally { initializingController = false; }
+        await DrainPendingReminderActionsAsync(pendingReminderActions,
+            () => controllerReady && controller is not null && reminderScheduler is not null && !initializingController && !allowShutdown,
+            HandleReminderActionAsync);
+    }
+
+    internal static async Task DrainPendingReminderActionsAsync(
+        List<(Guid Id, DateOnly Occurrence, string Action)> pending,
+        Func<bool> ready, Func<Guid, DateOnly, string, Task> handle)
+    {
+        if (!ready() || pending.Count == 0) return;
+        var actions = pending.ToArray();
+        pending.Clear();
+        foreach (var action in actions)
+            await handle(action.Id, action.Occurrence, action.Action);
     }
 
     private static string ConfigPath => ConfigurationBootstrap.UserConfigurationPath;
@@ -440,7 +450,7 @@ public sealed class App : Application
     private async Task HandleReminderActionAsync(Guid id, DateOnly occurrence, string action)
     {
         if (allowShutdown) return;
-        if (reminderScheduler is null || controller is null || initializingController)
+        if (reminderScheduler is null || controller is null || initializingController || !controllerReady)
         {
             pendingReminderActions.Add((id, occurrence, action));
             return;
@@ -458,7 +468,9 @@ public sealed class App : Application
                 case "start":
                     if (reminderScheduler.TryStart(id, occurrence))
                     {
-                        await model.StartOnlyAsync();
+                        bool started = false;
+                        try { started = await model.StartOnlyAsync(); }
+                        finally { reminderScheduler.CompleteStart(id, occurrence, started); }
                         if (model.IsNaming) ShowWindow();
                     }
                     break;

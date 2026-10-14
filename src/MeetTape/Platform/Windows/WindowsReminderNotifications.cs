@@ -28,11 +28,12 @@ internal sealed class WindowsReminderNotifications : IDisposable
         this.transport.Activated += OnActivated;
     }
 
-    internal void Show(ReminderAlert alert)
+    // True means Windows accepted the toast submission, not that the user saw it.
+    internal bool Show(ReminderAlert alert)
     {
-        if (disposed) return;
-        try { transport.Show(alert); }
-        catch (Exception) { unavailable(); }
+        if (disposed) return false;
+        try { transport.Show(alert); return true; }
+        catch (Exception) { unavailable(); return false; }
     }
 
     private void OnActivated(string arguments)
