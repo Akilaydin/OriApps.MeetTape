@@ -11,6 +11,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Cannot determine changed paths; refusing to sk
 $software = $false
 $package = $TargetBranch -eq 'release'
 foreach ($file in $files) {
+    if ($file -eq '.mailmap') { continue }
     if ($file -match '^(README|PRODUCT|ARCHITECTURE|CONTRIBUTING|AGENTS)\.md$|^docs/.*\.md$|^\.github/pull_request_template\.md$') { continue }
     $software = $true
     if ($file -match '^src/MeetTape/(App|AppUpdates|Program|DesktopInstance|RecordingControls|RecordingTaskbar|StartupReleaseNotice|WindowsRecycleBin|DesktopController|MainViewModel|UpdateWindow|SessionRemoval)\.cs$' -or

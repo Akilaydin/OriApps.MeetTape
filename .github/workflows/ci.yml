@@ -51,8 +51,9 @@ jobs:
         if: steps.scope.outputs.software == 'true'
         shell: pwsh
         run: |
-          choco install ffmpeg --yes --no-progress
-          if ($LASTEXITCODE -ne 0) { throw 'FFmpeg installation failed.' }
+          ./tools/Get-FFmpeg.ps1
+          $env:PATH = (Join-Path $PWD 'dist/ffmpeg') + [IO.Path]::PathSeparator + $env:PATH
+          (Join-Path $PWD 'dist/ffmpeg') >> $env:GITHUB_PATH
           ffmpeg -hide_banner -version
           if ($LASTEXITCODE -ne 0) { throw 'FFmpeg is not available on PATH.' }
           ffprobe -hide_banner -version

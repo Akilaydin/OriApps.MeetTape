@@ -74,17 +74,36 @@ jobs:
         if: env.SKIP_RELEASE != 'true'
         shell: pwsh
         run: |
-          choco install ffmpeg --yes --no-progress
-          if ($LASTEXITCODE -ne 0) { throw 'Test FFmpeg installation failed.' }
+          ./tools/Get-FFmpeg.ps1
+          (Join-Path $PWD 'dist/ffmpeg') >> $env:GITHUB_PATH
 
       - name: Run software and headless tests
         if: env.SKIP_RELEASE != 'true'
         shell: pwsh
         run: |
-          dotnet test tests/MeetTape.Tests/MeetTape.Tests.csproj --configuration Release --filter 'Category!=Hardware&Category!=LongRunning'
+          dotnet test tests/MeetTape.Tests/MeetTape.Tests.csproj --configuration Release --filter 'Category!=Hardware&Category!=LongRunning&FullyQualifiedName!=MeetTape.Tests.JobTests.SchedulerProcessesOtherMeetingsWhileFirstMeetingWaitsForRetry' --logger 'trx;LogFileName=software.trx' --results-directory dist/test-results
           if ($LASTEXITCODE -ne 0) { throw 'Software tests failed.' }
-          dotnet test tests/MeetTape.UiTests/MeetTape.UiTests.csproj --configuration Release
+
+      - name: Run isolated scheduler regression with bounded diagnostics
+        if: env.SKIP_RELEASE != 'true' && !cancelled()
+        shell: pwsh
+        run: ./tools/Test-Scheduler.ps1
+
+      - name: Run headless tests
+        if: env.SKIP_RELEASE != 'true'
+        shell: pwsh
+        run: |
+          dotnet test tests/MeetTape.UiTests/MeetTape.UiTests.csproj --configuration Release --logger 'trx;LogFileName=headless.trx' --results-directory dist/test-results
           if ($LASTEXITCODE -ne 0) { throw 'Headless tests failed.' }
+
+      - uses: actions/upload-artifact@v4
+        if: env.SKIP_RELEASE != 'true' && !cancelled()
+        with:
+          name: release-software-diagnostics
+          retention-days: 7
+          path: |
+            dist/test-results/**/*.trx
+            dist/screenshots/*.png
 
       - name: Build verified Velopack package with bundled FFmpeg
         if: env.SKIP_RELEASE != 'true'

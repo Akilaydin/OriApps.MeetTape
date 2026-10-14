@@ -22,7 +22,7 @@ public sealed class ApiTests : IDisposable
         string directory = Path.Combine(Path.GetTempPath(), "MeetTapeApiMetadata-" + Guid.NewGuid().ToString("N"));
         try
         {
-            using (var log = new FileDiagnostics(directory))
+            await using (var log = new FileDiagnostics(directory))
             using (AppDiagnostics.Use(log))
             {
                 string raw = JsonSerializer.Serialize(new
@@ -66,7 +66,7 @@ public sealed class ApiTests : IDisposable
         string directory = Path.Combine(Path.GetTempPath(), "MeetTapeHttpMetadata-" + Guid.NewGuid().ToString("N"));
         try
         {
-            using (var log = new FileDiagnostics(directory))
+            await using (var log = new FileDiagnostics(directory))
             using (AppDiagnostics.Use(log))
             {
                 string raw = JsonSerializer.Serialize(new { error = new { type = "invalid_request_error", code, message }, model = "upstream-model" });
@@ -109,7 +109,7 @@ public sealed class ApiTests : IDisposable
         string directory = Path.Combine(Path.GetTempPath(), "MeetTapeSummaryMetadata-" + Guid.NewGuid().ToString("N"));
         try
         {
-            using (var log = new FileDiagnostics(directory))
+            await using (var log = new FileDiagnostics(directory))
             using (AppDiagnostics.Use(log))
             {
                 using var handler = new Handler((_, _) => Task.FromResult(Reply(HttpStatusCode.OK,
@@ -206,7 +206,7 @@ public sealed class ApiTests : IDisposable
         string directory = Path.Combine(Path.GetTempPath(), "MeetTapeApiDiagnostics-" + Guid.NewGuid().ToString("N"));
         try
         {
-            using (var log = new FileDiagnostics(directory))
+            await using (var log = new FileDiagnostics(directory))
             using (AppDiagnostics.Use(log))
             {
                 using var handler = new Handler((_, _) => Task.FromResult(Reply(HttpStatusCode.OK, raw)));

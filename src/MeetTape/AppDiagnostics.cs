@@ -71,7 +71,7 @@ internal static class AppDiagnostics
     }
 }
 
-internal sealed class FileDiagnostics : IDisposable
+internal sealed class FileDiagnostics : IDisposable, IAsyncDisposable
 {
     private readonly string directory;
     private readonly int maxBytes;
@@ -146,6 +146,12 @@ internal sealed class FileDiagnostics : IDisposable
             }
             catch (Exception) { /* Logging failures must never affect recording or saved work. */ }
         }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        queue.Writer.TryComplete();
+        await worker.ConfigureAwait(false);
     }
 
     public void Dispose()

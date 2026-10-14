@@ -11,7 +11,7 @@ public sealed class JobTests : IDisposable
     public async Task RecycledStorageFailureDoesNotLeaveReplacementBlockedInTheScheduler()
     {
         string logDirectory = Path.Combine(root, "logs");
-        using var log = new FileDiagnostics(logDirectory);
+        await using var log = new FileDiagnostics(logDirectory);
         using var logScope = AppDiagnostics.Use(log);
         string directory = Session();
         bool fail = true;
@@ -38,7 +38,7 @@ public sealed class JobTests : IDisposable
         {
             if (DateTimeOffset.UtcNow >= deadline)
             {
-                log.Dispose();
+                await log.DisposeAsync();
                 Assert.Fail($"Replacement session did not complete; calls={handler.Calls}; state={SessionStore.Read(directory).JobState}; scheduler={jobs.Completion.Status}. " +
                     File.ReadAllText(Path.Combine(logDirectory, "meettape.log")));
             }
@@ -316,7 +316,7 @@ public sealed class JobTests : IDisposable
     {
         string directory = Session(120);
         var now = DateTimeOffset.UtcNow;
-        using (var log = new FileDiagnostics(Path.Combine(root, "logs")))
+        await using (var log = new FileDiagnostics(Path.Combine(root, "logs")))
         using (AppDiagnostics.Use(log))
         {
             using var handler = new Handler((call, _) => Task.FromResult(call == 1 ? Response(429) : Response()));

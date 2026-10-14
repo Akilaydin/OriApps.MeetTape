@@ -37,13 +37,23 @@ public sealed class ProcessingConfigurationTests
         });
         using var http = new HttpClient(handler);
         using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "fixture-key");
-        Task running = jobs.ProcessSessionAsync(first, default);
-        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var editor = new PromptDocument(prompt, "transcription") { Text = "Fixture new instructions" };
-        editor.VerifyUnchanged(); editor.Save();
-        Assert.False(running.IsCompleted);
-        release.SetResult();
-        await running.WaitAsync(TimeSpan.FromSeconds(5));
+        using var cancellation = new CancellationTokenSource();
+        Task running = jobs.ProcessSessionAsync(first, cancellation.Token);
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var editor = new PromptDocument(prompt, "transcription") { Text = "Fixture new instructions" };
+            editor.VerifyUnchanged(); editor.Save();
+            Assert.False(running.IsCompleted);
+            release.SetResult();
+            await running.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            await cancellation.CancelAsync();
+            try { await running; }
+            catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+        }
         Assert.Equal(JobState.Completed, SessionStore.Read(first).JobState);
         Assert.Equal(3, requests.Count);
         Assert.All(requests, body => Assert.Contains("Fixture old instructions", body));
@@ -82,13 +92,23 @@ public sealed class ProcessingConfigurationTests
         var keySettings = new List<ApiSettings>();
         using var jobs = new ProcessingJobs(config, () => false, http, readKey: settings =>
         { keySettings.Add(settings); return "fixture-key"; });
-        Task running = jobs.ProcessSessionAsync(directory, default);
-        await handler.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        jobs.ApplyConfiguration(updated);
-        Assert.False(running.IsCompleted);
-        Assert.Equal(original.Processing, SessionStore.Read(directory).Processing);
-        handler.Release.SetResult();
-        await running.WaitAsync(TimeSpan.FromSeconds(5));
+        using var cancellation = new CancellationTokenSource();
+        Task running = jobs.ProcessSessionAsync(directory, cancellation.Token);
+        try
+        {
+            await handler.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            jobs.ApplyConfiguration(updated);
+            Assert.False(running.IsCompleted);
+            Assert.Equal(original.Processing, SessionStore.Read(directory).Processing);
+            handler.Release.SetResult();
+            await running.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            await cancellation.CancelAsync();
+            try { await running; }
+            catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+        }
         Assert.Equal(JobState.Paused, SessionStore.Read(directory).JobState);
         Assert.Equal(2, handler.Calls);
         Assert.All(keySettings, settings => Assert.Equal(config.Settings.Transcription, settings));
