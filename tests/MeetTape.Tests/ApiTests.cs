@@ -64,6 +64,47 @@ public sealed class ApiTests : IDisposable
     }
 
     [Theory]
+    [InlineData("not-json", "reason=invalid-json", "bytes=8")]
+    [InlineData("{}", "reason=choices-missing", "choices=missing")]
+    [InlineData("{\"choices\":{}}", "reason=choices-not-array", "choices=Object")]
+    [InlineData("{\"choices\":[]}", "reason=choices-empty", "choices=Array[0]")]
+    [InlineData("{\"choices\":[{\"finish_reason\":\"length\",\"message\":{\"content\":\"private transcript\"}}]}",
+        "reason=finish-reason-not-stop", "finish_reason=length; message=Object; content=String[length=18, blank=False]")]
+    [InlineData("{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":null}}]}", "reason=content-not-string", "content=Null")]
+    [InlineData("{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":[{\"text\":\"private transcript\"}]}}]}",
+        "reason=content-not-string", "content=Array[1]")]
+    [InlineData("{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\" \"}}]}",
+        "reason=content-blank", "blank=True")]
+    [InlineData("{\"choices\":[{\"finish_reason\":\"secret_finish_reason\",\"message\":{\"content\":\"private transcript\"}}]}",
+        "reason=finish-reason-not-stop", "finish_reason=other-string")]
+    public async Task InvalidResponseLogsStructureWithoutPayload(string raw, string expectedReason, string expectedShape)
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "MeetTapeApiDiagnostics-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            using (var log = new FileDiagnostics(directory))
+            using (AppDiagnostics.Use(log))
+            {
+                using var handler = new Handler((_, _) => Task.FromResult(Reply(HttpStatusCode.OK, raw)));
+                using var http = new HttpClient(handler);
+                var failure = await Assert.ThrowsAsync<ChatApiException>(() => new ChatApiClient(http, () => false, _ => "fixture-key")
+                    .TranscribeAsync(Settings, "private prompt", path, default));
+                Assert.Equal(ApiFailureKind.InvalidResponse, failure.Kind);
+            }
+
+            string logged = File.ReadAllText(Path.Combine(directory, "meettape.log"));
+            Assert.Contains("Rejected response HTTP 200", logged);
+            Assert.Contains(expectedReason, logged);
+            Assert.Contains(expectedShape, logged);
+            Assert.DoesNotContain("private transcript", logged);
+            Assert.DoesNotContain("secret_finish_reason", logged);
+            Assert.DoesNotContain("private prompt", logged);
+            Assert.DoesNotContain("fixture-key", logged);
+        }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
+    }
+
+    [Theory]
     [InlineData(400, ApiFailureKind.Permanent)]
     [InlineData(401, ApiFailureKind.Permanent)]
     [InlineData(403, ApiFailureKind.Permanent)]

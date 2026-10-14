@@ -122,7 +122,7 @@ public sealed class ChatApiClient(HttpClient client, Func<bool> captureActive,
                 content.Write(buffer, 0, count);
             }
             token.ThrowIfCancellationRequested();
-            return ParseText(content.ToArray());
+            return ParseText(content.ToArray(), response.StatusCode);
         }
         catch (OperationCanceledException ex) when (!token.IsCancellationRequested)
         {
@@ -160,7 +160,7 @@ public sealed class ChatApiClient(HttpClient client, Func<bool> captureActive,
     private static ApiFailureKind Classify(HttpStatusCode status) =>
         (int)status is 408 or 429 or >= 500 and <= 599 ? ApiFailureKind.Transient : ApiFailureKind.Permanent;
 
-    internal static string ParseText(byte[] raw)
+    internal static string ParseText(byte[] raw, HttpStatusCode status)
     {
         try
         {
@@ -176,8 +176,53 @@ public sealed class ChatApiClient(HttpClient client, Func<bool> captureActive,
                     && message.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.String
                     && content.GetString() is { } text && !string.IsNullOrWhiteSpace(text)) return text;
             }
+            AppDiagnostics.Info("api", $"Rejected response HTTP {(int)status}; bytes={raw.Length}; {DescribeRejectedResponse(root)}");
         }
-        catch (JsonException) { }
+        catch (JsonException)
+        {
+            AppDiagnostics.Info("api", $"Rejected response HTTP {(int)status}; bytes={raw.Length}; reason=invalid-json");
+        }
         throw new ChatApiException(ApiFailureKind.InvalidResponse, "API returned malformed, empty or incomplete transcription; result not accepted.");
+    }
+
+    private static string DescribeRejectedResponse(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Object) return $"reason=root-not-object; root={root.ValueKind}";
+        if (!root.TryGetProperty("choices", out var choices)) return "reason=choices-missing; root=Object; choices=missing";
+        if (choices.ValueKind != JsonValueKind.Array) return $"reason=choices-not-array; root=Object; choices={choices.ValueKind}";
+        if (choices.GetArrayLength() == 0) return "reason=choices-empty; root=Object; choices=Array[0]";
+
+        var first = choices[0];
+        if (first.ValueKind != JsonValueKind.Object)
+            return $"reason=choice-not-object; choices=Array[{choices.GetArrayLength()}]; choice0={first.ValueKind}";
+
+        bool hasFinish = first.TryGetProperty("finish_reason", out var finish);
+        string? finishValue = hasFinish && finish.ValueKind == JsonValueKind.String ? finish.GetString() : null;
+        string finishShape = finishValue switch
+        {
+            "stop" or "length" or "content_filter" or "tool_calls" or "function_call" => finishValue,
+            null => hasFinish ? finish.ValueKind.ToString() : "missing",
+            _ => "other-string"
+        };
+        bool hasMessage = first.TryGetProperty("message", out var message);
+        var content = default(JsonElement);
+        bool hasContent = hasMessage && message.ValueKind == JsonValueKind.Object && message.TryGetProperty("content", out content);
+        string? contentText = hasContent && content.ValueKind == JsonValueKind.String ? content.GetString() : null;
+        string contentShape = !hasContent ? "missing" : content.ValueKind switch
+        {
+            JsonValueKind.String => $"String[length={contentText!.Length}, blank={string.IsNullOrWhiteSpace(contentText)}]",
+            JsonValueKind.Array => $"Array[{content.GetArrayLength()}]",
+            _ => content.ValueKind.ToString()
+        };
+        string reason = !hasFinish ? "finish-reason-missing"
+            : finish.ValueKind != JsonValueKind.String ? "finish-reason-not-string"
+            : finishValue != "stop" ? "finish-reason-not-stop"
+            : !hasMessage ? "message-missing"
+            : message.ValueKind != JsonValueKind.Object ? "message-not-object"
+            : !hasContent ? "content-missing"
+            : content.ValueKind != JsonValueKind.String ? "content-not-string"
+            : "content-blank";
+        return $"reason={reason}; choices=Array[{choices.GetArrayLength()}]; finish_reason={finishShape}; " +
+            $"message={(hasMessage ? message.ValueKind.ToString() : "missing")}; content={contentShape}";
     }
 }
