@@ -1,6 +1,7 @@
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml;
+using System.Diagnostics;
 
 namespace MeetTape;
 
@@ -9,6 +10,8 @@ public sealed partial class SettingsWindow : Window
     private bool confirmingClose;
     private bool discardConfirmed;
     internal Func<Task<bool>>? ConfirmDiscard { get; set; }
+    internal Func<string> LogsDirectory { get; set; } = () => AppDiagnostics.DirectoryPath;
+    internal Action<string>? OpenFolder { get; set; }
 
     public SettingsWindow()
     {
@@ -56,4 +59,21 @@ public sealed partial class SettingsWindow : Window
     private void LoadTranscriptionPromptClick(object? sender, RoutedEventArgs e) => ((SettingsViewModel)DataContext!).LoadTranscriptionPrompt();
     private void LoadSummaryPromptClick(object? sender, RoutedEventArgs e) => ((SettingsViewModel)DataContext!).LoadSummaryPrompt();
     private void CloseClick(object? sender, RoutedEventArgs e) => Close();
+    private void OpenLogsFolderClick(object? sender, RoutedEventArgs e)
+    {
+        var error = this.FindControl<TextBlock>("LogsFolderError")!;
+        error.Text = ""; error.IsVisible = false;
+        try
+        {
+            string directory = LogsDirectory();
+            Directory.CreateDirectory(directory);
+            if (OpenFolder is { } open) open(directory);
+            else using (Process.Start(new ProcessStartInfo(directory) { UseShellExecute = true })) { }
+        }
+        catch (Exception ex)
+        {
+            error.Text = AppDiagnostics.UserMessage(ex, "Cannot open logs folder. Check folder permissions and Windows Explorer, then retry.");
+            error.IsVisible = true;
+        }
+    }
 }

@@ -32,7 +32,7 @@ To uninstall, use **Exit** in every MeetTape window/tray, then remove **MeetTape
 
 ## Output
 
-Persistent diagnostics are stored in `%LOCALAPPDATA%\MeetTape\Logs\meettape.log`, with up to five files of 1 MiB each (`.1`–`.4` are older logs). Logs contain technical errors and workflow stages, survive restarts, and redact API keys and URL credentials. Open them directly in the filesystem; logging failure never blocks recording. The UI shows the cause and available recovery action.
+Persistent diagnostics are stored in `%LOCALAPPDATA%\MeetTape\Logs\meettape.log`, with up to five files of 1 MiB each (`.1`–`.4` are older logs). Logs contain technical errors and workflow stages, survive restarts, and redact API keys and URL credentials. Use **Open logs folder** in Settings to open Windows Explorer; a missing folder is created without changing settings or log files. Logging failure never blocks recording. The UI shows the cause and available recovery action.
 
 Final folders use `Weekly sync_13.10.2026 10-30 01h25m`: title, local start time and audio duration in whole hours/minutes. Empty titles use `Unnamed meeting`; occupied destinations are preserved and the next available numeric suffix (` (2)`, ` (3)`, ...) is appended automatically. The session UUID stays in `session.json`.
 
