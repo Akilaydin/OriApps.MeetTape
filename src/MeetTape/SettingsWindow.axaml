@@ -92,7 +92,9 @@
     </TabControl>
     <StackPanel Grid.Row="2" Spacing="12" Margin="0,16,0,0">
       <TextBlock Name="SettingsMessage" Text="{Binding Message}" TextWrapping="Wrap" />
+      <TextBlock Name="LogsFolderError" IsVisible="False" TextWrapping="Wrap" />
       <StackPanel Orientation="Horizontal" Spacing="12" HorizontalAlignment="Right">
+        <Button Name="OpenLogsFolder" Content="Open logs folder" Click="OpenLogsFolderClick" />
         <Button Name="CloseSettings" Content="Close" Click="CloseClick" />
         <Button Name="SaveSettings" Content="Save settings" IsEnabled="{Binding CanSave}" Click="SaveClick" />
       </StackPanel>

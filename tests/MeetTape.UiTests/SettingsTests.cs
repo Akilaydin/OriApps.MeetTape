@@ -18,6 +18,66 @@ public sealed class SettingsTests : IDisposable
     public SettingsTests() => ConfigurationBootstrap.Initialize(ConfigPath, Path.Combine(root, "Meetings"));
     private SettingsViewModel Model(Func<LoadedConfiguration, Task>? apply = null) => new(ConfigPath, [], (_, _, _) => { }, apply);
 
+    [AvaloniaTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void OpenLogsCreatesOnlyMissingFolderAndPreservesUnsavedSettingsAndExistingLog(bool existing)
+    {
+        string directory = Path.Combine(root, "fixture-logs");
+        string logPath = Path.Combine(directory, "meettape.log");
+        if (existing) { Directory.CreateDirectory(directory); File.WriteAllText(logPath, "Existing diagnostics"); }
+        string configuration = File.ReadAllText(ConfigPath);
+        string prompt = File.ReadAllText(TranscriptionPath);
+        var model = Model(); model.ChunkSeconds = "90";
+        string message = model.Message;
+        string? opened = null;
+        var window = new SettingsWindow
+        {
+            DataContext = model, LogsDirectory = () => directory, ConfirmDiscard = () => Task.FromResult(true),
+            OpenFolder = path => { Assert.True(Directory.Exists(path)); opened = path; }
+        };
+        window.Show();
+        var button = window.FindControl<Button>("OpenLogsFolder")!;
+        Assert.True(button.IsEnabled);
+        button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Assert.Equal(directory, opened);
+        Assert.False(window.FindControl<TextBlock>("LogsFolderError")!.IsVisible);
+        Assert.Equal(configuration, File.ReadAllText(ConfigPath));
+        Assert.Equal(prompt, File.ReadAllText(TranscriptionPath));
+        Assert.Equal(message, model.Message);
+        Assert.Equal("90", model.ChunkSeconds);
+        Assert.True(model.HasUnsavedChanges); Assert.False(model.Saved);
+        if (existing) Assert.Equal("Existing diagnostics", File.ReadAllText(logPath));
+        else Assert.Empty(Directory.GetFiles(directory));
+        window.Close();
+    }
+
+    [AvaloniaTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void OpenLogsFailureShowsSafeMessageWithoutSavingOrDisablingSettings(bool shellFailure)
+    {
+        string directory = Path.Combine(root, "fixture-logs");
+        if (!shellFailure) File.WriteAllText(directory, "Occupied path");
+        string configuration = File.ReadAllText(ConfigPath);
+        var model = Model();
+        int opens = 0;
+        var window = new SettingsWindow
+        {
+            DataContext = model, LogsDirectory = () => directory,
+            OpenFolder = _ => { opens++; throw new UnauthorizedAccessException("private-shell-error"); }
+        };
+        window.Show();
+        window.FindControl<Button>("OpenLogsFolder")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Assert.Equal(shellFailure ? 1 : 0, opens);
+        var error = window.FindControl<TextBlock>("LogsFolderError")!;
+        Assert.True(error.IsVisible);
+        Assert.NotEmpty(error.Text!); Assert.DoesNotContain("private-shell-error", error.Text);
+        Assert.True(model.CanSave); Assert.False(model.HasUnsavedChanges); Assert.False(model.Saved);
+        Assert.Equal(configuration, File.ReadAllText(ConfigPath));
+        window.Close();
+    }
+
     [AvaloniaFact]
     public async Task RecordingShortcutSaveUpdatesRuntimeLabelsAndReloadsThePersistedChoice()
     {
