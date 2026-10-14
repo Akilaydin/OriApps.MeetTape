@@ -356,6 +356,21 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
     });
 
+    // Notification actions must never use ToggleAsync: it stops an existing recording.
+    public async Task<bool> StartOnlyAsync()
+    {
+        if (!CanRecord || IsRecording) return false;
+        bool started = false;
+        await ExecuteAsync(async () =>
+        {
+            if ((await controller!.ReadAsync()).Capture.IsActive) return;
+            warnings.Clear();
+            await controller.StartAsync();
+            started = (await controller.ReadAsync()).Capture.IsActive;
+        });
+        return started;
+    }
+
     public Task ToggleFromHotkeyAsync()
     {
         if (CanRecord) return ToggleAsync();

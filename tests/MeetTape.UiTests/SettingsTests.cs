@@ -454,13 +454,13 @@ public sealed class SettingsTests : IDisposable
         window.ConfirmDiscard = () => { confirmations++; return Task.FromResult(false); };
         window.Show();
         var tabs = window.FindControl<TabControl>("SettingsSections")!;
-        Assert.Equal(4, tabs.ItemCount);
+        Assert.Equal(5, tabs.ItemCount);
         window.FindControl<TextBox>("MeetingsFolder")!.Text = "Unsaved folder";
         window.Close();
         Assert.True(window.IsVisible);
         Assert.Equal(1, confirmations);
         Assert.Equal(original, File.ReadAllText(ConfigPath));
-        tabs.SelectedIndex = 2;
+        tabs.SelectedIndex = 3;
         var editor = window.FindControl<TextBox>("TranscriptionPromptEditor")!;
         Assert.Equal(prompt, editor.Text);
         Assert.True(editor.AcceptsReturn);

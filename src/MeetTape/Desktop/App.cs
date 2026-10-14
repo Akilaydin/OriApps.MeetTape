@@ -1,6 +1,7 @@
 using OriApps.MeetTape.Audio;
 using OriApps.MeetTape.Diagnostics;
 using OriApps.MeetTape.Platform.Windows;
+using OriApps.MeetTape.Reminders;
 using OriApps.MeetTape.Settings;
 using OriApps.MeetTape.Updates;
 using Avalonia;
@@ -16,6 +17,7 @@ public sealed class App : Application
 {
     internal static string? StartupError { get; set; }
     internal static bool Smoke { get; set; }
+    internal static bool StartInTray { get; set; }
     internal static DesktopInstance? Instance { get; set; }
     private static bool TaskbarSmoke => Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true";
     private IClassicDesktopStyleApplicationLifetime? desktop;
@@ -33,11 +35,15 @@ public sealed class App : Application
     private bool openingSettings;
     private bool initialized;
     private bool initializingController;
+    private bool controllerReady;
     private IAppUpdates? updates;
     private RecordingHotkey? hotkey;
     private bool hotkeyHooked;
     internal Func<string, int, RecordingHotkey>? HotkeyFactory { get; set; }
     private RecordingNotifications? notifications;
+    private WindowsReminderNotifications? reminderNotifications;
+    private ReminderScheduler? reminderScheduler;
+    private readonly List<(Guid Id, DateOnly Occurrence, string Action)> pendingReminderActions = [];
     private RecordingTaskbar? taskbar;
     private uint taskbarButtonCreated;
     private bool taskbarCreated;
@@ -54,7 +60,8 @@ public sealed class App : Application
         {
             desktop = lifetime;
             desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
-            window = new MainWindow { DataContext = model };
+            window = new MainWindow { DataContext = model, ShowInTaskbar = !StartInTray,
+                WindowState = StartInTray ? WindowState.Minimized : WindowState.Normal };
             taskbarButtonCreated = RegisterWindowMessage("TaskbarButtonCreated");
             Win32Properties.AddWndProcHookCallback(window, TaskbarMessage);
             desktop.MainWindow = window;
@@ -66,6 +73,7 @@ public sealed class App : Application
                 InitializeTaskbar();
                 await InitializeAsync();
                 if (!Smoke && StartupError is null) InitializeHotkey();
+                if (StartInTray && controller is not null) window.Hide();
             };
             Instance?.Listen(() => Dispatcher.UIThread.Post(() => { if (!allowShutdown) ShowWindow(); }));
             var menu = new NativeMenu();
@@ -86,8 +94,23 @@ public sealed class App : Application
             window.Icon = icon;
             tray = new TrayIcon { Icon = icon, ToolTipText = model.TrayText, Menu = menu };
             if (!Smoke && StartupError is null)
+            {
                 notifications = new(() => Dispatcher.UIThread.Post(() =>
                 { if (!allowShutdown) model.SetInfo("Windows notifications unavailable. Use the window or tray for recording status."); }));
+                try
+                {
+                    reminderNotifications = new((id, occurrence, action) =>
+                        Dispatcher.UIThread.Post(() => _ = HandleReminderActionAsync(id, occurrence, action)),
+                        () => Dispatcher.UIThread.Post(() =>
+                        { if (!allowShutdown) model.SetInfo("Windows reminder notifications are unavailable. Check Windows notifications settings."); }));
+                }
+                catch (Exception error)
+                {
+                    AppDiagnostics.Error("reminders", "Initialize Windows notifications", error);
+                    reminderNotifications = null;
+                    model.SetInfo("Windows reminder notifications are unavailable. Check Windows notifications settings.");
+                }
+            }
             tray.Clicked += (_, _) => ShowWindow();
             TrayIcon.SetIcons(this, [tray]);
             model.PropertyChanged += ModelChanged;
@@ -105,6 +128,7 @@ public sealed class App : Application
                 Win32Properties.RemoveWndProcHookCallback(window, TaskbarMessage);
                 Win32Properties.RemoveWndProcHookCallback(window, HotkeyMessage);
                 notifications?.Dispose();
+                reminderNotifications?.Dispose();
                 timer?.Stop(); model.Detach(); tray.Dispose();
             };
         }
@@ -198,10 +222,13 @@ public sealed class App : Application
             return;
         }
         initializingController = true;
+        controllerReady = false;
         try
         {
             if (!File.Exists(ConfigPath)) await OpenSettingsAsync();
             var config = await Task.Run(() => ConfigurationLoader.LoadForCapture(ConfigPath));
+            reminderScheduler = new ReminderScheduler(Path.Combine(Path.GetDirectoryName(ConfigPath)!, "reminder-progress.json"), config.Settings.Reminders);
+            reminderScheduler.Alert = alert => reminderNotifications?.Show(alert) == true;
             controller = new DesktopController(config);
             model.PropertyChanged -= ModelChanged;
             model.Detach();
@@ -221,7 +248,12 @@ public sealed class App : Application
                 try
                 {
                     model.RefreshCapture(await controller.ReadCaptureAsync());
-                    if (++captureTicks == 10) { captureTicks = 0; await model.RefreshAsync(); }
+                    if (++captureTicks == 10)
+                    {
+                        captureTicks = 0;
+                        await model.RefreshAsync();
+                        reminderScheduler?.Tick(model.IsRecording);
+                    }
                 }
                 catch (Exception error)
                 {
@@ -234,6 +266,7 @@ public sealed class App : Application
             updates = new AppUpdates();
             model.ReleaseText = await StartupReleaseNotice.GetAsync(updates);
             model.SetInfo("Close hides the window. Use tray Exit to stop MeetTape.");
+            controllerReady = true;
         }
         catch (Exception error)
         {
@@ -241,6 +274,20 @@ public sealed class App : Application
             model.SetError(AppDiagnostics.UserMessage(error, "Cannot load settings or prompts. Open Settings; check configuration paths and permissions."));
         }
         finally { initializingController = false; }
+        await DrainPendingReminderActionsAsync(pendingReminderActions,
+            () => controllerReady && controller is not null && reminderScheduler is not null && !initializingController && !allowShutdown,
+            HandleReminderActionAsync);
+    }
+
+    internal static async Task DrainPendingReminderActionsAsync(
+        List<(Guid Id, DateOnly Occurrence, string Action)> pending,
+        Func<bool> ready, Func<Guid, DateOnly, string, Task> handle)
+    {
+        if (!ready() || pending.Count == 0) return;
+        var actions = pending.ToArray();
+        pending.Clear();
+        foreach (var action in actions)
+            await handle(action.Id, action.Occurrence, action.Action);
     }
 
     private static string ConfigPath => ConfigurationBootstrap.UserConfigurationPath;
@@ -352,7 +399,9 @@ public sealed class App : Application
                 AppDiagnostics.Error("devices", "Enumerate", error);
                 devices = []; model.SetError(AppDiagnostics.UserMessage(error, "Cannot enumerate devices. Check Windows Audio service and permissions."));
             }
-            var settings = await Task.Run(() => new SettingsViewModel(ConfigPath, devices, applySettings: ApplySettingsAsync, prepareHotkey: PrepareHotkey));
+            var settings = new SettingsViewModel(ConfigPath, devices, applySettings: ApplySettingsAsync,
+                prepareHotkey: PrepareHotkey, nextReminder: reminderScheduler is null ? null : reminderScheduler.NextOccurrenceText,
+                actualRunAtStartup: WindowsStartup.IsEnabled());
             var dialog = new SettingsWindow { DataContext = settings, Icon = window.Icon };
             updates ??= new AppUpdates();
             dialog.ConfigureAbout(model, updates, () => UpdateAsync(dialog));
@@ -370,6 +419,7 @@ public sealed class App : Application
 
     private async Task ApplySettingsAsync(LoadedConfiguration updated)
     {
+        reminderScheduler?.Configure(updated.Settings.Reminders);
         if (controller is not null)
         {
             await controller.ApplyConfigurationAsync(updated);
@@ -380,9 +430,58 @@ public sealed class App : Application
             initialized = false;
             await InitializeAsync();
         }
+        if (!Smoke && WindowsStartup.IsEnabled() != updated.Settings.Reminders.RunAtWindowsStartup)
+        {
+            try { WindowsStartup.SetEnabled(updated.Settings.Reminders.RunAtWindowsStartup); }
+            catch (Exception error)
+            {
+                AppDiagnostics.Error("reminders", "Windows startup registration", error);
+                throw new InvalidOperationException("Settings saved, but Windows startup registration failed. Reopen Settings and retry.", error);
+            }
+        }
     }
 
-    private void ShowWindow() { window!.Show(); window.WindowState = WindowState.Normal; window.Activate(); }
+    private void ShowWindow()
+    {
+        window!.ShowInTaskbar = true;
+        window.Show(); window.WindowState = WindowState.Normal; window.Activate();
+    }
+
+    private async Task HandleReminderActionAsync(Guid id, DateOnly occurrence, string action)
+    {
+        if (allowShutdown) return;
+        if (reminderScheduler is null || controller is null || initializingController || !controllerReady)
+        {
+            pendingReminderActions.Add((id, occurrence, action));
+            return;
+        }
+        try
+        {
+            switch (action)
+            {
+                case "snooze":
+                    reminderScheduler.Snooze(id, occurrence);
+                    break;
+                case "dismiss":
+                    reminderScheduler.Dismiss(id, occurrence);
+                    break;
+                case "start":
+                    if (reminderScheduler.TryStart(id, occurrence))
+                    {
+                        bool started = false;
+                        try { started = await model.StartOnlyAsync(); }
+                        finally { reminderScheduler.CompleteStart(id, occurrence, started); }
+                        if (model.IsNaming) ShowWindow();
+                    }
+                    break;
+            }
+        }
+        catch (Exception error)
+        {
+            AppDiagnostics.Error("reminders", "Notification action", error);
+            model.SetError("Cannot complete reminder action. Open MeetTape to check recording status.");
+        }
+    }
 
     private async Task ExitAsync()
     {

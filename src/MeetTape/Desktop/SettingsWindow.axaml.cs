@@ -69,6 +69,13 @@ public sealed partial class SettingsWindow : Window
     private void LoadTranscriptionPromptClick(object? sender, RoutedEventArgs e) => ((SettingsViewModel)DataContext!).LoadTranscriptionPrompt();
     private void LoadSummaryPromptClick(object? sender, RoutedEventArgs e) => ((SettingsViewModel)DataContext!).LoadSummaryPrompt();
     private void CloseClick(object? sender, RoutedEventArgs e) => Close();
+    private ReminderEditor ReminderModel => ((SettingsViewModel)DataContext!).ReminderEditor;
+    private void AddReminderClick(object? sender, RoutedEventArgs e) => ReminderModel.Add();
+    private void EditReminderClick(object? sender, RoutedEventArgs e) => ReminderModel.Edit();
+    private void ToggleReminderClick(object? sender, RoutedEventArgs e) => ReminderModel.Toggle();
+    private void DeleteReminderClick(object? sender, RoutedEventArgs e) => ReminderModel.Delete();
+    private void SaveReminderClick(object? sender, RoutedEventArgs e) => ReminderModel.Commit();
+    private void CancelReminderClick(object? sender, RoutedEventArgs e) => ReminderModel.Cancel();
     internal void ConfigureAbout(MainViewModel model, IAppUpdates updates, Func<Task> update)
     {
         if (aboutViewModel is not null) aboutViewModel.PropertyChanged -= AboutStateChanged;
