@@ -25,6 +25,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     private readonly Action<string, string, EnvironmentVariableTarget>? setKey;
     private readonly Func<LoadedConfiguration, Task>? applySettings;
     private readonly Func<string, Action<bool>>? prepareHotkey;
+    public ReminderEditor ReminderEditor { get; }
     public string ConfigurationPath { get; }
     public IReadOnlyList<DeviceChoice> Microphones { get; }
     public IReadOnlyList<DeviceChoice> PlaybackDevices { get; }
@@ -49,7 +50,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     public string SummaryPromptText { get => summaryDocument.Text; set { summaryDocument.Text = value ?? ""; Changed(); } }
     public string TranscriptionPromptError => transcriptionDocument.Error;
     public string SummaryPromptError => summaryDocument.Error;
-    public bool HasUnsavedChanges => !Fields().SequenceEqual(originalFields) || NewTranscriptionKey.Length > 0 || NewSummaryKey.Length > 0
+    public bool HasUnsavedChanges => ReminderEditor.IsEditing || !Fields().SequenceEqual(originalFields) || NewTranscriptionKey.Length > 0 || NewSummaryKey.Length > 0
         || transcriptionDocument.IsDirty || summaryDocument.IsDirty;
     // Only newly entered secrets live here. Existing keys are never loaded into controls.
     public string NewTranscriptionKey { get; set; } = "";
@@ -61,7 +62,8 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
 
     public SettingsViewModel(string path, IReadOnlyList<AudioDevice> devices,
         Action<string, string, EnvironmentVariableTarget>? setKey = null,
-        Func<LoadedConfiguration, Task>? applySettings = null, Func<string, Action<bool>>? prepareHotkey = null)
+        Func<LoadedConfiguration, Task>? applySettings = null, Func<string, Action<bool>>? prepareHotkey = null,
+        Func<RecordingReminder, string>? nextReminder = null, bool? actualRunAtStartup = null)
     {
         ConfigurationPath = Path.GetFullPath(path);
         this.setKey = setKey;
@@ -69,6 +71,9 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         this.prepareHotkey = prepareHotkey;
         original = File.ReadAllText(ConfigurationPath);
         var settings = ConfigurationLoader.Parse(original, ConfigurationPath, validatePrompts: false).Settings;
+        ReminderEditor = new(actualRunAtStartup is { } actual
+            ? settings.Reminders with { RunAtWindowsStartup = actual } : settings.Reminders, nextReminder);
+        ReminderEditor.Edited += Changed;
         var json = JsonNode.Parse(original)!;
         MeetingsRoot = settings.MeetingsRoot;
         FfmpegPath = json["capture"]?["ffmpegPath"]?.GetValue<string>() ?? "ffmpeg";
@@ -93,7 +98,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     private string[] Fields() => [Microphone.Id ?? "", Playback.Id ?? "", MeetingsRoot, FfmpegPath,
         Trim.ToString(), Transcribe.ToString(), Summary.ToString(), ChunkSeconds, RecordingHotkey,
         TranscriptionEndpoint, TranscriptionModel, TranscriptionPrompt, TranscriptionKeyVariable,
-        SummaryEndpoint, SummaryModel, SummaryPrompt, SummaryKeyVariable];
+        SummaryEndpoint, SummaryModel, SummaryPrompt, SummaryKeyVariable, ReminderEditor.Signature];
 
     public void LoadTranscriptionPrompt() => ReloadPrompt(ref transcriptionDocument, TranscriptionPrompt);
     public void LoadSummaryPrompt() => ReloadPrompt(ref summaryDocument, SummaryPrompt);
@@ -124,6 +129,8 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         Action<bool>? finishHotkey = null;
         try
         {
+            if (!ReminderEditor.Commit())
+                throw new InvalidDataException(ReminderEditor.Error);
             RecordingHotkey = RecordingHotkeyBinding.Parse(RecordingHotkey).Text;
             if (!int.TryParse(ChunkSeconds, NumberStyles.None, CultureInfo.InvariantCulture, out int seconds))
                 throw new InvalidDataException("Chunk duration must be a whole number between 1 and 340.");
@@ -139,6 +146,9 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             json["chunkSeconds"] = seconds;
             json["transcription"] = Api(TranscriptionEndpoint, TranscriptionModel, TranscriptionPrompt, TranscriptionKeyVariable);
             json["summary"] = Api(SummaryEndpoint, SummaryModel, SummaryPrompt, SummaryKeyVariable);
+            if (json.ContainsKey("reminders") || ReminderEditor.Items.Count > 0 || ReminderEditor.RunAtWindowsStartup)
+                json["reminders"] = JsonSerializer.SerializeToNode(ReminderEditor.Snapshot(),
+                    new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
             var keys = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             AddKey(keys, TranscriptionKeyVariable.Trim(), NewTranscriptionKey);
             AddKey(keys, SummaryKeyVariable.Trim(), NewSummaryKey);

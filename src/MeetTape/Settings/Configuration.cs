@@ -13,6 +13,7 @@ public sealed record Configuration
     public string RecordingHotkey { get; init; } = RecordingHotkeyBinding.DefaultShortcut;
     public StageSettings Stages { get; init; } = new();
     public int ChunkSeconds { get; init; } = 120;
+    public ReminderSettings Reminders { get; init; } = new();
     public required ApiSettings Transcription { get; init; }
     public required ApiSettings Summary { get; init; }
 }
@@ -29,6 +30,26 @@ public sealed record StageSettings
     public bool Trim { get; init; } = true;
     public bool Transcribe { get; init; } = true;
     public bool Summary { get; init; }
+}
+
+public sealed record ReminderSettings
+{
+    public bool RunAtWindowsStartup { get; init; }
+    public List<RecordingReminder> Items { get; init; } = [];
+}
+
+public sealed record RecordingReminder
+{
+    public Guid Id { get; init; } = Guid.NewGuid();
+    public string MeetingName { get; init; } = "";
+    public bool Enabled { get; init; } = true;
+    public DateOnly? Date { get; init; }
+    public TimeOnly Time { get; init; }
+    // 0 = one-time. Bits 0–6 = Monday–Sunday.
+    public int RepeatDays { get; init; }
+
+    public static int DayBit(DayOfWeek day) => 1 << ((int)day + 6) % 7;
+    public bool RepeatsOn(DayOfWeek day) => (RepeatDays & DayBit(day)) != 0;
 }
 
 public sealed record ApiSettings
@@ -98,8 +119,18 @@ public static class ConfigurationLoader
             throw new InvalidDataException("meetingsRoot is required.");
         if (settings.ChunkSeconds <= 0 || settings.ChunkSeconds > AudioChunker.MaxChunkSeconds)
             throw new InvalidDataException($"chunkSeconds must be between 1 and {AudioChunker.MaxChunkSeconds} to stay within the 8 MiB stereo MP3 API limit; recommended 60-180.");
-        if (settings.Capture is null || settings.Stages is null)
-            throw new InvalidDataException("capture and stages must not be null.");
+        if (settings.Capture is null || settings.Stages is null || settings.Reminders is null || settings.Reminders.Items is null)
+            throw new InvalidDataException("capture, stages and reminders must not be null.");
+        var reminderIds = new HashSet<Guid>();
+        foreach (var reminder in settings.Reminders.Items)
+        {
+            if (reminder is null || reminder.Id == Guid.Empty || !reminderIds.Add(reminder.Id)
+                || reminder.MeetingName is null || reminder.MeetingName.Length > 120
+                || reminder.RepeatDays < 0 || reminder.RepeatDays > 127
+                || (reminder.RepeatDays == 0) != (reminder.Date is not null)
+                || (reminder.RepeatDays != 0 && reminder.Date is not null))
+                throw new InvalidDataException("Invalid reminder. Choose a date for one-time reminders, or 1–7 repeat days.");
+        }
         if (settings.Stages.Summary && !settings.Stages.Transcribe)
             throw new InvalidDataException("stages.summary requires stages.transcribe to be enabled.");
         if (string.IsNullOrWhiteSpace(settings.Capture.FfmpegPath))

@@ -14,7 +14,7 @@ $env:AVALONIA_TELEMETRY_OPTOUT = '1'
 $smokeProject = Join-Path $PSScriptRoot 'UpdateSmoke/UpdateSmoke.csproj'
 dotnet build $smokeProject --configuration Release
 if ($LASTEXITCODE -ne 0) { throw 'SDK smoke build failed.' }
-$smokeHost = Join-Path $PSScriptRoot 'UpdateSmoke/bin/Release/net10.0-windows/UpdateSmoke.dll'
+$smokeHost = Join-Path $PSScriptRoot 'UpdateSmoke/bin/Release/net10.0-windows10.0.17763.0/UpdateSmoke.dll'
 
 function Invoke-Smoke([string]$mode) {
     dotnet $smokeHost $mode $feed $root '1.0.0'

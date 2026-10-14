@@ -20,6 +20,8 @@ To remove a saved meeting, select it and use **Delete recording** in the Meeting
 
 **Ctrl+Shift+F9** toggles Start/Stop by default while MeetTape runs, including when hidden in the tray. Change **Recording hotkey** in Settings → Recording and Save to apply and retain another combination without restarting. An occupied shortcut leaves the previous binding available. Finish Name / Trim after Stop before starting again. Windows notifications confirm actual recording transitions without focusing the window; status remains available in the window/tray if notifications are suppressed. If the shortcut is occupied at startup, use the buttons or tray.
 
+**Settings → Reminders** lets you add local meeting reminders with an optional name, date/time for one-time alerts, or time and selected weekdays for recurring alerts. Notifications appear one minute before the meeting, with **Start recording** and **Remind in 5 min**; dismissing an alert leaves future repeats enabled. Start recording never stops an active capture. Save settings to apply edits. Optionally select **Run MeetTape when Windows starts (in the tray)** in an installed build. MeetTape must remain running (the window may be hidden in the tray); **Exit** stops reminders.
+
 Shipped UI text and prompt instructions are in English. The editable transcription prompt still targets Russian (`ru`), and the default Summary still requests Russian output; translating instructions does not translate your meeting content. Updates preserve custom prompts and existing documents. Enabled transcription uploads audio to your configured API; Summary uploads the completed transcript. The bounded startup GitHub version check does not block recording.
 
 ## Installation
