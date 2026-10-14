@@ -1,4 +1,4 @@
-using MeetTape;
+using OriApps.MeetTape;
 using Velopack;
 using Velopack.Locators;
 
