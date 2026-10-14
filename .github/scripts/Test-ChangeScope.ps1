@@ -8,6 +8,8 @@ function git {
     $global:changeScopeTestPaths
 }
 $cases = @(
+    @{ Paths = @('.mailmap'); Software = 'false'; Package = 'false' },
+    @{ Paths = @('.mailmap', 'src/MeetTape/TranscriptAssembler.cs'); Software = 'true'; Package = 'false' },
     @{ Paths = @('README.md', 'ARCHITECTURE.md'); Software = 'false'; Package = 'false' },
     @{ Paths = @('src/MeetTape/TranscriptAssembler.cs'); Software = 'true'; Package = 'false' },
     @{ Paths = @('tests/MeetTape.Tests/JobTests.cs'); Software = 'true'; Package = 'false' },
@@ -31,7 +33,7 @@ try {
             throw "Wrong checks for $($case.Paths -join ', ')."
         }
     }
-    $global:changeScopeTestPaths = @('README.md')
+    $global:changeScopeTestPaths = @('README.md', '.mailmap')
     $result = @(& (Join-Path $PSScriptRoot 'Get-ChangeScope.ps1') -BaseSha base -HeadSha head -TargetBranch release)
     if ($result -cnotcontains 'software=true' -or $result -cnotcontains 'package=true') { throw 'Release promotion skipped full checks.' }
     $global:changeScopeTestExitCode = 1

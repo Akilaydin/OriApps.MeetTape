@@ -1,6 +1,12 @@
 name: CI
 
 on:
+  workflow_call:
+    inputs:
+      stability-run:
+        type: string
+        default: pr
+
   pull_request:
     branches:
       - main
@@ -10,7 +16,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: meettape-ci-${{ github.event.pull_request.number }}
+  group: meettape-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}-${{ inputs.stability-run || 'pr' }}
   cancel-in-progress: true
 
 env:
@@ -30,9 +36,9 @@ jobs:
         id: scope
         shell: pwsh
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          TARGET_BRANCH: ${{ github.base_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          TARGET_BRANCH: ${{ github.base_ref || 'release' }}
         run: |
           ./.github/scripts/Test-ChangeScope.ps1
           ./.github/scripts/Get-ChangeScope.ps1 -BaseSha $env:BASE_SHA -HeadSha $env:HEAD_SHA -TargetBranch $env:TARGET_BRANCH
@@ -51,8 +57,9 @@ jobs:
         if: steps.scope.outputs.software == 'true'
         shell: pwsh
         run: |
-          choco install ffmpeg --yes --no-progress
-          if ($LASTEXITCODE -ne 0) { throw 'FFmpeg installation failed.' }
+          ./tools/Get-FFmpeg.ps1
+          $env:PATH = (Join-Path $PWD 'dist/ffmpeg') + [IO.Path]::PathSeparator + $env:PATH
+          (Join-Path $PWD 'dist/ffmpeg') >> $env:GITHUB_PATH
           ffmpeg -hide_banner -version
           if ($LASTEXITCODE -ne 0) { throw 'FFmpeg is not available on PATH.' }
           ffprobe -hide_banner -version
@@ -82,7 +89,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: steps.scope.outputs.software == 'true' && !cancelled()
         with:
-          name: software-diagnostics
+          name: software-diagnostics-${{ inputs.stability-run || 'pr' }}
           retention-days: 7
           path: |
             dist/test-results/**/*.trx
@@ -102,7 +109,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: steps.scope.outputs.package == 'true' && !cancelled()
         with:
-          name: taskbar-snapshots
+          name: taskbar-snapshots-${{ inputs.stability-run || 'pr' }}
           retention-days: 7
           path: |
             dist/desktop-tests/**/taskbar-*.png
@@ -118,9 +125,9 @@ jobs:
         id: scope
         shell: pwsh
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          TARGET_BRANCH: ${{ github.base_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          TARGET_BRANCH: ${{ github.base_ref || 'release' }}
         run: |
           ./.github/scripts/Test-ChangeScope.ps1
           ./.github/scripts/Get-ChangeScope.ps1 -BaseSha $env:BASE_SHA -HeadSha $env:HEAD_SHA -TargetBranch $env:TARGET_BRANCH
@@ -164,7 +171,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: steps.scope.outputs.package == 'true' && !cancelled()
         with:
-          name: velopack-smoke
+          name: velopack-smoke-${{ inputs.stability-run || 'pr' }}
           retention-days: 7
           compression-level: 0
           path: |

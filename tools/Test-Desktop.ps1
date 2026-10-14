@@ -86,22 +86,38 @@ if ($SkipNativeWindow) {
     $smokeError = Join-Path $testRoot 'startup-stderr.txt'
     # The disposable CI taskbar check needs a visible button; local startup remains hidden.
     $smokeStyle = if ($env:GITHUB_ACTIONS -eq 'true') { 'Normal' } else { 'Hidden' }
+    $env:MEETTAPE_TASKBAR_PROBE_DIRECTORY = $testRoot
     $smoke = Start-Process -FilePath $executable -ArgumentList '--ui-smoke' -WorkingDirectory $testRoot -PassThru -WindowStyle $smokeStyle -RedirectStandardError $smokeError
     $null = $smoke.Handle
     try {
         $taskbarCounts = @{}
         if ($env:GITHUB_ACTIONS -eq 'true') {
             $captureDeadline = [DateTime]::UtcNow.AddSeconds(20)
+            $previousBaseline = -1
+            $stableBaseline = 0
             while (-not $smoke.HasExited -and [DateTime]::UtcNow -lt $captureDeadline) {
                 $trace = ''
                 if ([IO.File]::Exists($smokeError)) {
                     $traceReader = [IO.StreamReader]::new([IO.FileStream]::new($smokeError, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite))
                     try { $trace = $traceReader.ReadToEnd() } finally { $traceReader.Dispose() }
                 }
-                foreach ($stage in @(1, 2)) {
-                    if (-not $taskbarCounts.ContainsKey($stage) -and $trace.Contains("Icon smoke tick $stage begins")) {
-                        Start-Sleep -Milliseconds 150
-                        $taskbarCounts[$stage] = [MeetTapeIconProbe]::CaptureTaskbar((Join-Path $testRoot "taskbar-$stage.png"))
+                foreach ($stage in @(0, 1, 2)) {
+                    if (-not $taskbarCounts.ContainsKey($stage) -and $trace.Contains("Icon smoke stage $stage ready.")) {
+                        $count = [MeetTapeIconProbe]::CaptureTaskbar((Join-Path $testRoot "taskbar-$stage.png"))
+                        $ready = $false
+                        if ($stage -eq 0) {
+                            if ($count -eq $previousBaseline) { $stableBaseline++ } else { $stableBaseline = 0 }
+                            $previousBaseline = $count
+                            $ready = $stableBaseline -ge 2
+                        } elseif ($stage -eq 1) {
+                            $ready = $count -gt ($taskbarCounts[0] + 8)
+                        } else {
+                            $ready = $count -le ($taskbarCounts[0] + 8)
+                        }
+                        if ($ready) {
+                            $taskbarCounts[$stage] = $count
+                            [IO.File]::WriteAllText((Join-Path $testRoot "taskbar-$stage.ready"), '')
+                        }
                     }
                 }
                 Start-Sleep -Milliseconds 50
@@ -111,7 +127,7 @@ if ($SkipNativeWindow) {
         $smoke.Refresh()
         if ($smoke.ExitCode -ne 0) { Get-Content -LiteralPath $smokeError; throw "Published GUI smoke failed (exit code $($smoke.ExitCode))." }
         if ($env:GITHUB_ACTIONS -eq 'true') {
-            if ($taskbarCounts.Count -ne 2 -or $taskbarCounts[1] -le ($taskbarCounts[2] + 8)) {
+            if ($taskbarCounts.Count -ne 3 -or $taskbarCounts[1] -le ($taskbarCounts[2] + 8)) {
                 throw "Recording must visibly add red pixels to the isolated taskbar: active=$($taskbarCounts[1]), stopped=$($taskbarCounts[2])."
             }
             Write-Output "Visible CI taskbar: red pixels active=$($taskbarCounts[1]), stopped=$($taskbarCounts[2]); screenshots in $testRoot."

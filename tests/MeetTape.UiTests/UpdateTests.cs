@@ -202,7 +202,7 @@ public sealed class UpdateTests
         string directory = Path.Combine(Path.GetTempPath(), "MeetTapeUiDiagnostics-" + Guid.NewGuid().ToString("N"));
         try
         {
-            using (var log = new FileDiagnostics(directory))
+            await using (var log = new FileDiagnostics(directory))
             using (AppDiagnostics.Use(log))
             {
                 AppDiagnostics.ProtectSecret("private-secret");
@@ -217,7 +217,7 @@ public sealed class UpdateTests
                 Assert.DoesNotContain("private-secret", model.ErrorText);
                 Assert.True(model.CanRecord); model.Detach();
             }
-            using (var restarted = new FileDiagnostics(directory)) restarted.Write("Information", "startup", "Restarted fixture");
+            await using (var restarted = new FileDiagnostics(directory)) restarted.Write("Information", "startup", "Restarted fixture");
             string text = File.ReadAllText(Path.Combine(directory, "meettape.log"));
             Assert.Contains("HttpRequestException", text); Assert.Contains("UnauthorizedAccessException", text);
             Assert.Contains("Restarted fixture", text); Assert.DoesNotContain("private-secret", text);

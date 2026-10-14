@@ -11,11 +11,46 @@ public sealed class DiagnosticTests : IDisposable
     private readonly string root = Path.Combine(Path.GetTempPath(), "MeetTapeDiagnostics-" + Guid.NewGuid().ToString("N"));
 
     [Fact]
-    public void LogsSurviveRestartRotateAndRetainExceptionContextWithoutCredentials()
+    public async Task AsyncDisposalJoinsAnInFlightWriterBeforeExclusiveReadAndCleanup()
+    {
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var log = new FileDiagnostics(root);
+        log.Write("Error", "fixture", "Slow diagnostic", new BlockingException(entered, release));
+        Task completion = Task.CompletedTask;
+        try
+        {
+            Assert.True(await Task.Run(() => entered.Wait(TimeSpan.FromSeconds(5))));
+            completion = log.DisposeAsync().AsTask();
+            Assert.False(completion.IsCompleted);
+        }
+        finally
+        {
+            release.Set();
+            await log.DisposeAsync();
+        }
+        await completion;
+        using (var file = new FileStream(Path.Combine(root, "meettape.log"), FileMode.Open, FileAccess.Read, FileShare.None))
+            Assert.True(file.Length > 0);
+        Directory.Delete(root, recursive: true);
+    }
+
+    private sealed class BlockingException(ManualResetEventSlim entered, ManualResetEventSlim release) : Exception
+    {
+        public override string ToString()
+        {
+            entered.Set();
+            if (!release.Wait(TimeSpan.FromSeconds(10))) throw new TimeoutException("Fixture writer was not released.");
+            return "Fixture slow diagnostic";
+        }
+    }
+
+    [Fact]
+    public async Task LogsSurviveRestartRotateAndRetainExceptionContextWithoutCredentials()
     {
         for (int restart = 0; restart < 2; restart++)
         {
-            using var log = new FileDiagnostics(root, maxBytes: 2048, retainedFiles: 3);
+            await using var log = new FileDiagnostics(root, maxBytes: 2048, retainedFiles: 3);
             using var scope = AppDiagnostics.Use(log);
             AppDiagnostics.ProtectSecret("fixture-key-secret");
             for (int i = 0; i < 30; i++)
@@ -37,20 +72,20 @@ public sealed class DiagnosticTests : IDisposable
     }
 
     [Fact]
-    public void ExistingLogIsAppendedAfterRestart()
+    public async Task ExistingLogIsAppendedAfterRestart()
     {
-        using (var first = new FileDiagnostics(root)) first.Write("Information", "startup", "First run");
-        using (var second = new FileDiagnostics(root)) second.Write("Information", "startup", "Second run");
+        await using (var first = new FileDiagnostics(root)) first.Write("Information", "startup", "First run");
+        await using (var second = new FileDiagnostics(root)) second.Write("Information", "startup", "Second run");
         string text = File.ReadAllText(Path.Combine(root, "meettape.log"));
         Assert.Contains("First run", text); Assert.Contains("Second run", text);
     }
 
     [Fact]
-    public void UnwritableLogsDoNotDelayOrReplaceCaptureFailure()
+    public async Task UnwritableLogsDoNotDelayOrReplaceCaptureFailure()
     {
         Directory.CreateDirectory(root);
         string blocked = Path.Combine(root, "not-a-directory"); File.WriteAllText(blocked, "fixture");
-        using var log = new FileDiagnostics(blocked);
+        await using var log = new FileDiagnostics(blocked);
         using var scope = AppDiagnostics.Use(log);
         var timer = System.Diagnostics.Stopwatch.StartNew();
         using var capture = new CaptureCoordinator(() => throw new UnauthorizedAccessException("private-device-detail"));
@@ -68,7 +103,7 @@ public sealed class DiagnosticTests : IDisposable
     {
         Directory.CreateDirectory(root);
         string logs = Path.Combine(root, "logs");
-        using (var log = new FileDiagnostics(logs))
+        await using (var log = new FileDiagnostics(logs))
         using (AppDiagnostics.Use(log))
         {
             using var capture = new CaptureCoordinator(() => throw new UnauthorizedAccessException("fixture-device-denied"));

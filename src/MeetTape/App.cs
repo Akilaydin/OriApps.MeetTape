@@ -121,6 +121,25 @@ public sealed class App : Application
         taskbar?.Update(model.IsRecording);
     }
 
+    private static async Task<bool> WaitForTaskbarSnapshotAsync(int stage)
+    {
+        string? directory = Environment.GetEnvironmentVariable("MEETTAPE_TASKBAR_PROBE_DIRECTORY");
+        if (!TaskbarSmoke || string.IsNullOrEmpty(directory)) return true;
+        Console.Error.WriteLine($"Icon smoke stage {stage} ready.");
+        string acknowledgement = Path.Combine(directory, $"taskbar-{stage}.ready");
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(10);
+        while (!File.Exists(acknowledgement))
+        {
+            if (DateTimeOffset.UtcNow >= deadline)
+            {
+                Console.Error.WriteLine($"Icon smoke stage {stage} was not rendered before the deadline.");
+                return false;
+            }
+            await Task.Delay(50);
+        }
+        return true;
+    }
+
     private async Task InitializeAsync()
     {
         if (initialized) return;
@@ -132,8 +151,10 @@ public sealed class App : Application
             timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
             timer.Tick += async (_, _) =>
             {
+                timer.Stop();
                 tick++;
                 Console.Error.WriteLine($"Icon smoke tick {tick} begins; taskbarApplied={taskbar?.Applied}, buttonCreated={taskbarCreated}.");
+                if (tick == 1 && !await WaitForTaskbarSnapshotAsync(0)) { desktop!.Shutdown(1); return; }
                 if (tick == 1 || tick == 4)
                 {
                     model.RefreshCapture(new(true, TimeSpan.FromSeconds(tick), 0, 0, null));
@@ -146,6 +167,7 @@ public sealed class App : Application
                     if (!ReferenceEquals(tray!.Icon, idleIcon) || !ReferenceEquals(window!.Icon, idleIcon) || (TaskbarSmoke && taskbar?.Applied != true))
                     { Console.Error.WriteLine($"Icon smoke tick {tick}: recording={model.IsRecording}, taskbarApplied={taskbar?.Applied}, buttonCreated={taskbarCreated}."); timer.Stop(); desktop!.Shutdown(1); return; }
                 }
+                if ((tick == 1 || tick == 2) && !await WaitForTaskbarSnapshotAsync(tick)) { desktop!.Shutdown(1); return; }
                 if (tick == 3)
                 {
                     ShowWindow();
@@ -163,8 +185,9 @@ public sealed class App : Application
                     model.RefreshCapture(new(false, TimeSpan.FromSeconds(1), 0, 0, null));
                     if (!ReferenceEquals(tray!.Icon, idleIcon) || !ReferenceEquals(window!.Icon, idleIcon) || (TaskbarSmoke && taskbar?.Applied != true))
                     { Console.Error.WriteLine($"Icon smoke tick {tick} failed; taskbarApplied={taskbar?.Applied}, buttonCreated={taskbarCreated}."); timer.Stop(); desktop!.Shutdown(1); return; }
-                    timer.Stop(); await ExitAsync();
+                    timer.Stop(); await ExitAsync(); return;
                 }
+                timer.Start();
             };
             timer.Start();
             return;
