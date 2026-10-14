@@ -3,7 +3,7 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 public sealed record DeviceChoice(string? Id, string Label)
 {

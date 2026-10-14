@@ -1,6 +1,6 @@
 using NAudio.Wave;
 
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 public sealed class Mp3Recorder
 {

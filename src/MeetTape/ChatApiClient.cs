@@ -4,7 +4,7 @@ using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text.Json;
 
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 public enum ApiFailureKind { Transient, Permanent, InvalidResponse, Configuration, FileSystem }
 public sealed class ChatApiException(ApiFailureKind kind, string message, HttpStatusCode? status = null,

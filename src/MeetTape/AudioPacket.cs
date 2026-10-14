@@ -3,7 +3,7 @@ using System.Buffers.Binary;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 public sealed class RecordingException(string message) : IOException(message);
 

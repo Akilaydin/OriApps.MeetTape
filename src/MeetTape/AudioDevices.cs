@@ -1,7 +1,7 @@
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 public enum CaptureChannel { Me, Them }
 

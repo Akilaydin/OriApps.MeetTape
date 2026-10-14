@@ -2,7 +2,7 @@ using System.Runtime.InteropServices;
 using Avalonia.Input;
 using Avalonia.Win32.Input;
 
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 internal sealed class RecordingHotkey : IDisposable
 {

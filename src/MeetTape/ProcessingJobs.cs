@@ -2,7 +2,7 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 public sealed class ProcessingJobs : IDisposable
 {

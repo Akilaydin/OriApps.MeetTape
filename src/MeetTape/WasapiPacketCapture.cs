@@ -2,7 +2,7 @@ using System.Runtime.InteropServices;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 public sealed class WasapiPacketEventArgs(byte[] buffer, int count, long devicePosition, long qpcPosition, AudioClientBufferFlags flags)
     : WaveInEventArgs(buffer, count)

@@ -1,4 +1,4 @@
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 public enum NoticeKind { Information, Warning, Error }
 public sealed record OperationNotice(NoticeKind Kind, string Message, Guid? SessionId = null);

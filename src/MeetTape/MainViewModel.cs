@@ -3,7 +3,7 @@ using System.ComponentModel;
 using System.Globalization;
 using Avalonia.Threading;
 
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 public sealed class MainViewModel : INotifyPropertyChanged
 {

@@ -3,7 +3,7 @@ using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml;
 using System.Diagnostics;
 
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 public sealed partial class SettingsWindow : Window
 {

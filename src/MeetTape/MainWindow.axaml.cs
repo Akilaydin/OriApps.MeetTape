@@ -9,7 +9,7 @@ using Avalonia.VisualTree;
 using Avalonia.Data;
 using System.Diagnostics;
 
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 public sealed partial class MainWindow : Window
 {

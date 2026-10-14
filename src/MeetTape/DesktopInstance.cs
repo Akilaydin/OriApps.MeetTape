@@ -1,4 +1,4 @@
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 internal sealed class DesktopInstance : IDisposable
 {

@@ -2,7 +2,7 @@ using System.Diagnostics;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 internal enum AudioTimingIssueKind { Overlap = 1, InvalidTimestamp = 2, Discontinuity = 4 }
 internal sealed record AudioTimingIssue(AudioTimingIssueKind Kind, long ShiftFrames, int PacketFrames, string Detail);

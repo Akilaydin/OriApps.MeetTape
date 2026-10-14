@@ -3,7 +3,7 @@ using System.Reflection;
 using Velopack;
 using Velopack.Sources;
 
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 public interface IAppUpdates
 {

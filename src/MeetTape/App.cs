@@ -5,7 +5,7 @@ using Avalonia.Platform;
 using Avalonia.Themes.Fluent;
 using Avalonia.Threading;
 
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 public sealed class App : Application
 {

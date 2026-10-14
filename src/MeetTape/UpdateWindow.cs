@@ -2,7 +2,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Layout;
 
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 public sealed class UpdateWindow : Window
 {

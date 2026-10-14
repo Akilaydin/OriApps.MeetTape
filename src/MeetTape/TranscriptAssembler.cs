@@ -2,7 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 public sealed class TranscriptAssembler
 {

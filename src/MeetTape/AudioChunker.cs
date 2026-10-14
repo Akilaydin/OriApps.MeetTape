@@ -1,6 +1,6 @@
 using System.Globalization;
 
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 public sealed class AudioChunker(string ffmpegPath)
 {

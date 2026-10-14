@@ -1,7 +1,7 @@
 using Avalonia;
 using Velopack;
 
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 internal static class Program
 {

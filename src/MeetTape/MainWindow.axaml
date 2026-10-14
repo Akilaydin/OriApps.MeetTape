@@ -1,7 +1,7 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:local="using:MeetTape"
-        x:Class="MeetTape.MainWindow" x:DataType="local:MainViewModel"
+        xmlns:local="using:OriApps.MeetTape"
+        x:Class="OriApps.MeetTape.MainWindow" x:DataType="local:MainViewModel"
         Title="MeetTape" Width="1050" Height="820" MinWidth="700" MinHeight="560"
         RequestedThemeVariant="Light" Background="#F8FAFD" FontFamily="Segoe UI">
   <Window.Styles>

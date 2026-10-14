@@ -1,5 +1,5 @@
 <Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:local="using:MeetTape" x:Class="MeetTape.SettingsWindow" x:DataType="local:SettingsViewModel"
+        xmlns:local="using:OriApps.MeetTape" x:Class="OriApps.MeetTape.SettingsWindow" x:DataType="local:SettingsViewModel"
         Title="MeetTape — Settings" Width="660" Height="730" MinWidth="520" MinHeight="480">
   <Grid RowDefinitions="Auto,*,Auto" Margin="24">
     <StackPanel Spacing="8" Margin="0,0,0,12">

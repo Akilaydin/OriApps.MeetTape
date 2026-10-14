@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 public static class SessionStore
 {

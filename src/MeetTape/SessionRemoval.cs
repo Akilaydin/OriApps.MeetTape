@@ -2,7 +2,7 @@ using Microsoft.Win32.SafeHandles;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 
-namespace MeetTape;
+namespace OriApps.MeetTape;
 
 internal static class SessionRemoval
 {
