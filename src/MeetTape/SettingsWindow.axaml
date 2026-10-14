@@ -27,8 +27,8 @@
           <StackPanel Spacing="8" Margin="4,12,8,8">
             <CheckBox Content="Trim" IsChecked="{Binding Trim}" />
             <CheckBox Content="Transcribe" IsChecked="{Binding Transcribe}" />
-            <CheckBox Content="Optional Summary" IsChecked="{Binding Summary}" />
-            <TextBlock Text="Audio is uploaded only for enabled transcription; Summary uploads the completed transcript on explicit request." TextWrapping="Wrap" Opacity="0.7" />
+            <CheckBox Content="Automatic Summary" IsChecked="{Binding Summary}" />
+            <TextBlock Text="Automatic Summary applies to new recordings after transcription. Request Summary also works when automatic mode is off. Summary uploads only the complete transcript." TextWrapping="Wrap" Opacity="0.7" />
             <TextBlock Text="Chunk duration (1–340 seconds)" /><TextBox Name="ChunkDuration" Text="{Binding ChunkSeconds}" />
           </StackPanel>
         </ScrollViewer>
@@ -61,7 +61,7 @@
               </StackPanel>
             </ScrollViewer>
           </TabItem>
-          <TabItem Header="Summary — on request">
+          <TabItem Header="Summary">
             <ScrollViewer>
               <StackPanel Spacing="8" Margin="4,12,8,8">
                 <Expander Header="API connection &amp; key" HorizontalAlignment="Stretch">

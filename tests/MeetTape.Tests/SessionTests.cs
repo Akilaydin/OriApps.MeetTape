@@ -174,14 +174,17 @@ public sealed class SessionTests : IDisposable
         Assert.Empty(cache);
     }
 
-    [Fact]
-    public void MetadataExistsBeforeSourcesStartAndStopPreservesIdentityAndOriginals()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MetadataExistsBeforeSourcesStartAndStopPreservesIdentityAndOriginals(bool automaticSummary)
     {
         string? directory = null;
         Guid id = Guid.Empty;
         var me = new Source();
         var them = new Source();
-        var recorder = new Mp3Recorder(configuration, () => new(me, them));
+        var recorder = new Mp3Recorder(configuration with { Settings = configuration.Settings with
+            { Stages = configuration.Settings.Stages with { Summary = automaticSummary } } }, () => new(me, them));
         using var capture = recorder.Capture;
         me.BeforeStart = () =>
         {
@@ -199,7 +202,7 @@ public sealed class SessionTests : IDisposable
         Assert.Equal(RecordingState.Recorded, completed.RecordingState);
         Assert.Equal(capture.Status.Duration.TotalSeconds, completed.DurationSeconds);
         Assert.Equal(StageState.AwaitingUser, completed.Stages["trim"].Status);
-        Assert.Equal(StageState.Disabled, completed.Stages["summary"].Status);
+        Assert.Equal(automaticSummary ? StageState.Pending : StageState.Disabled, completed.Stages["summary"].Status);
         string mePath = Path.Combine(directory!, "me.mp3");
         byte[] original = File.ReadAllBytes(mePath);
         Assert.Throws<UnauthorizedAccessException>(() => File.WriteAllText(mePath, "overwrite"));

@@ -36,7 +36,7 @@ Capture ownership is process-local. Controller transitions cancel and join prepa
 PostRecordingWorkflow → AudioTrimmer → selected shared interval
 ProcessingJobs → AudioChunker → stereo chunks → ChatApiClient → ChunkStore
     → TranscriptAssembler → transcription.md
-Explicit Summary request → ChatApiClient → ChunkStore → summary.md
+Automatic or manual Summary request → ChatApiClient → ChunkStore → summary.md
 ```
 
 `PostRecordingWorkflow` coordinates UI-independent title/trim selection and cancellable FFmpeg preparation. `AudioTrimmer` combines edge activity from both tracks and writes separate derivatives for one shared interval. `AudioChunker` creates verified 48 kHz/192 kbps stereo MP3, L=Me/R=Them, with frame-based ownership and bounded context. Trimming and chunk preparation reject recordings longer than three hours.
@@ -45,7 +45,7 @@ Explicit Summary request → ChatApiClient → ChunkStore → summary.md
 
 `ChatApiClient` sends non-streaming Chat Completions requests with base64 MP3 `input_audio`, or text-only Summary messages. Provider requests disable redirects and use a five-minute deadline, 8 MiB audio cap and 2 MiB response/Summary-input caps. Timeout, temporary connection and HTTP 408/429/5xx failures retry indefinitely with backoff capped at five minutes. Only HTTP 200 with an empty choices array and no structured error/provider block is marked for bounded transcription retry. `ProcessingJobs` reuses persisted `RetryProgress` and its backoff, pausing at the third failed attempt without resetting the budget on restart or while replaying earlier checkpoints. Transient failures accumulated for that chunk count toward this conservative budget. Other invalid responses and permanent/configuration/filesystem faults pause; Summary empty replies do not retry.
 
-`ProcessingJobs` uses the `TranscriptAssembler` parser to validate timed text or the exact `[NO_SPEECH]` marker before accepting each checkpoint or uploading the next chunk. Rejected timed replies, including existing invalid timed checkpoints, are retained separately from successful checkpoints so Resume can retry them. `TranscriptAssembler` maps chunk timestamps to the original timeline and conservatively reconciles repeated same-source context. Only a complete checkpoint set publishes a transcript. Summary requires an explicit persisted request and the completed transcript; its saved result is tied to the transcript hash. Source labels and model timestamps remain estimates; no acoustic echo cancellation is implemented.
+`ProcessingJobs` uses the `TranscriptAssembler` parser to validate timed text or the exact `[NO_SPEECH]` marker before accepting each checkpoint or uploading the next chunk. Rejected timed replies, including existing invalid timed checkpoints, are retained separately from successful checkpoints so Resume can retry them. `TranscriptAssembler` maps chunk timestamps to the original timeline and conservatively reconciles repeated same-source context. Only a complete checkpoint set publishes a transcript. New recordings persist enabled Automatic Summary as Pending at creation; disabled automatic mode leaves the stage Disabled. Manual requests work independently of the flag after publication and reject an existing pending/running/paused request. Both modes require the completed transcript and reuse saved results tied to its hash. Completed historical AwaitingRequest sessions remain untouched when settings change. Source labels and model timestamps remain estimates; no acoustic echo cancellation is implemented.
 
 ## Persistence
 

@@ -42,7 +42,7 @@ public sealed class Mp3Recorder
                     ["prepare"] = new(stages.Transcribe, stages.Transcribe ? StageState.Pending : StageState.Disabled),
                     ["transcribe"] = new(stages.Transcribe, stages.Transcribe ? StageState.Pending : StageState.Disabled),
                     ["assemble"] = new(stages.Transcribe, stages.Transcribe ? StageState.Pending : StageState.Disabled),
-                    ["summary"] = new(stages.Summary, stages.Summary ? StageState.AwaitingRequest : StageState.Disabled)
+                    ["summary"] = new(stages.Summary, stages.Summary ? StageState.Pending : StageState.Disabled)
                 }
             };
             var created = SessionStore.Create(configuration.MeetingsRoot, session);

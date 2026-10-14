@@ -152,9 +152,10 @@ public sealed class ProcessingJobs : IDisposable
         PauseAndWait();
         using var lease = Lease(directory);
         var data = SessionStore.Read(directory);
-        if (!config.Settings.Stages.Summary) throw new InvalidOperationException("Summary disabled; enable Summary in Settings before requesting it.");
         if (!HasPublishedTranscription(data))
             throw new InvalidOperationException("Summary requires a complete published transcription.md.");
+        if (data.Stages.TryGetValue("summary", out var requested) && requested.Status is StageState.Pending or StageState.Running or StageState.Paused)
+            throw new InvalidOperationException("Summary already requested; use Resume for a paused request.");
         if (data.Stages.TryGetValue("summary", out var summary) && summary.Status == StageState.Completed && File.Exists(Path.Combine(directory, "summary.md")))
             throw new InvalidOperationException("Summary already saved; repeated request retains it without a new API call.");
         SessionStore.Save(directory, data with { Stages = new(data.Stages) { ["summary"] = new(true, StageState.Pending) },
