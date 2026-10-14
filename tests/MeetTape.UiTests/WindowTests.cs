@@ -973,7 +973,7 @@ public sealed class WindowTests
 
     [AvaloniaTheory]
     [InlineData("ready", true)]
-    [InlineData("disabled", false)]
+    [InlineData("disabled", true)]
     [InlineData("incomplete", false)]
     [InlineData("unpublished", false)]
     [InlineData("pending", false)]
@@ -982,7 +982,7 @@ public sealed class WindowTests
     [InlineData("saved", false)]
     [InlineData("restore", true)]
     [InlineData("lost-checkpoint", false)]
-    public async Task SummaryRequiresCurrentPermissionAndPublishedTranscriptWithoutExistingRequest(string state, bool allowed)
+    public async Task SummaryRequiresPublishedTranscriptWithoutExistingRequestRegardlessOfAutomaticSetting(string state, bool allowed)
     {
         using var fixture = new Fixture();
         var fake = new FakeController(fixture);
@@ -1042,7 +1042,7 @@ public sealed class WindowTests
         Assert.True(window.FindControl<Button>("RequestSummary")!.IsEnabled);
         fake.Snapshot = fake.Snapshot with { SummaryEnabled = false };
         await model.RefreshAsync();
-        Assert.False(window.FindControl<Button>("RequestSummary")!.IsEnabled);
+        Assert.True(window.FindControl<Button>("RequestSummary")!.IsEnabled);
         Close(window, model);
     }
 

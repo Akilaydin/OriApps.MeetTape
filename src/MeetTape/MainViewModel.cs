@@ -101,7 +101,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public bool CanCancelProcessing => controller is not null && !busy && !updating && !shutdownStarted && NamingDirectory is null
         && HasCancelableSelection && (!snapshot.Capture.IsActive || !string.Equals(selected!.Directory, snapshot.Capture.RecordingDirectory, StringComparison.OrdinalIgnoreCase));
     public bool CanCancelNamedRecording => CanName && controller is not null && !shutdownStarted && !snapshot.Capture.IsActive;
-    public bool CanSummary => CanProcess && snapshot.SummaryEnabled && selected!.CanRequestSummary;
+    public bool CanSummary => CanProcess && selected!.CanRequestSummary;
     public bool CanDeleteRecording => CanProcess && selected!.CanDelete && snapshot.AwaitingTitleDirectory is null
         && !(snapshot.Preparing && string.Equals(snapshot.PreparationDirectory, selected.Directory, StringComparison.OrdinalIgnoreCase));
     public string SummaryLabel => selected?.CanRestoreSummary == true ? "Restore Summary" : "Request Summary";

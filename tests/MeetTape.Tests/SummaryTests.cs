@@ -30,6 +30,97 @@ public sealed class SummaryTests : IDisposable
     private static HttpResponseMessage Reply(int status = 200) => new((HttpStatusCode)status)
         { Content = new StringContent(status == 200 ? "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"# Decisions\\n- Retry after 300 seconds.\"}}]}" : "private error") };
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ManualSummaryWorksRegardlessOfAutomaticSettingWithoutStartingHistoricalSummaries(bool automatic)
+    {
+        var (directory, config) = await SessionAsync();
+        config = config with { Settings = config.Settings with { Stages = config.Settings.Stages with { Summary = automatic } } };
+        using var handler = new Handler((_, _) => Task.FromResult(Reply()));
+        using var http = new HttpClient(handler);
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "fixture-key");
+        await jobs.ProcessSessionAsync(directory, default);
+        Assert.Equal(0, handler.Calls);
+        jobs.RequestSummary(directory);
+        await jobs.ProcessSessionAsync(directory, default);
+        Assert.Equal(1, handler.Calls);
+        Assert.True(File.Exists(Path.Combine(directory, "summary.md")));
+        await jobs.ProcessSessionAsync(directory, default);
+        Assert.Equal(1, handler.Calls);
+    }
+
+    [Theory]
+    [InlineData(StageState.Pending)]
+    [InlineData(StageState.Running)]
+    [InlineData(StageState.Paused)]
+    public async Task ExistingSummaryRequestCannotBeReplacedByAnotherManualRequest(StageState state)
+    {
+        var (directory, config) = await SessionAsync();
+        var data = SessionStore.Read(directory);
+        SessionStore.Save(directory, data with { Stages = new(data.Stages) { ["summary"] = new(true, state) } });
+        using var handler = new Handler((_, _) => Task.FromResult(Reply()));
+        using var http = new HttpClient(handler);
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "fixture-key");
+        Assert.Throws<InvalidOperationException>(() => jobs.RequestSummary(directory));
+        Assert.Equal(state, SessionStore.Read(directory).Stages["summary"].Status);
+        Assert.Equal(0, handler.Calls);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PersistedAutomaticSummaryRunsOnlyAfterPublicationAndResumeReusesTranscript(bool apiFailure)
+    {
+        string directory = fixture.Prepare(["[00:00] Me: technical details"], 120);
+        string prompt = Path.Combine(directory, "automatic-summary-prompt.md");
+        File.WriteAllText(prompt, "automatic-summary-prompt");
+        string example = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../config.example.json"));
+        var config = ConfigurationLoader.Load(example);
+        var data = SessionStore.Read(directory);
+        SessionStore.Save(directory, data with { Stages = new(data.Stages) { ["summary"] = new(true, StageState.Pending) },
+            Processing = data.Processing with { Summary = config.Settings.Summary with { Model = "summary-model", PromptFile = prompt } } });
+        using var rejected = new Handler(async (request, token) =>
+        {
+            Assert.True(ProcessingJobs.HasPublishedTranscription(SessionStore.Read(directory)));
+            using var body = JsonDocument.Parse(await request.Content!.ReadAsByteArrayAsync(token));
+            Assert.Equal("summary-model", body.RootElement.GetProperty("model").GetString());
+            Assert.Equal("automatic-summary-prompt", body.RootElement.GetProperty("messages")[0].GetProperty("content").GetString());
+            return Reply(apiFailure ? 403 : 200);
+        });
+        using (var http = new HttpClient(rejected))
+        using (var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "fixture-key"))
+            await jobs.ProcessSessionAsync(directory, default);
+        Assert.Equal(1, rejected.Calls);
+        if (!apiFailure)
+        {
+            Assert.True(File.Exists(Path.Combine(directory, "summary.md")));
+            Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
+            using var noRepeat = new Handler((_, _) => throw new Exception("Paid Summary must not be requested again"));
+            using var noRepeatHttp = new HttpClient(noRepeat);
+            using var restarted = new ProcessingJobs(config, () => false, noRepeatHttp, readKey: _ => "fixture-key");
+            await restarted.ProcessSessionAsync(directory, default);
+            File.Delete(Path.Combine(directory, "summary.md"));
+            restarted.RequestSummary(directory);
+            await restarted.ProcessSessionAsync(directory, default);
+            Assert.True(File.Exists(Path.Combine(directory, "summary.md")));
+            Assert.Equal(0, noRepeat.Calls);
+            return;
+        }
+        Assert.Equal(StageState.Paused, SessionStore.Read(directory).Stages["summary"].Status);
+        byte[] transcript = File.ReadAllBytes(Path.Combine(directory, "transcription.md"));
+        config = config with { Settings = config.Settings with { Summary = data.Processing.Summary with { Model = "summary-model", PromptFile = prompt } } };
+        using var success = new Handler((_, _) => Task.FromResult(Reply()));
+        using var client = new HttpClient(success);
+        using var resumed = new ProcessingJobs(config, () => false, client, readKey: _ => "fixture-key");
+        resumed.Resume(directory);
+        await resumed.ProcessSessionAsync(directory, default);
+        await resumed.ProcessSessionAsync(directory, default);
+        Assert.Equal(1, success.Calls);
+        Assert.True(File.Exists(Path.Combine(directory, "summary.md")));
+        Assert.Equal(transcript, File.ReadAllBytes(Path.Combine(directory, "transcription.md")));
+    }
+
     [Fact]
     public async Task OnlyExplicitRequestUsesSeparateModelPromptAndPreservesTranscriptAndRepeatedResult()
     {
@@ -65,14 +156,11 @@ public sealed class SummaryTests : IDisposable
     }
 
     [Fact]
-    public async Task DisabledOrIncompleteTranscriptCannotRequestSummary()
+    public async Task IncompleteTranscriptCannotRequestSummary()
     {
         var (directory, config) = await SessionAsync();
         using var handler = new Handler((_, _) => Task.FromResult(Reply()));
         using var http = new HttpClient(handler);
-        using (var disabled = new ProcessingJobs(config with { Settings = config.Settings with { Stages = new() { Summary = false } } },
-            () => false, http, readKey: _ => "key"))
-            Assert.Throws<InvalidOperationException>(() => disabled.RequestSummary(directory));
         var data = SessionStore.Read(directory);
         SessionStore.Save(directory, data with { Stages = new(data.Stages) { ["transcribe"] = new(true, StageState.Pending) } });
         using var incomplete = new ProcessingJobs(config, () => false, http, readKey: _ => "key");
