@@ -262,7 +262,8 @@ public sealed class ProcessingJobs : IDisposable
                             {
                                 token.ThrowIfCancellationRequested();
                                 var reply = await api.TranscribeAsync(data.Processing.Transcription, prompt,
-                                    AudioChunker.ResolveProcessed(directory, chunk.RelativePath), token);
+                                    AudioChunker.ResolveProcessed(directory, chunk.RelativePath), token,
+                                    $"session={data.Id}; chunk={chunk.Index}; attempt={Math.Min(attempts + 1, 31)}");
                                 result = new(data.Id, chunk, reply.AudioSha256, data.Processing.Transcription.Model,
                                     Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(prompt + ChatApiClient.SourceInstruction))), reply.Text);
                             }
@@ -435,7 +436,8 @@ public sealed class ProcessingJobs : IDisposable
             int attempts = data.Retry?.ChunkIndex == 0 ? data.Retry.Attempts : 0;
             try
             {
-                string text = await api.SummarizeAsync(data.Processing.Summary, prompt, transcript, token);
+                string text = await api.SummarizeAsync(data.Processing.Summary, prompt, transcript, token,
+                    $"session={data.Id}; attempt={Math.Min(attempts + 1, 31)}");
                 result = new(data.Id, data.TranscriptSha256!, data.Processing.Summary.Model,
                     Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(prompt))), text);
                 ChunkStore.SaveFile(checkpoint, result);

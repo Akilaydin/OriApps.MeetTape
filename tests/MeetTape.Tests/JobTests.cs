@@ -10,6 +10,9 @@ public sealed class JobTests : IDisposable
     [Fact]
     public async Task RecycledStorageFailureDoesNotLeaveReplacementBlockedInTheScheduler()
     {
+        string logDirectory = Path.Combine(root, "logs");
+        using var log = new FileDiagnostics(logDirectory);
+        using var logScope = AppDiagnostics.Use(log);
         string directory = Session();
         bool fail = true;
         using var handler = new Handler((_, _) =>
@@ -33,7 +36,12 @@ public sealed class JobTests : IDisposable
         var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
         while (SessionStore.Read(directory).JobState != JobState.Completed)
         {
-            Assert.True(DateTimeOffset.UtcNow < deadline, "A removed session's storage failure must not block a new identity at its old path.");
+            if (DateTimeOffset.UtcNow >= deadline)
+            {
+                log.Dispose();
+                Assert.Fail($"Replacement session did not complete; calls={handler.Calls}; state={SessionStore.Read(directory).JobState}; scheduler={jobs.Completion.Status}. " +
+                    File.ReadAllText(Path.Combine(logDirectory, "meettape.log")));
+            }
             await Task.Delay(10);
         }
         jobs.PauseAndWait();
@@ -301,6 +309,33 @@ public sealed class JobTests : IDisposable
         Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
         Assert.Equal(300, ProcessingJobs.Backoff(100, TimeSpan.FromHours(1)).TotalSeconds);
         Assert.Equal(1, ProcessingJobs.Backoff(1, TimeSpan.FromSeconds(-5)).TotalSeconds);
+    }
+
+    [Fact]
+    public async Task ApiDiagnosticsCorrelateSessionChunkAndPersistedAttemptWithRetryDecision()
+    {
+        string directory = Session(120);
+        var now = DateTimeOffset.UtcNow;
+        using (var log = new FileDiagnostics(Path.Combine(root, "logs")))
+        using (AppDiagnostics.Use(log))
+        {
+            using var handler = new Handler((call, _) => Task.FromResult(call == 1 ? Response(429) : Response()));
+            using var http = new HttpClient(handler);
+            using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "fixture-key", utcNow: () => now);
+            await jobs.ProcessSessionAsync(directory, default);
+            now = SessionStore.Read(directory).Retry!.NextAttemptUtc;
+            await jobs.ProcessSessionAsync(directory, default);
+            Assert.Equal(2, handler.Calls);
+            Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
+        }
+        string logged = File.ReadAllText(Path.Combine(root, "logs", "meettape.log"));
+        Assert.Contains("session=" + SessionStore.Read(directory).Id, logged);
+        Assert.Contains("chunk=1; attempt=1", logged);
+        Assert.Contains("chunk=1; attempt=2", logged);
+        Assert.Contains("decision=retry", logged);
+        Assert.Contains("decision=accepted", logged);
+        Assert.DoesNotContain("fixture-key", logged);
+        Assert.DoesNotContain("[00:01] Me: test", logged);
     }
 
     [Fact]
