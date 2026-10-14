@@ -89,6 +89,26 @@
           </TabItem>
         </TabControl>
       </TabItem>
+      <TabItem Header="About">
+        <ScrollViewer>
+          <StackPanel Name="AboutPanel" x:DataType="local:MainViewModel" Spacing="12" Margin="4,12,8,8">
+            <TextBlock Text="MeetTape" FontSize="22" FontWeight="SemiBold" />
+            <TextBlock Name="CurrentVersion" Text="{Binding CurrentVersion, StringFormat='Current version: {0}'}" />
+            <TextBlock Name="AvailableVersion" Text="{Binding AvailableVersion, StringFormat='Available version: {0}'}" />
+            <TextBlock Text="{Binding ReleaseText}" TextWrapping="Wrap" Opacity="0.7" />
+            <TextBlock Name="UpdateStatus" Text="{Binding UpdateStatus}" TextWrapping="Wrap" />
+            <WrapPanel>
+              <Button Name="CheckUpdates" Content="Check for updates" IsEnabled="{Binding CanCheckUpdates}" Click="CheckUpdatesClick" Margin="0,0,12,8" />
+              <Button Name="UpdateButton" Content="Update" IsEnabled="{Binding CanApplyUpdate}" Click="UpdateClick" Margin="0,0,12,8" />
+            </WrapPanel>
+            <TextBlock Text="Checking never downloads or installs. Update requires confirmation, stopped recording and saved settings."
+                       TextWrapping="Wrap" Opacity="0.7" />
+            <TextBlock Text="{Binding InfoText}" IsVisible="{Binding IsUpdating}" TextWrapping="Wrap" />
+            <ProgressBar Name="UpdateProgress" Value="{Binding UpdateProgress}" IsVisible="{Binding IsUpdating}" Height="6" />
+            <TextBlock Text="{Binding ErrorSummary}" IsVisible="{Binding HasError}" TextWrapping="Wrap" />
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
     </TabControl>
     <StackPanel Grid.Row="2" Spacing="12" Margin="0,16,0,0">
       <TextBlock Name="SettingsMessage" Text="{Binding Message}" TextWrapping="Wrap" />

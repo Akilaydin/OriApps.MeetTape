@@ -37,7 +37,11 @@ public sealed class App : Application
     private uint taskbarButtonCreated;
     private bool taskbarCreated;
 
-    public override void Initialize() => Styles.Add(new FluentTheme());
+    public override void Initialize()
+    {
+        RequestedThemeVariant = Avalonia.Styling.ThemeVariant.Light;
+        Styles.Add(new FluentTheme());
+    }
 
     public override void OnFrameworkInitializationCompleted()
     {
@@ -201,7 +205,7 @@ public sealed class App : Application
             timer.Start();
             updates = new AppUpdates();
             model.ReleaseText = await StartupReleaseNotice.GetAsync(updates);
-            model.SetInfo("Close hides the window. Use Exit to stop MeetTape.");
+            model.SetInfo("Close hides the window. Use tray Exit to stop MeetTape.");
         }
         catch (Exception error)
         {
@@ -322,6 +326,8 @@ public sealed class App : Application
             }
             var settings = await Task.Run(() => new SettingsViewModel(ConfigPath, devices, applySettings: ApplySettingsAsync, prepareHotkey: PrepareHotkey));
             var dialog = new SettingsWindow { DataContext = settings, Icon = window.Icon };
+            updates ??= new AppUpdates();
+            dialog.ConfigureAbout(model, updates, () => UpdateAsync(dialog));
             ShowWindow();
             await dialog.ShowDialog(window);
             if (settings.Saved) model.SetInfo(settings.Message);
@@ -359,14 +365,16 @@ public sealed class App : Application
         desktop!.Shutdown();
     }
 
-    private async Task UpdateAsync()
+    private Task UpdateAsync() => window is null ? Task.CompletedTask : UpdateAsync(window);
+
+    private async Task UpdateAsync(Window owner)
     {
         if (Smoke || StartupError is not null || window is null) return;
         updates ??= new AppUpdates();
         bool applied = await model.UpdateAsync(updates, async (current, available) =>
         {
-            ShowWindow();
-            return await new UpdateWindow(current, available) { Icon = window.Icon }.ShowDialog<bool>(window);
+            if (ReferenceEquals(owner, window)) ShowWindow();
+            return await new UpdateWindow(current, available) { Icon = window.Icon }.ShowDialog<bool>(owner);
         });
         if (!applied) return;
         allowShutdown = true;

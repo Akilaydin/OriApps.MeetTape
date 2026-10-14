@@ -25,6 +25,68 @@ public static class TestApp
 public sealed class WindowTests
 {
     [AvaloniaFact]
+    public async Task OverflowAndRightClickShareTheCorrectRowMenuAndDoubleClickOpensThatFolder()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var basis = fake.Snapshot.Sessions[0];
+        var second = basis with { Directory = Path.Combine(fixture.Root, "second"),
+            Data = basis.Data! with { Id = Guid.NewGuid(), Title = "Second meeting", StartedAtUtc = basis.Data!.StartedAtUtc.AddMinutes(-1) } };
+        Directory.CreateDirectory(second.Directory);
+        fake.Snapshot = fake.Snapshot with { Sessions = [basis, second] };
+        var model = new MainViewModel(fake);
+        var opened = new List<string>();
+        var window = new MainWindow { DataContext = model, OpenPath = opened.Add };
+        window.Show(); await model.RefreshAsync(); Dispatcher.UIThread.RunJobs();
+        var list = window.FindControl<ListBox>("SessionList")!;
+        var row = list.ContainerFromIndex(1)!;
+        var overflow = row.GetVisualDescendants().OfType<Button>().Single(button => button.Name == "SessionActions");
+        overflow.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Assert.Equal(second.Data!.Id, model.SelectedSession!.Id);
+        var menu = list.ContextMenu!; Assert.True(menu.IsOpen);
+        window.FindControl<MenuItem>("OpenSessionFolder")!.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        Assert.Equal(second.Directory, Assert.Single(opened)); menu.Close();
+        model.SelectedSession = model.Sessions[0];
+        var point = row.TranslatePoint(new Point(24, row.Bounds.Height / 2), window)!.Value;
+        window.MouseDown(point, MouseButton.Right); window.MouseUp(point, MouseButton.Right); Dispatcher.UIThread.RunJobs();
+        Assert.True(menu.IsOpen); Assert.Equal(second.Data.Id, model.SelectedSession!.Id); menu.Close();
+        window.MouseDown(point, MouseButton.Left); window.MouseUp(point, MouseButton.Left);
+        window.MouseDown(point, MouseButton.Left); window.MouseUp(point, MouseButton.Left); Dispatcher.UIThread.RunJobs();
+        Assert.Equal(2, opened.Count); Assert.All(opened, path => Assert.Equal(second.Directory, path));
+        var empty = list.TranslatePoint(new Point(24, list.Bounds.Height - 3), window)!.Value;
+        window.MouseDown(empty, MouseButton.Right); window.MouseUp(empty, MouseButton.Right); Dispatcher.UIThread.RunJobs();
+        Assert.False(menu.IsOpen);
+        Close(window, model);
+    }
+
+    [AvaloniaFact]
+    public async Task MeetingDetailsKeepLiveChunkProgressAndFailureTextCopyable()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var basis = fake.Snapshot.Sessions[0];
+        var data = basis.Data! with { JobState = JobState.Paused, Retry = new(2, 3, DateTimeOffset.UtcNow),
+            Stages = new(basis.Data!.Stages) { ["trim"] = new(false, StageState.Disabled), ["transcribe"] = new(true, StageState.Paused, 1, 3) } };
+        fake.Snapshot = fake.Snapshot with { Sessions = [basis with { Data = data, Diagnostic = "Fixture provider rejection; Resume after fixing settings." }] };
+        var model = new MainViewModel(fake);
+        string? copied = null;
+        var window = new MainWindow { DataContext = model, WriteClipboard = text => { copied = text; return Task.CompletedTask; } };
+        window.Show(); await model.RefreshAsync(); model.SelectedSession = model.Sessions[0];
+        Assert.Equal("Paused", model.SelectedSession.DisplayStatus);
+        Click(window, "MeetingDetails");
+        var details = Assert.Single(window.OwnedWindows);
+        var text = details.GetLogicalDescendants().OfType<TextBox>().Distinct().Single(box => box.Name == "MeetingDetailsText");
+        Assert.True(text.IsReadOnly); Assert.True(text.AcceptsReturn);
+        Assert.Contains("1/3 chunks", text.Text); Assert.Contains("Fixture provider rejection", text.Text);
+        fake.Snapshot = fake.Snapshot with { Sessions = [basis with { Data = data with
+            { Stages = new(data.Stages) { ["transcribe"] = new(true, StageState.Running, 2, 3) } } }] };
+        await model.RefreshAsync(); Dispatcher.UIThread.RunJobs(); Assert.Contains("2/3 chunks", text.Text);
+        details.GetLogicalDescendants().OfType<Button>().Distinct().Single(button => button.Name == "CopyMeetingDetails")
+            .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Assert.Equal(text.Text, copied); details.Close(); Close(window, model);
+    }
+
+    [AvaloniaFact]
     public async Task DeleteRequiresConfirmationAndRemovesOnlyTheConfirmedMeetingAfterCancellation()
     {
         using var fixture = new Fixture();
@@ -40,7 +102,7 @@ public sealed class WindowTests
         var list = window.FindControl<ListBox>("SessionList")!;
         var menu = list.ContextMenu!;
         menu.Open(list);
-        var delete = Assert.IsType<MenuItem>(Assert.Single(menu.Items));
+        var delete = menu.Items.OfType<MenuItem>().Single(item => item.Name == "DeleteRecording");
         Assert.True(delete.IsEnabled);
         delete.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
         var dialog = Assert.Single(window.OwnedWindows.OfType<DeleteRecordingWindow>());
@@ -260,7 +322,7 @@ public sealed class WindowTests
         model.SelectedSession = model.Sessions[0];
         Assert.True(model.CanPrepare);
         Assert.False(model.CanResume);
-        Assert.False(window.FindControl<Button>("CancelSessionProcessing")!.IsVisible);
+        Assert.False(window.FindControl<MenuItem>("CancelSessionProcessing")!.IsVisible);
         Click(window, "RecordButton");
         Assert.Equal(2, fake.Starts);
         Close(window, model);
@@ -367,21 +429,21 @@ public sealed class WindowTests
         var window = new MainWindow { DataContext = model, WriteClipboard = text => { copied.Add(text); return Task.CompletedTask; } };
         window.Show(); await model.RefreshAsync();
         window.FindControl<ListBox>("SessionList")!.SelectedIndex = 0;
-        var button = window.FindControl<Button>("CopyMenu")!;
-        Assert.False(button.IsEnabled);
+        var copy = window.FindControl<MenuItem>("CopyMenu")!;
+        Assert.False(copy.IsEnabled);
         File.WriteAllText(Path.Combine(fixture.SessionDirectory, "transcription.md"), "# PRIVATE fixture transcript");
         await model.RefreshAsync();
-        Assert.True(button.IsEnabled);
-        var menu = (MenuFlyout)button.Flyout!;
-        menu.ShowAt(button); Dispatcher.UIThread.RunJobs();
-        var items = menu.Items.OfType<MenuItem>().ToArray();
+        Assert.True(copy.IsEnabled);
+        var menu = window.FindControl<ListBox>("SessionList")!.ContextMenu!;
+        menu.Open(window.FindControl<ListBox>("SessionList")!); copy.Open(); Dispatcher.UIThread.RunJobs();
+        var items = copy.Items.OfType<MenuItem>().ToArray();
         Assert.True(items[0].IsEnabled);
         Assert.False(items[1].IsEnabled);
         Assert.Empty(copied);
         items[0].RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
         await WaitFor(() => copied.Count == 1);
         Assert.Equal("# PRIVATE fixture transcript", copied[0]);
-        menu.Hide(); Close(window, model);
+        menu.Close(); Close(window, model);
     }
 
     [AvaloniaFact]
@@ -608,7 +670,8 @@ public sealed class WindowTests
         var model = new MainViewModel(fake);
         var window = new MainWindow { DataContext = model };
         window.Show(); await model.RefreshAsync();
-        Assert.Equal("Recording — 00:00:09", window.FindControl<TextBlock>("CaptureStatus")!.Text);
+        Assert.Equal("Recording", window.FindControl<TextBlock>("CaptureStatus")!.Text);
+        Assert.Equal("00:00:09", window.FindControl<TextBlock>("RecordingTimer")!.Text);
         Assert.False(window.FindControl<Expander>("DiagnosticsExpander")!.IsExpanded);
         var details = window.FindControl<TextBox>("DiagnosticDetails")!;
         Assert.False(details.IsEffectivelyVisible && TopLevel.GetTopLevel(details) is not null);
@@ -846,7 +909,7 @@ public sealed class WindowTests
         window.Show(); await model.RefreshAsync();
         window.FindControl<ListBox>("SessionList")!.SelectedIndex = 0;
         Click(window, "RecordButton");
-        Assert.False(window.FindControl<Button>("ResumeSession")!.IsEnabled);
+        Assert.False(window.FindControl<MenuItem>("ResumeSession")!.IsEnabled);
         fake.Report(new(NoticeKind.Warning, "Them: invalid WASAPI timestamp. Recording continues."));
         Dispatcher.UIThread.RunJobs();
         Assert.Contains("Recording continues", window.FindControl<TextBlock>("Warnings")!.Text);
@@ -965,7 +1028,7 @@ public sealed class WindowTests
         var window = new MainWindow { DataContext = model };
         window.Show(); await model.RefreshAsync();
         window.FindControl<ListBox>("SessionList")!.SelectedIndex = 0;
-        Assert.Equal(allowed, window.FindControl<Button>("ResumeSession")!.IsEnabled);
+        Assert.Equal(allowed, window.FindControl<MenuItem>("ResumeSession")!.IsEnabled);
         Click(window, "ResumeSession");
         Assert.Equal(allowed ? 1 : 0, fake.Resumes);
         Close(window, model);
@@ -1002,14 +1065,14 @@ public sealed class WindowTests
         var window = new MainWindow { DataContext = model };
         window.Show(); await model.RefreshAsync();
         window.FindControl<ListBox>("SessionList")!.SelectedIndex = 0;
-        Assert.Equal(allowed, window.FindControl<Button>("RequestSummary")!.IsEnabled);
-        Assert.Equal(state == "restore" ? "Restore Summary" : "Request Summary", window.FindControl<Button>("RequestSummary")!.Content);
+        Assert.Equal(allowed, window.FindControl<MenuItem>("RequestSummary")!.IsEnabled);
+        Assert.Equal(state == "restore" ? "Restore Summary" : "Request Summary", window.FindControl<MenuItem>("RequestSummary")!.Header);
         Click(window, "RequestSummary");
         Assert.Equal(allowed ? 1 : 0, fake.Summaries);
         if (allowed)
         {
             await model.RefreshAsync();
-            Assert.False(window.FindControl<Button>("RequestSummary")!.IsEnabled);
+            Assert.False(window.FindControl<MenuItem>("RequestSummary")!.IsEnabled);
         }
         Close(window, model);
     }
@@ -1036,13 +1099,13 @@ public sealed class WindowTests
         fake.Snapshot = fake.Snapshot with { Sessions = [first with { Data = Published(first.Data!) }, second] };
         await model.RefreshAsync();
         Assert.Equal(first.Data!.Id, model.SelectedSession!.Id);
-        Assert.False(window.FindControl<Button>("ResumeSession")!.IsEnabled);
+        Assert.False(window.FindControl<MenuItem>("ResumeSession")!.IsEnabled);
         File.WriteAllText(Path.Combine(fixture.SessionDirectory, "transcription.md"), "Fixture transcript");
         await model.RefreshAsync();
-        Assert.True(window.FindControl<Button>("RequestSummary")!.IsEnabled);
+        Assert.True(window.FindControl<MenuItem>("RequestSummary")!.IsEnabled);
         fake.Snapshot = fake.Snapshot with { SummaryEnabled = false };
         await model.RefreshAsync();
-        Assert.True(window.FindControl<Button>("RequestSummary")!.IsEnabled);
+        Assert.True(window.FindControl<MenuItem>("RequestSummary")!.IsEnabled);
         Close(window, model);
     }
 
@@ -1198,7 +1261,7 @@ public sealed class WindowTests
     }
 
     [AvaloniaFact]
-    public async Task CaptureLightDarkAndSettingsSnapshots()
+    public async Task MainStaysLightForSystemVariantsAndRendersCaptureStatesAndSettings()
     {
         using var fixture = new Fixture();
         var fake = new FakeController(fixture);
@@ -1210,20 +1273,85 @@ public sealed class WindowTests
         {
             Application.Current!.RequestedThemeVariant = theme;
             window.Show(); await model.RefreshAsync();
+            Assert.Equal(ThemeVariant.Light, window.ActualThemeVariant);
             using var frame = window.CaptureRenderedFrame(); Assert.NotNull(frame);
             frame.Save(Path.Combine(output, name), PngBitmapEncoderOptions.Default); window.Hide();
         }
+        Application.Current!.RequestedThemeVariant = ThemeVariant.Light;
+        var basis = fake.Snapshot.Sessions[0];
+        var started = basis.Data!.StartedAtUtc;
+        var completed = basis with { Directory = Path.Combine(fixture.Root, "completed"), Data = Published(basis.Data!) with
+            { Id = Guid.NewGuid(), Title = "Completed meeting", StartedAtUtc = started.AddDays(-1), DurationSeconds = 28 * 60 + 17 } };
+        var paused = basis with { Directory = Path.Combine(fixture.Root, "paused"), Data = basis.Data! with
+            { Id = Guid.NewGuid(), Title = "Paused meeting", StartedAtUtc = started.AddDays(-2), JobState = JobState.Paused, DurationSeconds = 42 * 60 + 11,
+                Stages = new(basis.Data.Stages) { ["trim"] = new(false, StageState.Disabled), ["transcribe"] = new(true, StageState.Paused, 2, 3) } },
+                Diagnostic = "Fixture provider response was rejected. Saved chunks retained; fix Settings and Resume." };
+        fake.Snapshot = fake.Snapshot with { Sessions = [basis with { Data = basis.Data with { Title = "Unnamed meeting", RecordingState = RecordingState.Recording } }, completed, paused],
+            Capture = new(true, TimeSpan.FromSeconds(874), 1, 1, null) { MeLevel = 0.64, ThemLevel = 0.38, RecordingDirectory = fixture.SessionDirectory } };
+        fake.Report(new(NoticeKind.Warning, "Microphone discontinuity detected; recording continues. Fixture timing correction preserved."));
+        window.Show(); await model.RefreshAsync(); window.FindControl<Expander>("DiagnosticsExpander")!.IsExpanded = true;
+        Assert.Equal("14:34", model.Sessions[0].Duration);
+        Dispatcher.UIThread.RunJobs();
+        using (var frame = window.CaptureRenderedFrame()) { Assert.NotNull(frame); frame.Save(Path.Combine(output, "main-recording.png"), PngBitmapEncoderOptions.Default); }
+        window.Width = 700; window.Height = 560; Dispatcher.UIThread.RunJobs();
+        var body = window.FindControl<ScrollViewer>("MainContent")!;
+        Assert.True(body.Extent.Width <= body.Viewport.Width + 1);
+        using (var frame = window.CaptureRenderedFrame()) { Assert.NotNull(frame); frame.Save(Path.Combine(output, "main-recording-minimum.png"), PngBitmapEncoderOptions.Default); }
+        window.Width = 1050; window.Height = 820;
+        fake.Snapshot = fake.Snapshot with { Capture = fake.Snapshot.Capture with { IsActive = false }, AwaitingTitleDirectory = fixture.SessionDirectory,
+            Sessions = [basis with { Data = basis.Data with { Title = "Unnamed meeting" } }, completed, paused] };
+        await model.RefreshAsync(); window.FindControl<Expander>("DiagnosticsExpander")!.IsExpanded = false;
+        Dispatcher.UIThread.RunJobs();
+        using (var frame = window.CaptureRenderedFrame()) { Assert.NotNull(frame); frame.Save(Path.Combine(output, "main-after-stop.png"), PngBitmapEncoderOptions.Default); }
+        window.Width = 700; window.Height = 560;
+        Dispatcher.UIThread.RunJobs(); Assert.True(body.Extent.Width <= body.Viewport.Width + 1);
+        using (var frame = window.CaptureRenderedFrame()) { Assert.NotNull(frame); frame.Save(Path.Combine(output, "main-after-stop-minimum.png"), PngBitmapEncoderOptions.Default); }
+        fake.Snapshot = fake.Snapshot with { AwaitingTitleDirectory = null };
+        await model.CancelNamedRecordingAsync(); await model.RefreshAsync();
+        fake.Snapshot = fake.Snapshot with { Sessions = [basis with { Data = basis.Data with
+            { Title = new string('W', 180), JobState = JobState.Running,
+                Stages = new(basis.Data.Stages) { ["trim"] = new(false, StageState.Disabled), ["transcribe"] = new(true, StageState.Running, 2, 3) } } }, completed, paused] };
+        await model.RefreshAsync(); Dispatcher.UIThread.RunJobs();
+        Assert.Equal("Processing", model.Sessions[0].DisplayStatus);
+        Assert.Equal("Paused", model.Sessions[2].DisplayStatus);
+        Assert.True(window.FindControl<Button>("RecordButton")!.Bounds.Width >= 180);
+        Assert.True(body.Extent.Width <= body.Viewport.Width + 1);
+        using (var frame = window.CaptureRenderedFrame()) { Assert.NotNull(frame); frame.Save(Path.Combine(output, "main-minimum.png"), PngBitmapEncoderOptions.Default); }
+        window.Width = 1050; window.Height = 820; await model.RefreshAsync();
+        var menuRow = window.FindControl<ListBox>("SessionList")!.ContainerFromIndex(0)!;
+        var overflow = menuRow.GetVisualDescendants().OfType<Button>().Single(button => button.Name == "SessionActions");
+        overflow.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Dispatcher.UIThread.RunJobs();
+        using (var frame = window.CaptureRenderedFrame()) { Assert.NotNull(frame); frame.Save(Path.Combine(output, "main-processing-menu.png"), PngBitmapEncoderOptions.Default); }
+        window.FindControl<ListBox>("SessionList")!.ContextMenu!.Close();
         var settings = new SettingsWindow { DataContext = new SettingsViewModel(fixture.ConfigPath, [], (_, _, _) => { }) };
+        settings.ConfigureAbout(model, new SnapshotUpdates(), () => Task.CompletedTask);
         settings.Show();
         using (var frame = settings.CaptureRenderedFrame()) { Assert.NotNull(frame); frame.Save(Path.Combine(output, "settings.png"), PngBitmapEncoderOptions.Default); }
         settings.FindControl<TabControl>("SettingsSections")!.SelectedIndex = 2;
         using (var frame = settings.CaptureRenderedFrame()) { Assert.NotNull(frame); frame.Save(Path.Combine(output, "settings-prompts.png"), PngBitmapEncoderOptions.Default); }
+        settings.FindControl<TabControl>("SettingsSections")!.SelectedIndex = 3;
+        await model.CheckUpdatesAsync(new SnapshotUpdates()); Dispatcher.UIThread.RunJobs();
+        using (var frame = settings.CaptureRenderedFrame()) { Assert.NotNull(frame); frame.Save(Path.Combine(output, "settings-about.png"), PngBitmapEncoderOptions.Default); }
         settings.Close(); Close(window, model);
         Application.Current!.RequestedThemeVariant = ThemeVariant.Default;
     }
 
-    private static void Click(Window window, string name) =>
-        window.FindControl<Button>(name)!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+    private sealed class SnapshotUpdates : IAppUpdates
+    {
+        public bool IsInstalled => true;
+        public string CurrentVersion => "0.0.8";
+        public Task<Velopack.UpdateInfo?> CheckAsync() => Task.FromResult<Velopack.UpdateInfo?>(
+            new(new Velopack.VelopackAsset { Version = Velopack.SemanticVersion.Parse("0.0.9") }, false));
+        public Task DownloadAsync(Velopack.UpdateInfo update, Action<int> progress) => throw new Exception("Render fixture must not download");
+        public void ApplyAndRestart(Velopack.UpdateInfo update) => throw new Exception("Render fixture must not apply");
+    }
+
+    private static void Click(Window window, string name)
+    {
+        var control = window.FindControl<Control>(name)!;
+        if (control is MenuItem menu) menu.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        else ((Button)control).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+    }
     private static void Close(MainWindow window, MainViewModel model) { model.Detach(); window.AllowClose = true; window.Close(); }
     private static async Task WaitFor(Func<bool> condition)
     {

@@ -25,6 +25,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private bool refreshing;
     private bool busy;
     private bool updating;
+    private bool checkingUpdates;
+    private bool updateAvailable;
     private bool shutdownStarted;
     private SessionRow? selected;
     private SessionRow[] allSessions = [];
@@ -44,7 +46,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public SessionRow? SelectedSession { get => selected; set { selected = value; Changed(); } }
     public string CaptureText => snapshot.Capture.IsActive ? "Recording — " + snapshot.Capture.Duration.ToString(@"hh\:mm\:ss") :
         snapshot.Capture.Error is not null ? "Recording stopped with errors" : controller is null ? "Open Settings to configure MeetTape" : "Ready";
-    public string RecordLabel => snapshot.Capture.IsActive ? "Stop" : "Start recording";
+    public string RecordLabel => snapshot.Capture.IsActive ? "Stop recording" : "Start recording";
+    public string CaptureHeading => IsRecording ? "Recording" : IsNaming ? "Recording saved" : IsPreparing ? "Preparing audio" :
+        snapshot.Capture.Error is not null ? "Recording stopped with errors" : controller is null ? "Setup required" : "Ready";
+    public string RecordingDuration => snapshot.Capture.Duration.ToString(@"hh\:mm\:ss");
     public string ProcessingText
     {
         get
@@ -110,7 +115,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public bool CanOpenSummary => selected?.HasSummary == true;
     public bool CanCopyDocument => CanOpenTranscript || CanOpenSummary;
     public bool CanConfigure => !busy && !updating && !shutdownStarted;
-    public bool CanUpdate => CanConfigure && !snapshot.Capture.IsActive && NamingDirectory is null && snapshot.AwaitingTitleDirectory is null;
+    public bool CanUpdate => CanConfigure && !checkingUpdates && !snapshot.Capture.IsActive && NamingDirectory is null && snapshot.AwaitingTitleDirectory is null;
+    public bool CanCheckUpdates => CanConfigure && !checkingUpdates;
+    public bool CanApplyUpdate => CanUpdate && updateAvailable;
+    private string currentVersion = typeof(App).Assembly.GetName().Version?.ToString(3) ?? "unknown";
+    public string CurrentVersion { get => currentVersion; internal set { currentVersion = value; Changed(); } }
+    public string AvailableVersion { get; private set; } = "Not checked";
+    private string updateStatus = "Check for updates to see availability.";
+    public string UpdateStatus { get => updateStatus; internal set { updateStatus = value; Changed(); } }
     public bool IsUpdating => updating;
     public int UpdateProgress { get; private set; }
     public bool IsBusy => busy;
@@ -130,11 +142,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public bool HasTiming => TimingText.Length > 0;
     public bool IsPreparing => snapshot.Preparing;
     public string ErrorText { get; private set; } = "";
-    public string InfoText { get; private set; } = "Close hides the window. Use Exit to stop MeetTape.";
+    public string InfoText { get; private set; } = "Close hides the window. Use tray Exit to stop MeetTape.";
     private string releaseText = "";
     public string ReleaseText { get => releaseText; set { releaseText = value; Changed(); } }
     public string SelectedDiagnostic => selected?.Diagnostic ?? "";
     public string SelectedDiagnosticSummary => Brief(SelectedDiagnostic);
+    public string SelectedMeetingDetails => selected is null ? "The selected meeting is no longer available." :
+        $"{selected.Title}\n{selected.Date}\nDuration: {selected.Duration}\nStatus: {selected.DisplayStatus}\n{selected.Status}\n{selected.Progress}\n\n{selected.Details}\n\n{selected.Diagnostic}";
     public string DiagnosticText => string.Join(Environment.NewLine + Environment.NewLine, new[]
     {
         DevicesText,
@@ -268,7 +282,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
             snapshot = updated;
             foreach (var meeting in updated.Sessions)
                 if (meeting.Data is { JobState: JobState.Completed or JobState.Canceled, Error: null } completed) ClearProcessingIssues(completed.Id);
-            allSessions = updated.Sessions.OrderByDescending(s => s.Data?.StartedAtUtc).Select(SessionRow.From).ToArray();
+            allSessions = updated.Sessions.OrderByDescending(s => s.Data?.StartedAtUtc).Select(session =>
+            {
+                var row = SessionRow.From(session);
+                return updated.Capture.IsActive && string.Equals(session.Directory, updated.Capture.RecordingDirectory, StringComparison.OrdinalIgnoreCase)
+                    ? row with { Duration = updated.Capture.Duration.ToString(updated.Capture.Duration.TotalHours >= 1 ? @"hh\:mm\:ss" : @"mm\:ss") } : row;
+            }).ToArray();
             UpdateSessionList();
             if (snapshot.AwaitingTitleDirectory is { } awaiting && NamingDirectory is null)
                 BeginNaming(awaiting, null);
@@ -422,6 +441,33 @@ public sealed class MainViewModel : INotifyPropertyChanged
         finally { busy = false; await RefreshAsync(); Changed(); }
     }
 
+    public async Task CheckUpdatesAsync(IAppUpdates updates)
+    {
+        if (!CanCheckUpdates) return;
+        checkingUpdates = true; updateAvailable = false; UpdateStatus = "Checking for updates..."; Changed();
+        try
+        {
+            CurrentVersion = updates.CurrentVersion;
+            if (!updates.IsInstalled)
+            {
+                AvailableVersion = "Unavailable";
+                UpdateStatus = "Updates require an installed MeetTape build. Download Setup from GitHub Releases.";
+                return;
+            }
+            var update = await updates.CheckAsync().WaitAsync(TimeSpan.FromSeconds(30));
+            updateAvailable = update is not null;
+            AvailableVersion = update?.TargetFullRelease.Version.ToString() ?? "None";
+            UpdateStatus = updateAvailable ? "Update available. Stop recording, then choose Update to review and confirm." : "No update available.";
+        }
+        catch (Exception error)
+        {
+            AppDiagnostics.Error("updater", "Check only", error);
+            AvailableVersion = "Unknown";
+            UpdateStatus = AppDiagnostics.UserMessage(error, "Cannot check for updates. Check GitHub connectivity, then retry.");
+        }
+        finally { checkingUpdates = false; Changed(); }
+    }
+
     public async Task<bool> UpdateAsync(IAppUpdates updates, Func<string, string, Task<bool>> confirm)
     {
         if (!CanUpdate) { SetError("Stop recording and finish the current operation before updating MeetTape."); return false; }
@@ -493,6 +539,21 @@ public sealed class MainViewModel : INotifyPropertyChanged
 public sealed record SessionRow(string Directory, Guid? Id, string Title, string Date, string Status,
     string Progress, double ProgressPercent, string? Diagnostic, bool NeedsPreparation, bool HasTranscript, bool HasSummary)
 {
+    public string Duration { get; init; } = "--:--";
+    public string Details { get; init; } = "";
+    internal bool PausedJob { get; init; }
+    public string DisplayStatus => PausedJob ? "Paused" : Status is "Running" or "NotStarted" ? "Processing" :
+        Status.StartsWith("Retry ", StringComparison.Ordinal) ? "Retry" : Status == "Awaiting trim choice" ? "Needs trim" : Status;
+    public string StatusForeground => DisplayStatus switch
+    {
+        "Recording" or "Failed" or "Interrupted" or "Invalid metadata" => "#DB2644",
+        "Completed" => "#078A3C", "Paused" or "Needs trim" => "#A65009", "Canceled" => "#69778E", _ => "#1674E8"
+    };
+    public string StatusBackground => DisplayStatus switch
+    {
+        "Recording" or "Failed" or "Interrupted" or "Invalid metadata" => "#FFEBEF",
+        "Completed" => "#E7F8ED", "Paused" or "Needs trim" => "#FFF0E3", "Canceled" => "#EEF1F5", _ => "#E8F2FF"
+    };
     public bool CanResume { get; init; }
     public bool CanRequestSummary { get; init; }
     public bool CanRestoreSummary { get; init; }
@@ -521,6 +582,12 @@ public sealed record SessionRow(string Directory, Guid? Id, string Title, string
             status, progress, transcription?.TotalChunks is > 0 ? 100d * transcription.CompletedChunks / transcription.TotalChunks.Value : 0,
             session.Diagnostic, needsPreparation, hasTranscript, hasSummary)
         {
+            Duration = data?.DurationSeconds is { } seconds && seconds < TimeSpan.MaxValue.TotalSeconds
+                ? TimeSpan.FromSeconds(seconds).ToString(seconds >= 3600 ? @"hh\:mm\:ss" : @"mm\:ss") : "--:--",
+            Details = data is null ? "Metadata unavailable." : string.Join(Environment.NewLine,
+                data.Stages.Select(stage => $"{stage.Key}: {stage.Value.Status}" +
+                    (stage.Value.TotalChunks is { } count ? $" ({stage.Value.CompletedChunks}/{count} chunks)" : ""))),
+            PausedJob = data is { RecordingState: RecordingState.Recorded, JobState: JobState.Paused },
             CanResume = data is not null && ProcessingJobs.CanResume(data),
             CanCancel = data is not null && ProcessingJobs.CanCancel(data),
             CanDelete = data is not null && SessionRemoval.CanDelete(data),
