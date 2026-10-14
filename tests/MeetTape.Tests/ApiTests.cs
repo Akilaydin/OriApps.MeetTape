@@ -14,6 +14,130 @@ public sealed class ApiTests : IDisposable
 
     public ApiTests() => File.WriteAllBytes(path, [1, 2, 3]);
 
+    [Theory]
+    [InlineData(200, "stop", "accepted")]
+    [InlineData(200, "length", "pause")]
+    public async Task ResponsesLogBoundedTechnicalMetadataWithoutPayload(int status, string finish, string decision)
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "MeetTapeApiMetadata-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            using (var log = new FileDiagnostics(directory))
+            using (AppDiagnostics.Use(log))
+            {
+                string raw = JsonSerializer.Serialize(new
+                {
+                    id = "response-123", model = "upstream-model",
+                    usage = new { prompt_tokens = 3, completion_tokens = 4, total_tokens = 7, hidden = "private usage" },
+                    choices = new[] { new { finish_reason = finish, message = new { content = "private transcript" } } },
+                    hidden = new string('z', 20000)
+                });
+                using var handler = new Handler((_, _) =>
+                {
+                    var response = Reply((HttpStatusCode)status, raw);
+                    response.Headers.Add("x-request-id", "request-123");
+                    response.Headers.Add("x-user-payload", "private header");
+                    return Task.FromResult(response);
+                });
+                using var http = new HttpClient(handler);
+                var api = new ChatApiClient(http, () => false, _ => "fixture-key");
+                if (decision == "accepted") await api.TranscribeAsync(Settings, "private prompt", path, default);
+                else await Assert.ThrowsAsync<ChatApiException>(() => api.TranscribeAsync(Settings, "private prompt", path, default));
+            }
+            string logged = File.ReadAllText(Path.Combine(directory, "meettape.log"));
+            foreach (string expected in new[] { "stage=transcription", "requested_model=configured-model", "example.test",
+                "elapsed_ms=", "bytes=", "response_id=response-123", "model=upstream-model", "x-request-id=request-123",
+                "choices=1", "finish_reason=" + finish, "content=String", "prompt_tokens=3", "completion_tokens=4", "total_tokens=7", "decision=" + decision })
+                Assert.Contains(expected, logged);
+            foreach (string secret in new[] { "private transcript", "private prompt", "private usage", "private header", "fixture-key", "AQID", new string('z', 100) })
+                Assert.DoesNotContain(secret, logged);
+            Assert.True(logged.Length < 10000);
+        }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
+    }
+
+    [Theory]
+    [InlineData("model_not_found", "Unknown model; private prompt", "unknown-model")]
+    [InlineData("invalid_request_error", "Unsupported input_audio; private transcript", "audio-input-unsupported")]
+    [InlineData("content_filter", "Request blocked; private prompt", "blocked")]
+    [InlineData("rate_limit_exceeded", "Quota exceeded; private transcript", "rate-limit")]
+    public async Task StructuredHttpErrorsLogSafeReasonWithoutEchoedUserText(string code, string message, string reason)
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "MeetTapeHttpMetadata-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            using (var log = new FileDiagnostics(directory))
+            using (AppDiagnostics.Use(log))
+            {
+                string raw = JsonSerializer.Serialize(new { error = new { type = "invalid_request_error", code, message }, model = "upstream-model" });
+                using var handler = new Handler((_, _) => Task.FromResult(Reply(HttpStatusCode.BadRequest, raw)));
+                using var http = new HttpClient(handler);
+                var failure = await Assert.ThrowsAsync<ChatApiException>(() => new ChatApiClient(http, () => false, _ => "fixture-key")
+                    .TranscribeAsync(Settings, "private prompt", path, default));
+                Assert.Equal(ApiFailureKind.Permanent, failure.Kind);
+                Assert.Equal(HttpStatusCode.BadRequest, failure.Status);
+                Assert.DoesNotContain(reason, failure.Message);
+            }
+            string logged = File.ReadAllText(Path.Combine(directory, "meettape.log"));
+            Assert.Contains("error_type=invalid_request_error", logged);
+            Assert.Contains("error_code=" + code, logged);
+            Assert.Contains("error_reason=" + reason, logged);
+            Assert.Contains("decision=pause", logged);
+            Assert.DoesNotContain("private prompt", logged);
+            Assert.DoesNotContain("private transcript", logged);
+            Assert.DoesNotContain("fixture-key", logged);
+        }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
+    }
+
+    [Theory]
+    [InlineData(400, ApiFailureKind.Permanent)]
+    [InlineData(503, ApiFailureKind.Transient)]
+    public async Task OversizedErrorDiagnosticsRetainHttpFailureClassification(int status, ApiFailureKind expected)
+    {
+        using var handler = new Handler((_, _) => Task.FromResult(Reply((HttpStatusCode)status, new string('x', 2 * 1024 * 1024 + 1))));
+        using var http = new HttpClient(handler);
+        var error = await Assert.ThrowsAsync<ChatApiException>(() => new ChatApiClient(http, () => false, _ => "fixture-key")
+            .TranscribeAsync(Settings, "private prompt", path, default));
+        Assert.Equal(expected, error.Kind);
+        Assert.Equal((HttpStatusCode)status, error.Status);
+    }
+
+    [Fact]
+    public async Task SummaryAndProviderBlockDiagnosticsMaskArbitraryMetadataWithoutChangingResults()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "MeetTapeSummaryMetadata-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            using (var log = new FileDiagnostics(directory))
+            using (AppDiagnostics.Use(log))
+            {
+                using var handler = new Handler((_, _) => Task.FromResult(Reply(HttpStatusCode.OK,
+                    "{\"id\":\"private transcript\",\"model\":\"private summary\",\"usage\":{\"prompt_tokens\":\"private prompt\"}," +
+                    "\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"private summary\"}}]}")));
+                using var http = new HttpClient(handler);
+                var api = new ChatApiClient(http, () => false, _ => "fixture-key");
+                Assert.Equal("private summary", await api.SummarizeAsync(Settings, "private prompt", "private transcript", default));
+                using var blocked = new Handler((_, _) => Task.FromResult(Reply(HttpStatusCode.OK,
+                    "{\"choices\":[],\"modelVersion\":\"provider-model\",\"responseId\":\"provider-response\",\"usageMetadata\":{\"totalTokenCount\":8}," +
+                    "\"promptFeedback\":{\"blockReason\":\"SAFETY\",\"blockReasonMessage\":\"private prompt\"}}")));
+                using var blockedHttp = new HttpClient(blocked);
+                var failure = await Assert.ThrowsAsync<ChatApiException>(() => new ChatApiClient(blockedHttp, () => false, _ => "fixture-key")
+                    .TranscribeAsync(Settings, "private prompt", path, default));
+                Assert.False(failure.EmptyChoices);
+            }
+            string logged = File.ReadAllText(Path.Combine(directory, "meettape.log"));
+            Assert.Contains("stage=summary", logged);
+            Assert.Contains("block_reason=SAFETY", logged);
+            Assert.Contains("model_version=provider-model", logged);
+            Assert.Contains("response_id=provider-response", logged);
+            Assert.Contains("totalTokenCount=8", logged);
+            Assert.Contains("choices=0", logged);
+            foreach (string secret in new[] { "private transcript", "private summary", "private prompt", "fixture-key" }) Assert.DoesNotContain(secret, logged);
+        }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
+    }
+
     [Fact]
     public async Task RequestUsesConfiguredModelPromptBearerAndMp3AndReturnsValidatedText()
     {
