@@ -9,16 +9,46 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: meettape-ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  AVALONIA_TELEMETRY_OPTOUT: '1'
+  DOTNET_GENERATE_ASPNET_CERTIFICATE: 'false'
+  DOTNET_ADD_GLOBAL_TOOLS_TO_PATH: 'false'
+  NUGET_PACKAGES: ${{ github.workspace }}/dist/nuget
+
 jobs:
   non-hardware-tests:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 10.0.x
+          fetch-depth: 0
+      - name: Select checks for changed paths
+        id: scope
+        shell: pwsh
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          TARGET_BRANCH: ${{ github.base_ref }}
+        run: |
+          ./.github/scripts/Test-ChangeScope.ps1
+          ./.github/scripts/Get-ChangeScope.ps1 -BaseSha $env:BASE_SHA -HeadSha $env:HEAD_SHA -TargetBranch $env:TARGET_BRANCH
+      - uses: actions/setup-dotnet@v4
+        if: steps.scope.outputs.software == 'true'
+        with:
+          dotnet-version: 10.0.401
+      - uses: actions/cache@v4
+        if: steps.scope.outputs.software == 'true'
+        with:
+          path: ${{ env.NUGET_PACKAGES }}
+          key: ${{ runner.os }}-nuget-${{ hashFiles('src/**/*.csproj', 'tests/**/*.csproj', 'tools/**/*.csproj') }}
+          restore-keys: ${{ runner.os }}-nuget-
 
       - name: Install FFmpeg for audio tests
+        if: steps.scope.outputs.software == 'true'
         shell: pwsh
         run: |
           choco install ffmpeg --yes --no-progress
@@ -29,25 +59,37 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'FFprobe is not available on PATH.' }
 
       - name: Run non-hardware Release tests
+        if: steps.scope.outputs.software == 'true'
         shell: pwsh
         run: |
-          dotnet test tests/MeetTape.Tests/MeetTape.Tests.csproj --configuration Release --filter 'Category!=Hardware&Category!=LongRunning'
+          dotnet test tests/MeetTape.Tests/MeetTape.Tests.csproj --configuration Release --filter 'Category!=Hardware&Category!=LongRunning&FullyQualifiedName!=MeetTape.Tests.JobTests.SchedulerProcessesOtherMeetingsWhileFirstMeetingWaitsForRetry' --logger 'trx;LogFileName=software.trx' --results-directory dist/test-results
           if ($LASTEXITCODE -ne 0) { throw 'Tests failed.' }
 
+      - name: Run isolated scheduler regression with bounded diagnostics
+        if: steps.scope.outputs.software == 'true' && !cancelled()
+        shell: pwsh
+        run: ./tools/Test-Scheduler.ps1
+
       - name: Run Avalonia Headless scenarios and render snapshots
+        if: steps.scope.outputs.software == 'true'
         shell: pwsh
         env:
           AVALONIA_TELEMETRY_OPTOUT: '1'
         run: |
-          dotnet test tests/MeetTape.UiTests/MeetTape.UiTests.csproj --configuration Release
+          dotnet test tests/MeetTape.UiTests/MeetTape.UiTests.csproj --configuration Release --logger 'trx;LogFileName=headless.trx' --results-directory dist/test-results
           if ($LASTEXITCODE -ne 0) { throw 'UI tests failed.' }
 
       - uses: actions/upload-artifact@v4
+        if: steps.scope.outputs.software == 'true' && !cancelled()
         with:
-          name: ui-snapshots
-          path: dist/screenshots/*.png
+          name: software-diagnostics
+          retention-days: 7
+          path: |
+            dist/test-results/**/*.trx
+            dist/screenshots/*.png
 
       - name: Publish and check isolated Windows GUI startup
+        if: steps.scope.outputs.package == 'true'
         shell: pwsh
         env:
           AVALONIA_TELEMETRY_OPTOUT: '1'
@@ -57,32 +99,78 @@ jobs:
           & powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/Test-Desktop.ps1 -ExecutablePath dist/publish/MeetTape.exe -SkipNativeWindow
           if ($LASTEXITCODE -ne 0) { throw 'Published executable tests failed.' }
 
+      - uses: actions/upload-artifact@v4
+        if: steps.scope.outputs.package == 'true' && !cancelled()
+        with:
+          name: taskbar-snapshots
+          retention-days: 7
+          path: |
+            dist/desktop-tests/**/taskbar-*.png
+            dist/desktop-tests/**/startup-stderr.txt
+
   package-smoke:
     runs-on: windows-latest
-    env:
-      AVALONIA_TELEMETRY_OPTOUT: '1'
-      DOTNET_GENERATE_ASPNET_CERTIFICATE: 'false'
-      DOTNET_ADD_GLOBAL_TOOLS_TO_PATH: 'false'
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Select checks for changed paths
+        id: scope
+        shell: pwsh
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          TARGET_BRANCH: ${{ github.base_ref }}
+        run: |
+          ./.github/scripts/Test-ChangeScope.ps1
+          ./.github/scripts/Get-ChangeScope.ps1 -BaseSha $env:BASE_SHA -HeadSha $env:HEAD_SHA -TargetBranch $env:TARGET_BRANCH
       - uses: actions/setup-dotnet@v4
+        if: steps.scope.outputs.package == 'true'
         with:
           dotnet-version: 10.0.401
+      - uses: actions/cache@v4
+        if: steps.scope.outputs.package == 'true'
+        with:
+          path: ${{ env.NUGET_PACKAGES }}
+          key: ${{ runner.os }}-nuget-${{ hashFiles('src/**/*.csproj', 'tests/**/*.csproj', 'tools/**/*.csproj') }}
+          restore-keys: ${{ runner.os }}-nuget-
+      - uses: actions/cache@v4
+        if: steps.scope.outputs.package == 'true'
+        with:
+          path: dist/vpk
+          key: ${{ runner.os }}-vpk-1.2.161
+      - uses: actions/cache@v4
+        if: steps.scope.outputs.package == 'true'
+        with:
+          path: dist/downloads
+          key: ${{ runner.os }}-ffmpeg-9.0-E6B54767A6065919
       - name: Build two local full packages
+        if: steps.scope.outputs.package == 'true'
         shell: pwsh
         run: |
-          dotnet tool install vpk --version 1.2.161 --tool-path dist/vpk
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot install pinned vpk.' }
+          if (-not (Test-Path -LiteralPath dist/vpk/vpk.exe)) {
+            dotnet tool install vpk --version 1.2.161 --tool-path dist/vpk
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot install pinned vpk.' }
+          }
           ./tools/Build-Package.ps1 -Version 1.0.0 -VpkPath ./dist/vpk/vpk.exe
           Copy-Item -LiteralPath dist/releases/OriApps.MeetTape-win-Setup.exe -Destination dist/releases/first-Setup.exe
           ./tools/Build-Package.ps1 -Version 1.0.1 -VpkPath ./dist/vpk/vpk.exe
       - name: Test SDK restart, isolated install, update and uninstall
+        if: steps.scope.outputs.package == 'true'
         shell: pwsh
-        run: ./tools/Test-Package.ps1 -InstallOnCi
+        run: |
+          try { ./tools/Test-Package.ps1 -InstallOnCi *> dist/package-smoke.log }
+          finally { Get-Content -LiteralPath dist/package-smoke.log }
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: steps.scope.outputs.package == 'true' && !cancelled()
         with:
           name: velopack-smoke
+          retention-days: 7
+          compression-level: 0
           path: |
-            dist/releases/*
-            dist/package-tests/**
+            dist/releases/OriApps.MeetTape-win-Setup.exe
+            dist/releases/*-full.nupkg
+            dist/releases/releases.win.json
+            dist/package-smoke.log
+            dist/desktop-tests/**/*.txt
+            dist/desktop-tests/**/*.png

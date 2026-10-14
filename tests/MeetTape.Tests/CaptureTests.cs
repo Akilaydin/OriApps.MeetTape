@@ -141,7 +141,8 @@ public sealed class CaptureTests
         (microphone ? me : them).Fail(new COMException("private meeting content", unchecked((int)0x88890004)));
         string diagnostic = await failed.Task.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.Contains(microphone ? "Me" : "Them", diagnostic);
-        Assert.Contains("88890004", diagnostic);
+        Assert.Contains("disconnected", diagnostic);
+        Assert.DoesNotContain("88890004", diagnostic);
         Assert.DoesNotContain("private meeting content", diagnostic);
         Assert.False(capture.Status.IsActive);
         Assert.True(me.Disposed && them.Disposed);

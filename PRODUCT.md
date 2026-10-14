@@ -4,9 +4,9 @@ MeetTape is a Windows desktop application on Avalonia 12 and .NET 10 for recordi
 
 ## Recording and desktop lifecycle
 
-The tray and window icons show a red dot in the upper-right corner only while capture is active. Stop or capture failure restores the original icon; audio preparation/transcription does not show the recording indicator. The permanent EXE/shortcut icon stays unchanged.
+The tray and window icons show a red dot in the upper-right corner only while capture is active. Windows taskbar buttons also show a red recording overlay, positioned by Windows, including pinned/grouped buttons. Windows small-icon taskbars do not support overlays. Stop or capture failure restores the original icon; audio preparation/transcription does not show the recording indicator. The permanent EXE/shortcut icon stays unchanged.
 
-Ctrl+Shift+F9 uses the same Start/Stop path while MeetTape runs, including when hidden or another app has focus. Busy operations, updates, Exit and unfinished naming block conflicting starts. A shortcut conflict is diagnosed while buttons/tray remain usable. Windows notifications report successful Start, finalized Stop or interruption without focusing the window or including meeting contents. Suppressed/failed notifications do not affect recording or saved work; window/tray status remains authoritative. The shortcut is released on Exit.
+The configurable recording hotkey defaults to Ctrl+Shift+F9 and uses the same Start/Stop path while MeetTape runs, including when hidden or another app has focus. Settings → Recording saves and immediately applies a replacement; the window/tray show the active combination. Invalid/occupied replacements or failed configuration writes retain the previous binding, and discarding edits does not apply them. Busy operations, updates, Exit and unfinished naming block conflicting starts. A startup shortcut conflict is diagnosed while buttons/tray remain usable. Windows notifications report successful Start, finalized Stop or interruption without focusing the window or including meeting contents. Suppressed/failed notifications do not affect recording or saved work; window/tray status remains authoritative. The shortcut is released on Exit.
 
 `MeetTape.exe` opens one window and a system tray icon, without a console. The window and tray share Start/Stop; the window shows elapsed duration, active device names, capture warnings/errors and saved sessions. Closing the window hides it and does not stop recording. Open from the tray or launch MeetTape again to restore it; a repeated ordinary launch does not create another recorder, job runner or tray icon. Explicit Exit finalizes both MP3s and cancels/joins preparation and processing before the process exits; a new ordinary launch then starts normally. A second Start is rejected.
 
@@ -16,7 +16,11 @@ The tray keeps recording status first and shows a separate short processing stat
 
 The Meetings context menu offers Delete recording for a selected finalized meeting whose processing is completed or explicitly canceled. Confirmation shows its title/date and warns that the entire folder and all audio, metadata, checkpoints and documents move to Windows Recycle Bin. Cancel retains the meeting. Capture, unfinished naming, active preparation/jobs, invalid or changed identity/path and linked folders/files refuse deletion. Only a direct child of a known meetings root is accepted; configuration and unrelated folders are protected. An unavailable Recycle Bin reports failure without a permanent-delete fallback. Success removes the meeting and selection; other meetings remain available.
 
+Failed or Interrupted recordings can also be explicitly deleted after capture and related operations finish. Their partial files use the same confirmation, folder ownership checks and Recycle Bin path; running jobs/stages still block deletion.
+
 ## Updates
+
+Significant failures show a readable cause and an available recovery action. Technical exception context and workflow transitions are saved in `%LOCALAPPDATA%\MeetTape\Logs`, retained after restart and bounded to five 1 MiB files. Logs are accessed directly through the filesystem, with no log-view UI. API keys, prompts, transcripts and audio payloads are not logged; credential values and URL credentials are redacted. Logging is nonblocking for capture and best-effort when storage is unavailable.
 
 GUI startup displays the installed version and checks the public Velopack GitHub feed with a bounded two-second wait. Failures do not block capture; source/portable builds skip the check. Update requires idle capture and no unfinished naming/current operation. It shows current/available versions and asks for explicit consent before downloading. Decline/close leaves the UI usable; even a previously downloaded package never auto-applies on startup. After download, capture is checked again and local work is joined before applying/restarting. Failed joins block apply. Use Exit in other MeetTape windows/trays first.
 
@@ -34,6 +38,8 @@ All shipped UI messages and prompt instructions are in English. The default tran
 
 ## Trimming and transcription
 
+Failed or canceled trim/chunk attempts discard only their unselected derivative directory after FFmpeg has stopped. Original recordings, selected successful derivatives and checkpoints remain. Failed selection persistence also discards the unselected attempt. If FFmpeg cannot be confirmed stopped, metadata cannot safely identify the selected set, or cleanup storage/links are unsafe, files remain and technical diagnostics are logged.
+
 Edge-silence detection considers activity in both tracks. Choose Accept, Skip or Apply interval in the window; manual times accept seconds, `MM:SS` or `HH:MM:SS` and require `0 <= start < end <= duration`. Both tracks use one shared interval; interior silence remains. No detected activity keeps the full recording. Name / Trim reopens unfinished preparation. Originals remain unchanged; selected derivatives are saved only after successful preparation.
 
 After a saved trim choice, or with trimming disabled, enabled transcription runs serially in the background and resumes eligible unfinished jobs at GUI startup. Each chunk uses stereo MP3 with Me on the left and Them on the right, with boundary context. Successful results are saved before progress advances; only a complete set produces `transcription.md`.
@@ -42,11 +48,13 @@ Cancel processing is available immediately after Stop and for a selected meeting
 
 The transcript has approximate timestamps relative to the original recording and Me/Them/Unknown source labels. Unsupported labels become Unknown. Repeated same-source boundary context is reconciled conservatively. Source labels are model estimates, not guaranteed individual identities; microphone audio can contain playback echo. Recognition accuracy and exact deduplication are not guaranteed.
 
-An exact `[NO_SPEECH]` response adds no utterances, allowing silent chunks to complete. Empty, malformed or truncated responses pause processing. Each audio upload is limited to 8 MiB, each API response to 2 MiB, and each request to five minutes.
+An exact `[NO_SPEECH]` response adds no utterances, allowing silent chunks to complete. Each chunk's timed text is checked before the next upload. Invalid timed replies pause processing and remain in `chunks/*.rejected-*.json` for diagnosis; Resume retries the rejected chunk while retaining earlier valid checkpoints. Empty, malformed or truncated responses also pause processing. Each audio upload is limited to 8 MiB, each API response to 2 MiB, and each request to five minutes.
 
 ## Summary
 
 Request Summary explicitly requests `summary.md` from a complete published transcript, using independent API settings and an editable prompt. It never replaces the transcript or summarizes partial results. Combined prompt/transcript UTF-8 input is limited to 2 MiB; oversized input pauses without truncation. A provider may enforce a smaller context limit.
+
+For completed transcription/assembly, Summary uses the published Markdown verified against its saved SHA-256, without reading intermediate MP3s/checkpoints or assembling again. Missing intermediate audio does not block Summary. A missing or changed published transcript pauses the Summary stage without re-creating the document or sending text, including restoration from a saved Summary checkpoint.
 
 Successful Summary results are checkpointed before publication. Repeated requests retain existing output; missing output can be restored from its checkpoint without another API request.
 
@@ -54,7 +62,7 @@ Successful Summary results are checkpointed before publication. Repeated request
 
 Each recording has a unique folder and stable session ID under `meetingsRoot`:
 
-New captures may use a temporary internal name. Stop or Exit gives finalized audio an `Unnamed meeting_dd.MM.yyyy HH-mm HHhMMm` folder; saving a title replaces only the name prefix. Start time is local, duration uses saved audio and whole hours/minutes. Windows-invalid filename characters are replaced while ordinary Unicode/spaces remain. Folder names contain no UUID or collision suffix. Existing destinations are preserved with a naming error; Stop retains the original path and naming gate for a different title. On Exit, a naming failure retains the finalized source folder and reports an error without blocking shutdown. Existing sessions are not renamed in bulk, and their UUID/file schema stays unchanged.
+New captures may use a temporary internal name. Stop or Exit gives finalized audio an `Unnamed meeting_dd.MM.yyyy HH-mm HHhMMm` folder; saving a title replaces only the name prefix. Start time is local, duration uses saved audio and whole hours/minutes. Windows-invalid filename characters are replaced while ordinary Unicode/spaces remain. Folder names contain no UUID; occupied names receive the next available ` (2)`, ` (3)`, ... suffix. Existing folders/files are preserved; Stop and ordinary Continue / Start next recording choose a unique folder automatically. On Exit, a naming failure retains the finalized source folder and reports an error without blocking shutdown. Existing sessions are not renamed in bulk, and their UUID/file schema stays unchanged.
 
 - `me.mp3`, `them.mp3`: preserved source recordings.
 - `session.json`: identity, title, capture parameters, selected interval, stages, progress and diagnostics.

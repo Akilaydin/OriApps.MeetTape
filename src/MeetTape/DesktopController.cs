@@ -199,7 +199,11 @@ public sealed class DesktopController : IDesktopController
     private async Task RestartAfterFailureAsync()
     {
         try { await RunAsync(() => jobs.Start()).ConfigureAwait(false); }
-        catch (Exception) { if (!closing) Fail("Deferred processing could not restart; restart MeetTape to resume saved jobs."); }
+        catch (Exception error)
+        {
+            AppDiagnostics.Error("processing", "Restart after capture", error);
+            if (!closing) Fail(AppDiagnostics.UserMessage(error, "Deferred processing could not restart; restart MeetTape to resume saved jobs."));
+        }
     }
 
     private void Warn(string message) => Publish(new(NoticeKind.Warning, message));
@@ -246,7 +250,7 @@ public sealed class DesktopController : IDesktopController
                             awaitingTitle = capture.RecordingDirectory;
                             try { _ = FinalizeFolderName(); awaitingTitle = null; }
                             catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidOperationException)
-                            { Fail("Cannot apply readable folder name; finalized recording kept in its original folder. Check collisions and permissions."); }
+                            { AppDiagnostics.Error("recording", "Name finalized folder", error); Fail(AppDiagnostics.UserMessage(error, "Cannot apply readable folder name; finalized recording kept in its original folder. Check collisions and permissions.")); }
                         }
                     }
                 }

@@ -31,6 +31,7 @@ public sealed class ProcessingJobs : IDisposable
 
     private void Report(string message, NoticeKind kind, Guid? sessionId = null)
     {
+        AppDiagnostics.Info("processing", message);
         try { Notice?.Invoke(new(kind, message, sessionId)); }
         catch (Exception) { /* Diagnostics cannot change checkpoint/processing outcomes. */ }
     }
@@ -83,7 +84,10 @@ public sealed class ProcessingJobs : IDisposable
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
-            { Report("Processing discovery paused; check meeting root and metadata permissions. Restart or resume after fixing storage.", NoticeKind.Error); }
+            {
+                AppDiagnostics.Error("processing", "Discovery", ex);
+                Report(AppDiagnostics.UserMessage(ex, "Processing discovery paused; check meeting root and metadata permissions. Restart or resume after fixing storage."), NoticeKind.Error);
+            }
         });
     }
 
@@ -205,7 +209,10 @@ public sealed class ProcessingJobs : IDisposable
         catch (DirectoryNotFoundException) { return; }
         catch (IOException ex) when ((ex.HResult & 0xffff) is 32 or 33) { return; }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        { lock (sessionGate) blocked.Add(directory); Report("Cannot acquire session lease; processing blocked in this process. Cannot save paused state without an exclusive lease. Check storage permissions.", NoticeKind.Error); return; }
+        {
+            AppDiagnostics.Error("processing", "Acquire lease", ex);
+            lock (sessionGate) blocked.Add(directory); Report(AppDiagnostics.UserMessage(ex, "Cannot acquire session lease; processing blocked in this process. Cannot save paused state without an exclusive lease. Check storage permissions."), NoticeKind.Error); return;
+        }
         using (lease)
         {
             var data = SessionStore.Read(directory);
@@ -214,66 +221,92 @@ public sealed class ProcessingJobs : IDisposable
             string stage = "prepare";
             try
             {
-                if (data.Audio is null)
+                if (!HasPublishedTranscription(data))
                 {
-                    data = Update(data, stage, StageState.Running);
-                    SessionStore.Save(directory, data);
-                    var audio = await new AudioChunker(currentConfig.Settings.Capture.FfmpegPath).PrepareAsync(directory, data, token);
-                    data = Update(data with { Audio = audio }, stage, StageState.Completed, audio.Chunks.Count, audio.Chunks.Count);
-                    SessionStore.Save(directory, data);
-                }
-                AudioChunker.ValidateManifest(data);
-                stage = "transcribe";
-                var chunks = data.Audio!.Chunks;
-                data = Update(data, stage, StageState.Running, 0, chunks.Count);
-                SessionStore.Save(directory, data);
-                string? prompt = null;
-                int completed = 0;
-                foreach (var chunk in chunks)
-                {
-                    token.ThrowIfCancellationRequested();
-                    if (File.Exists(ChunkStore.PathFor(directory, chunk.Index)))
-                        _ = await ChunkStore.ReadAsync(directory, data, chunk, token);
-                    else
+                    if (data.Audio is null)
                     {
-                        prompt ??= ReadPrompt(data.Processing.Transcription, data.Processing.ConfigurationDirectory, "transcription");
-                        int attempts = data.Retry?.ChunkIndex == chunk.Index ? data.Retry.Attempts : 0;
+                        data = Update(data, stage, StageState.Running);
+                        SessionStore.Save(directory, data);
+                        var audio = await new AudioChunker(currentConfig.Settings.Capture.FfmpegPath).PrepareAsync(directory, data, token);
                         try
                         {
-                            token.ThrowIfCancellationRequested();
-                            var reply = await api.TranscribeAsync(data.Processing.Transcription, prompt,
-                                AudioChunker.ResolveProcessed(directory, chunk.RelativePath), token);
-                            ChunkStore.Save(directory, new(data.Id, chunk, reply.AudioSha256, data.Processing.Transcription.Model,
-                                Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(prompt + ChatApiClient.SourceInstruction))), reply.Text));
-                        }
-                        catch (ChatApiException ex) when (ex.Kind == ApiFailureKind.Transient)
-                        {
-                            token.ThrowIfCancellationRequested();
-                            attempts = Math.Min(attempts + 1, 30);
-                            var backoff = Backoff(attempts, ex.RetryAfter);
-                            data = data with { Retry = new(chunk.Index, attempts, utcNow() + backoff), Error = ex.Message };
+                            data = Update(data with { Audio = audio }, stage, StageState.Completed, audio.Chunks.Count, audio.Chunks.Count);
                             SessionStore.Save(directory, data);
-                            Report($"Job {data.Id}: chunk {chunk.Index} transient failure; retry in {backoff.TotalSeconds:F0}s. {ex.Message}", NoticeKind.Warning, data.Id);
-                            return; // Leave this session ready for a later pass; process other meetings now.
+                        }
+                        catch
+                        {
+                            AudioTrimmer.DiscardAttempt(directory, audio.RelativeDirectory);
+                            throw;
                         }
                     }
-                    // The flushed chunk checkpoint is authoritative if a crash happens before this metadata save.
-                    // Checkpoints before the failing chunk must not reset its accumulated backoff.
-                    var remainingRetry = data.Retry is { } retry && retry.ChunkIndex != chunk.Index ? retry : null;
-                    data = Update(data with { Retry = remainingRetry, Error = remainingRetry is null ? null : data.Error },
-                        stage, StageState.Running, ++completed, chunks.Count);
+                    AudioChunker.ValidateManifest(data);
+                    stage = "transcribe";
+                    var chunks = data.Audio!.Chunks;
+                    data = Update(data, stage, StageState.Running, 0, chunks.Count);
                     SessionStore.Save(directory, data);
-                    Report($"Job {data.Id}: chunk {completed}/{chunks.Count} saved/validated.", NoticeKind.Information, data.Id);
+                    string? prompt = null;
+                    int completed = 0;
+                    foreach (var chunk in chunks)
+                    {
+                        token.ThrowIfCancellationRequested();
+                        string checkpoint = ChunkStore.PathFor(directory, chunk.Index);
+                        bool saved = File.Exists(checkpoint);
+                        ChunkResult result;
+                        if (saved)
+                            result = await ChunkStore.ReadAsync(directory, data, chunk, token);
+                        else
+                        {
+                            prompt ??= ReadPrompt(data.Processing.Transcription, data.Processing.ConfigurationDirectory, "transcription");
+                            int attempts = data.Retry?.ChunkIndex == chunk.Index ? data.Retry.Attempts : 0;
+                            try
+                            {
+                                token.ThrowIfCancellationRequested();
+                                var reply = await api.TranscribeAsync(data.Processing.Transcription, prompt,
+                                    AudioChunker.ResolveProcessed(directory, chunk.RelativePath), token);
+                                result = new(data.Id, chunk, reply.AudioSha256, data.Processing.Transcription.Model,
+                                    Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(prompt + ChatApiClient.SourceInstruction))), reply.Text);
+                            }
+                            catch (ChatApiException ex) when (ex.Kind == ApiFailureKind.Transient)
+                            {
+                                AppDiagnostics.Error("processing", $"Transcribe chunk {chunk.Index}; retry", ex);
+                                token.ThrowIfCancellationRequested();
+                                attempts = Math.Min(attempts + 1, 30);
+                                var backoff = Backoff(attempts, ex.RetryAfter);
+                                data = data with { Retry = new(chunk.Index, attempts, utcNow() + backoff), Error = ex.Message };
+                                SessionStore.Save(directory, data);
+                                Report($"Job {data.Id}: chunk {chunk.Index} transient failure; retry in {backoff.TotalSeconds:F0}s. {ex.Message}", NoticeKind.Warning, data.Id);
+                                return; // Leave this session ready for a later pass; process other meetings now.
+                            }
+                        }
+                        try { TranscriptAssembler.ValidateChunk(result.Text, chunk); }
+                        catch (InvalidDataException ex)
+                        {
+                            string rejected = Path.Combine(directory, "chunks", $"{chunk.Index:D4}.rejected-{Guid.NewGuid():N}.json");
+                            if (saved) File.Move(checkpoint, rejected, overwrite: false);
+                            else ChunkStore.SaveFile(rejected, result);
+                            throw new ChatApiException(ApiFailureKind.InvalidResponse,
+                                $"Chunk {chunk.Index} has invalid timed text. {ex.Message} " +
+                                "Response retained in chunks/*.rejected-*.json. Check the transcription prompt/settings, then Resume to retry this chunk; valid earlier chunks are retained.");
+                        }
+                        if (!saved) ChunkStore.Save(directory, result);
+                        // The flushed chunk checkpoint is authoritative if a crash happens before this metadata save.
+                        // Checkpoints before the failing chunk must not reset its accumulated backoff.
+                        var remainingRetry = data.Retry is { } retry && retry.ChunkIndex != chunk.Index ? retry : null;
+                        data = Update(data with { Retry = remainingRetry, Error = remainingRetry is null ? null : data.Error },
+                            stage, StageState.Running, ++completed, chunks.Count);
+                        SessionStore.Save(directory, data);
+                        Report($"Job {data.Id}: chunk {completed}/{chunks.Count} saved/validated.", NoticeKind.Information, data.Id);
+                    }
+                    data = Update(data, stage, StageState.Completed, completed, chunks.Count);
+                    SessionStore.Save(directory, data);
+                    stage = "assemble";
+                    data = Update(data, stage, StageState.Running);
+                    SessionStore.Save(directory, data);
+                    string hash = await new TranscriptAssembler().BuildAsync(directory, data, token);
+                    data = Update(data with { TranscriptSha256 = hash }, stage, StageState.Completed);
+                    SessionStore.Save(directory, data);
+                    Report($"Job {data.Id}: complete transcription.md saved.", NoticeKind.Information, data.Id);
                 }
-                data = Update(data, stage, StageState.Completed, completed, chunks.Count);
-                SessionStore.Save(directory, data);
-                stage = "assemble";
-                data = Update(data, stage, StageState.Running);
-                SessionStore.Save(directory, data);
-                string hash = await new TranscriptAssembler().BuildAsync(directory, data, token);
-                data = Update(data with { TranscriptSha256 = hash }, stage, StageState.Completed);
-                SessionStore.Save(directory, data);
-                Report($"Job {data.Id}: complete transcription.md saved.", NoticeKind.Information, data.Id);
                 if (SummaryRequested(data))
                 {
                     stage = "summary";
@@ -292,9 +325,10 @@ public sealed class ProcessingJobs : IDisposable
             catch (Exception ex) when (ex is ChatApiException or InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException
                 || ex is InvalidOperationException and not AudioPreparationShutdownException)
             {
+                AppDiagnostics.Error("processing", $"Session {data.Id}; {stage}", ex);
                 lock (sessionGate) blocked.Add(directory);
                 SavePause(directory, data, stage, StageState.Paused,
-                    ex is ChatApiException apiError ? apiError.Message : "Processing paused; check selected audio, saved chunks, FFmpeg, metadata and filesystem.", permanent: true);
+                    AppDiagnostics.UserMessage(ex, "Processing paused; check selected audio, saved chunks, FFmpeg, metadata and filesystem."), permanent: true);
             }
         }
     }
@@ -354,7 +388,10 @@ public sealed class ProcessingJobs : IDisposable
         try { SessionStore.Save(directory, (data.Stages.ContainsKey(stage) ? Update(data, stage, state) : data)
             with { JobState = permanent ? JobState.Paused : JobState.NotStarted, Error = diagnostic }); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        { lock (sessionGate) blocked.Add(directory); diagnostic += " Cannot save paused state; prior disk state retained, session blocked in this process."; }
+        {
+            AppDiagnostics.Error("processing", "Save paused checkpoint", ex);
+            lock (sessionGate) blocked.Add(directory); diagnostic += " Cannot save paused state; prior disk state retained, session blocked in this process.";
+        }
         Report($"Job {data.Id}: {diagnostic}", permanent ? NoticeKind.Error : NoticeKind.Warning, data.Id);
     }
 
@@ -378,17 +415,17 @@ public sealed class ProcessingJobs : IDisposable
 
     private async Task<bool> GenerateSummaryAsync(string directory, SessionData data, CancellationToken token)
     {
+        await using var file = new FileStream(Path.Combine(directory, "transcription.md"), FileMode.Open, FileAccess.Read, FileShare.Read);
+        if (file.Length > 2 * 1024 * 1024) throw new InvalidDataException("Transcript exceeds 2 MiB; Summary paused without automatic truncation.");
+        byte[] bytes = new byte[(int)file.Length];
+        await file.ReadExactlyAsync(bytes, token);
+        if (Convert.ToHexString(SHA256.HashData(bytes)) != data.TranscriptSha256)
+            throw new InvalidDataException("Transcript changed; Summary paused.");
         string checkpoint = Path.Combine(directory, "summary.json");
         SummaryResult? result;
         if (File.Exists(checkpoint)) result = await ChunkStore.ReadFileAsync<SummaryResult>(checkpoint, token);
         else
         {
-            await using var file = new FileStream(Path.Combine(directory, "transcription.md"), FileMode.Open, FileAccess.Read, FileShare.Read);
-            if (file.Length > 2 * 1024 * 1024) throw new InvalidDataException("Transcript exceeds 2 MiB; Summary paused without automatic truncation.");
-            byte[] bytes = new byte[(int)file.Length];
-            await file.ReadExactlyAsync(bytes, token);
-            if (Convert.ToHexString(SHA256.HashData(bytes)) != data.TranscriptSha256)
-                throw new InvalidDataException("Transcript changed; Summary paused.");
             string transcript = Encoding.UTF8.GetString(bytes);
             string prompt = ReadPrompt(data.Processing.Summary, data.Processing.ConfigurationDirectory, "summary");
             int attempts = data.Retry?.ChunkIndex == 0 ? data.Retry.Attempts : 0;
@@ -401,6 +438,7 @@ public sealed class ProcessingJobs : IDisposable
             }
             catch (ChatApiException ex) when (ex.Kind == ApiFailureKind.Transient)
             {
+                AppDiagnostics.Error("processing", $"Session {data.Id}; Summary retry", ex);
                 token.ThrowIfCancellationRequested();
                 var backoff = Backoff(attempts = Math.Min(attempts + 1, 30), ex.RetryAfter);
                 data = data with { Retry = new(0, attempts, utcNow() + backoff), Error = ex.Message };

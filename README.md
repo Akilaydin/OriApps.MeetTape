@@ -18,7 +18,7 @@ Launching MeetTape again reopens its existing window and keeps that instance's r
 
 To remove a saved meeting, select it and use **Delete recording** in the Meetings context menu. Confirm its title/date and the entire-folder removal. Unfinished processing must first be canceled; unavailable Recycle Bin or unsafe folder ownership refuses the operation. Successful deletion moves the folder to Windows Recycle Bin for recovery.
 
-**Ctrl+Shift+F9** toggles Start/Stop while MeetTape runs, including when hidden in the tray. Finish Name / Trim after Stop before starting again. Windows notifications confirm actual recording transitions without focusing the window; status remains available in the window/tray if notifications are suppressed. If the shortcut is occupied, use the buttons or tray.
+**Ctrl+Shift+F9** toggles Start/Stop by default while MeetTape runs, including when hidden in the tray. Change **Recording hotkey** in Settings → Recording and Save to apply and retain another combination without restarting. An occupied shortcut leaves the previous binding available. Finish Name / Trim after Stop before starting again. Windows notifications confirm actual recording transitions without focusing the window; status remains available in the window/tray if notifications are suppressed. If the shortcut is occupied at startup, use the buttons or tray.
 
 Shipped UI text and prompt instructions are in English. The editable transcription prompt still targets Russian (`ru`), and the default Summary still requests Russian output; translating instructions does not translate your meeting content. Updates preserve custom prompts and existing documents. Enabled transcription uploads audio to your configured API; Summary uploads the completed transcript. The bounded startup GitHub version check does not block recording.
 
@@ -32,7 +32,9 @@ To uninstall, use **Exit** in every MeetTape window/tray, then remove **MeetTape
 
 ## Output
 
-Final folders use `Weekly sync_13.10.2026 10-30 01h25m`: title, local start time and audio duration in whole hours/minutes. Empty titles use `Unnamed meeting`; an existing destination is never overwritten or given an automatic suffix. The session UUID stays in `session.json`.
+Persistent diagnostics are stored in `%LOCALAPPDATA%\MeetTape\Logs\meettape.log`, with up to five files of 1 MiB each (`.1`–`.4` are older logs). Logs contain technical errors and workflow stages, survive restarts, and redact API keys and URL credentials. Open them directly in the filesystem; logging failure never blocks recording. The UI shows the cause and available recovery action.
+
+Final folders use `Weekly sync_13.10.2026 10-30 01h25m`: title, local start time and audio duration in whole hours/minutes. Empty titles use `Unnamed meeting`; occupied destinations are preserved and the next available numeric suffix (` (2)`, ` (3)`, ...) is appended automatically. The session UUID stays in `session.json`.
 
 ```text
 <session-folder>/

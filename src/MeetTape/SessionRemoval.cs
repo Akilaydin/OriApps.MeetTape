@@ -6,8 +6,13 @@ namespace MeetTape;
 
 internal static class SessionRemoval
 {
-    internal static bool CanDelete(SessionData data) => data.RecordingState == RecordingState.Recorded
-        && !ProcessingJobs.Eligible(data) && !ProcessingJobs.CanCancel(data);
+    internal static bool CanDelete(SessionData data) => data.RecordingState switch
+    {
+        RecordingState.Recorded => !ProcessingJobs.Eligible(data) && !ProcessingJobs.CanCancel(data),
+        RecordingState.Failed or RecordingState.Interrupted => data.JobState != JobState.Running
+            && !data.Stages.Values.Any(stage => stage.Status == StageState.Running),
+        _ => false
+    };
 
     internal static void Recycle(string directory, Guid id, IReadOnlyList<string> roots, string configurationDirectory,
         Func<string, Guid, string> recycle, IReadOnlyList<string>? protectedFiles = null)

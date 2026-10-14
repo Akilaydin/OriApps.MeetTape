@@ -9,6 +9,15 @@ public sealed class MainViewModel : INotifyPropertyChanged
 {
     private readonly IDesktopController? controller;
     private readonly Action<OperationNotice>? notifyRecording;
+    private string recordingShortcut = RecordingHotkey.DefaultShortcut;
+    public string RecordingShortcut => recordingShortcut;
+    public string RecordingShortcutText => recordingShortcut + " · Start / Stop";
+    internal void SetRecordingShortcut(string shortcut)
+    {
+        string text = RecordingHotkey.Parse(shortcut).Text;
+        if (recordingShortcut == text) return;
+        recordingShortcut = text; Changed();
+    }
     private bool notificationActive;
     private readonly Queue<string> warnings = new();
     private readonly Queue<OperationNotice> processingIssues = new();
@@ -266,7 +275,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
             if (snapshot.Capture.Error is { } error) ErrorText = error;
             Changed();
         }
-        catch (Exception) { SetError("Cannot refresh sessions; check meeting folder and metadata permissions."); }
+        catch (Exception error)
+        {
+            AppDiagnostics.Error("sessions", "Refresh", error);
+            SetError(AppDiagnostics.UserMessage(error, "Cannot refresh sessions; check meeting folder and metadata permissions."));
+        }
         finally { refreshing = false; }
     }
 
@@ -401,8 +414,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
         if (busy || updating || shutdownStarted || controller is null) return;
         busy = true; ErrorText = ""; Changed();
         try { await action(); }
-        catch (Exception ex) { SetError(ex is InvalidOperationException or InvalidDataException ? ex.Message :
-            "Operation failed; audio and saved checkpoints retained. Check devices, FFmpeg and storage permissions."); }
+        catch (Exception error)
+        {
+            AppDiagnostics.Error("ui", "Recording/session operation", error);
+            SetError(AppDiagnostics.UserMessage(error, "Operation failed; audio and saved checkpoints retained. Check devices, FFmpeg and storage permissions."));
+        }
         finally { busy = false; await RefreshAsync(); Changed(); }
     }
 
@@ -414,11 +430,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
         {
             if (!updates.IsInstalled) { SetInfo("Updates require an installed MeetTape build. Download Setup from GitHub Releases."); return false; }
             SetInfo("Checking for updates…");
+            AppDiagnostics.Info("updater", "Checking for updates");
             var update = await updates.CheckAsync().WaitAsync(TimeSpan.FromSeconds(30));
             if (update is null) { SetInfo("No update available."); return false; }
             if (!await confirm(updates.CurrentVersion, update.TargetFullRelease.Version.ToString()))
             { SetInfo("Update declined. Current version retained."); return false; }
             SetInfo("Downloading update…");
+            AppDiagnostics.Info("updater", "Downloading approved update");
             await updates.DownloadAsync(update, value => Dispatcher.UIThread.Post(() =>
             { UpdateProgress = value; Changed(); }));
             // Read live state again after network/dialog awaits; never apply during capture.
@@ -428,10 +446,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
             updates.ApplyAndRestart(update);
             return true;
         }
-        catch (Exception)
+        catch (Exception error)
         {
-            SetError(shutdownStarted ? "Cannot apply update. Exit and reopen MeetTape; saved checkpoints retained. Downloaded updates never apply automatically." :
-                "Update failed. Check GitHub connectivity and disk space, then retry. Current version and saved data retained.");
+            AppDiagnostics.Error("updater", shutdownStarted ? "Apply/restart" : "Check/download", error);
+            SetError(AppDiagnostics.UserMessage(error, shutdownStarted ? "Cannot apply update. Exit and reopen MeetTape; saved checkpoints retained. Downloaded updates never apply automatically." :
+                "Update failed. Check GitHub connectivity and disk space, then retry. Current version and saved data retained."));
             return false;
         }
         finally { updating = false; Changed(); }
@@ -449,7 +468,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
         shutdownStarted = true;
         busy = true; InfoText = "Closing: finalizing audio and saving processing checkpoints…"; Changed();
         try { if (controller is not null) await controller.ShutdownAsync(); return true; }
-        catch (Exception) { SetError("Shutdown could not finish. Audio finalization was attempted; check FFmpeg and restart after this process exits."); return false; }
+        catch (Exception error)
+        {
+            AppDiagnostics.Error("shutdown", "Finalize/join", error);
+            SetError(AppDiagnostics.UserMessage(error, "Shutdown could not finish. Audio finalization was attempted; check FFmpeg and restart after this process exits."));
+            return false;
+        }
         finally { busy = false; Changed(); }
     }
 

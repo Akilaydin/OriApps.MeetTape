@@ -23,13 +23,20 @@ public sealed class FfmpegEncoder : IDisposable
         try { process = Process.Start(start) ?? throw new IOException(); }
         catch (Exception ex) when (ex is IOException or System.ComponentModel.Win32Exception)
         {
-            throw new RecordingException("Cannot start FFmpeg; check capture.ffmpegPath and installation.");
+            AppDiagnostics.Error("ffmpeg", "Start encoder", ex);
+            throw new RecordingException(AppDiagnostics.UserMessage(ex, "Cannot start FFmpeg; check capture.ffmpegPath and installation."));
         }
         drainErrors = Task.Run(async () =>
         {
-            // Drain continuously without retaining unbounded process logs or private paths.
+            // Drain continuously; retain only bounded error diagnostics.
             char[] buffer = new char[1024];
-            while (await process.StandardError.ReadAsync(buffer.AsMemory()) > 0) { }
+            var details = new System.Text.StringBuilder();
+            int count;
+            while ((count = await process.StandardError.ReadAsync(buffer.AsMemory())) > 0)
+            {
+                details.Append(buffer, 0, Math.Min(count, 4096 - details.Length));
+            }
+            if (details.Length > 0) AppDiagnostics.Error("ffmpeg", "Encoder stderr", new IOException(details.ToString()));
         });
     }
 

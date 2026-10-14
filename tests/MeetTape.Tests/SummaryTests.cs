@@ -81,6 +81,70 @@ public sealed class SummaryTests : IDisposable
     }
 
     [Fact]
+    public async Task PublishedTranscriptSummaryDoesNotReadAudioOrReassembleAndCanResumeAfterApiFailure()
+    {
+        var (directory, config) = await SessionAsync();
+        var data = SessionStore.Read(directory);
+        string transcriptPath = Path.Combine(directory, "transcription.md");
+        byte[] transcript = File.ReadAllBytes(transcriptPath);
+        DateTime written = File.GetLastWriteTimeUtc(transcriptPath);
+        byte[] original = File.ReadAllBytes(Path.Combine(directory, "me.mp3"));
+        Directory.Delete(Path.Combine(directory, data.Audio!.RelativeDirectory), recursive: true);
+        using var checkpointLock = new FileStream(ChunkStore.PathFor(directory, 1), FileMode.Open, FileAccess.Read, FileShare.None);
+        using var handler = new Handler((_, _) => Task.FromResult(Reply(403)));
+        using (var http = new HttpClient(handler))
+        using (var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "key"))
+        {
+            jobs.RequestSummary(directory);
+            await jobs.ProcessSessionAsync(directory, default);
+        }
+        Assert.Equal(1, handler.Calls);
+        Assert.Equal(StageState.Paused, SessionStore.Read(directory).Stages["summary"].Status);
+        using var success = new Handler((_, _) => Task.FromResult(Reply()));
+        using var client = new HttpClient(success);
+        using var resumed = new ProcessingJobs(config, () => false, client, readKey: _ => "key");
+        resumed.Resume(directory);
+        await resumed.ProcessSessionAsync(directory, default);
+        Assert.Equal(1, success.Calls);
+        Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
+        Assert.Equal(transcript, File.ReadAllBytes(transcriptPath));
+        Assert.Equal(written, File.GetLastWriteTimeUtc(transcriptPath));
+        Assert.Equal(original, File.ReadAllBytes(Path.Combine(directory, "me.mp3")));
+        Assert.Empty(Directory.GetFiles(directory, ".transcription-*.tmp"));
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task ChangedOrMissingPublishedTranscriptPausesSummaryWithoutRequests(bool missing, bool cachedSummary)
+    {
+        var (directory, config) = await SessionAsync();
+        if (cachedSummary)
+        {
+            using var success = new Handler((_, _) => Task.FromResult(Reply()));
+            using var client = new HttpClient(success);
+            using var completed = new ProcessingJobs(config, () => false, client, readKey: _ => "key");
+            completed.RequestSummary(directory);
+            await completed.ProcessSessionAsync(directory, default);
+            File.Delete(Path.Combine(directory, "summary.md"));
+        }
+        string path = Path.Combine(directory, "transcription.md");
+        if (missing) File.Delete(path); else File.WriteAllText(path, "changed user document");
+        using var handler = new Handler((_, _) => throw new Exception("Invalid transcript must never be sent"));
+        using var http = new HttpClient(handler);
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "key");
+        jobs.RequestSummary(directory);
+        await jobs.ProcessSessionAsync(directory, default);
+        Assert.Equal(0, handler.Calls);
+        Assert.Equal(JobState.Paused, SessionStore.Read(directory).JobState);
+        Assert.Equal(StageState.Paused, SessionStore.Read(directory).Stages["summary"].Status);
+        Assert.False(File.Exists(Path.Combine(directory, "summary.md")));
+        if (missing) Assert.False(File.Exists(path)); else Assert.Equal("changed user document", File.ReadAllText(path));
+    }
+
+    [Fact]
     public async Task TooLongInputAndCaptureAreRejectedBeforeRequest()
     {
         var (_, config) = await SessionAsync();

@@ -79,6 +79,31 @@ public sealed class WindowTests
         Assert.True(model.CanRecord); model.Detach();
     }
 
+    [AvaloniaTheory]
+    [InlineData(RecordingState.Failed)]
+    [InlineData(RecordingState.Interrupted)]
+    public async Task FailedAndInterruptedDeletionKeepsConfirmationAndCancel(RecordingState state)
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var saved = fake.Snapshot.Sessions[0];
+        fake.Snapshot = fake.Snapshot with { Sessions = [saved with { Data = saved.Data! with { RecordingState = state, JobState = JobState.Paused } }] };
+        var model = new MainViewModel(fake); await model.RefreshAsync(); model.SelectedSession = model.Sessions[0];
+        Assert.True(model.CanDeleteRecording);
+        await model.DeleteSelectedRecordingAsync(_ => Task.FromResult(false));
+        Assert.Equal(0, fake.Deletes); Assert.Single(model.Sessions);
+        fake.Snapshot = fake.Snapshot with { Capture = fake.Snapshot.Capture with { IsActive = true } };
+        await model.RefreshAsync(); Assert.False(model.CanDeleteRecording);
+        fake.Snapshot = fake.Snapshot with { Capture = fake.Snapshot.Capture with { IsActive = false }, Preparing = true, PreparationDirectory = fixture.SessionDirectory };
+        await model.RefreshAsync(); Assert.False(model.CanDeleteRecording);
+        fake.Snapshot = fake.Snapshot with { Preparing = false };
+        await model.RefreshAsync(); Assert.True(model.CanDeleteRecording);
+        int confirmations = 0;
+        await model.DeleteSelectedRecordingAsync(row => { confirmations++; Assert.Equal(saved.Data!.Id, row.Id); return Task.FromResult(true); });
+        Assert.Equal(1, confirmations); Assert.Equal(1, fake.Deletes); Assert.Empty(model.Sessions);
+        model.Detach();
+    }
+
     [AvaloniaFact]
     public async Task DeleteIsUnavailableDuringCapturePreparationAndExit()
     {

@@ -20,7 +20,7 @@
           <Button Grid.Column="1" Name="RecordButton" Content="{Binding RecordLabel}" IsEnabled="{Binding CanRecord}" Click="RecordClick" />
         </Grid>
         <TextBlock Text="Me: microphone · Them: system playback" Opacity="0.65" />
-        <TextBlock Name="RecordingShortcut" Text="Ctrl+Shift+F9 · Start / Stop" Opacity="0.65" FontSize="12" />
+        <TextBlock Name="RecordingShortcut" Text="{Binding RecordingShortcutText}" Opacity="0.65" FontSize="12" />
         <Grid Name="AudioLevels" ColumnDefinitions="Auto,*,Auto,*" ColumnSpacing="8" IsVisible="{Binding IsRecording}">
           <TextBlock Text="Me" VerticalAlignment="Center" />
           <ProgressBar Grid.Column="1" Name="MeLevel" Value="{Binding MeLevel}" Height="6" VerticalAlignment="Center" />

@@ -61,20 +61,47 @@ public sealed class AudioTrimmer(string ffmpegPath)
         string destination = Path.Combine(directory, relative);
         cancellationToken.ThrowIfCancellationRequested();
         Directory.CreateDirectory(destination);
-        foreach (string name in new[] { "me.mp3", "them.mp3" })
+        try
         {
-            string target = Path.Combine(destination, name);
-            string filter = FormattableString.Invariant($"atrim=start_sample={first}:end_sample={limit},asetpts=PTS-STARTPTS");
-            await RunAsync(ffmpegPath, ["-hide_banner", "-nostats", "-nostdin", "-v", "error", "-n", "-i",
-                Path.Combine(directory, name), "-af", filter, "-ar", "48000", "-ac", "1", "-c:a", "libmp3lame",
-                "-b:a", "96k", "-write_xing", "1", target], null, cancellationToken);
-            using var stream = new FileStream(target, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
-            if (stream.Length == 0) throw new RecordingException("Trim output is empty; originals retained.");
-            stream.Flush(flushToDisk: true);
+            foreach (string name in new[] { "me.mp3", "them.mp3" })
+            {
+                string target = Path.Combine(destination, name);
+                string filter = FormattableString.Invariant($"atrim=start_sample={first}:end_sample={limit},asetpts=PTS-STARTPTS");
+                await RunAsync(ffmpegPath, ["-hide_banner", "-nostats", "-nostdin", "-v", "error", "-n", "-i",
+                    Path.Combine(directory, name), "-af", filter, "-ar", "48000", "-ac", "1", "-c:a", "libmp3lame",
+                    "-b:a", "96k", "-write_xing", "1", target], null, cancellationToken);
+                using var stream = new FileStream(target, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+                if (stream.Length == 0) throw new RecordingException("Trim output is empty; originals retained.");
+                stream.Flush(flushToDisk: true);
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            return new(first / (double)SampleRate, limit / (double)SampleRate, true)
+            { Decision = decision, RelativeDirectory = relative.Replace('\\', '/') };
         }
-        cancellationToken.ThrowIfCancellationRequested();
-        return new(first / (double)SampleRate, limit / (double)SampleRate, true)
-        { Decision = decision, RelativeDirectory = relative.Replace('\\', '/') };
+        catch (Exception error) when (error is not AudioPreparationShutdownException)
+        {
+            DiscardAttempt(directory, relative);
+            throw;
+        }
+    }
+
+    internal static void DiscardAttempt(string directory, string relative)
+    {
+        try
+        {
+            string path = Path.TrimEndingDirectorySeparator(AudioChunker.ResolveProcessed(directory, relative));
+            var data = SessionStore.Read(directory);
+            if (new[] { data.Trim.RelativeDirectory, data.Audio?.RelativeDirectory }.Any(selected => selected is not null
+                && string.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(Path.Combine(directory, selected))), path, StringComparison.OrdinalIgnoreCase))) return;
+            if (!Directory.Exists(path)) return;
+            if (File.GetAttributes(path).HasFlag(FileAttributes.ReparsePoint)
+                || Directory.EnumerateFileSystemEntries(path).Any(entry => File.GetAttributes(entry).HasFlag(FileAttributes.ReparsePoint)))
+                throw new InvalidDataException("Attempt became a linked directory/file; cleanup refused.");
+            Directory.Delete(path, recursive: true);
+            AppDiagnostics.Info("preparation", "Discarded unselected audio attempt");
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException or ArgumentException)
+        { AppDiagnostics.Error("preparation", "Discard unselected audio attempt; files retained", error); }
     }
 
     public static void Validate(double start, double end, double duration)
@@ -118,15 +145,28 @@ public sealed class AudioTrimmer(string ffmpegPath)
         foreach (string argument in arguments) start.ArgumentList.Add(argument);
         using var process = new Process { StartInfo = start };
         try { process.Start(); }
-        catch (System.ComponentModel.Win32Exception)
-        { throw new RecordingException("Cannot start FFmpeg; check capture.ffmpegPath. Originals retained."); }
+        catch (System.ComponentModel.Win32Exception ex)
+        {
+            AppDiagnostics.Error("ffmpeg", "Start preparation", ex);
+            throw new RecordingException(AppDiagnostics.UserMessage(ex, "Cannot start FFmpeg; check capture.ffmpegPath. Originals retained."));
+        }
+        AppDiagnostics.Info("ffmpeg", "Preparation started");
         var output = process.StandardOutput.BaseStream.CopyToAsync(Stream.Null, cancellationToken);
-        var errors = ReadLinesAsync(process.StandardError, inspectLine, cancellationToken);
+        var details = new System.Text.StringBuilder();
+        var errors = ReadLinesAsync(process.StandardError, line =>
+        {
+            inspectLine?.Invoke(line);
+            if (details.Length < 4096) details.AppendLine(line[..Math.Min(line.Length, 4096 - details.Length)]);
+        }, cancellationToken);
         try
         {
             await Task.WhenAll(process.WaitForExitAsync(cancellationToken), output, errors);
             if (process.ExitCode != 0)
+            {
+                AppDiagnostics.Error("ffmpeg", $"Preparation exit {process.ExitCode}", new IOException(details.ToString()));
                 throw new RecordingException("FFmpeg audio preparation failed; check source files, permissions and free space. Originals retained.");
+            }
+            AppDiagnostics.Info("ffmpeg", "Preparation completed");
         }
         finally
         {
@@ -136,7 +176,7 @@ public sealed class AudioTrimmer(string ffmpegPath)
                 await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
             }
             catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or TimeoutException)
-            { throw new AudioPreparationShutdownException("Cannot confirm FFmpeg stopped; capture remains blocked. Close the stalled FFmpeg process before restarting MeetTape."); }
+            { AppDiagnostics.Error("ffmpeg", "Join preparation", ex); throw new AudioPreparationShutdownException("Cannot confirm FFmpeg stopped; capture remains blocked. Close the stalled FFmpeg process before restarting MeetTape."); }
             // Observe canceled/faulted readers before disposing their streams.
             try { await Task.WhenAll(output, errors).WaitAsync(TimeSpan.FromSeconds(5)); }
             catch (OperationCanceledException) { }

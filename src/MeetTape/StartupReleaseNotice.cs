@@ -13,6 +13,10 @@ internal static class StartupReleaseNotice
             return current + (update is null ? "\nUp to date." :
                 $"\nAvailable version: {update.TargetFullRelease.Version}. Use Update to review and confirm.");
         }
-        catch (Exception) { return current + "\nUpdate check unavailable. Use Update to retry."; }
+        catch (Exception error)
+        {
+            AppDiagnostics.Error("updater", "Startup check", error);
+            return current + "\n" + AppDiagnostics.UserMessage(error, "Update check unavailable. Use Update to retry.");
+        }
     }
 }

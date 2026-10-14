@@ -20,6 +20,9 @@ jobs:
       contents: write
     env:
       AVALONIA_TELEMETRY_OPTOUT: '1'
+      DOTNET_GENERATE_ASPNET_CERTIFICATE: 'false'
+      DOTNET_ADD_GLOBAL_TOOLS_TO_PATH: 'false'
+      NUGET_PACKAGES: ${{ github.workspace }}/dist/nuget
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -51,6 +54,22 @@ jobs:
             }
           }
 
+      - uses: actions/cache@v4
+        if: env.SKIP_RELEASE != 'true'
+        with:
+          path: ${{ env.NUGET_PACKAGES }}
+          key: ${{ runner.os }}-nuget-${{ hashFiles('src/**/*.csproj', 'tests/**/*.csproj', 'tools/**/*.csproj') }}
+          restore-keys: ${{ runner.os }}-nuget-
+      - uses: actions/cache@v4
+        if: env.SKIP_RELEASE != 'true'
+        with:
+          path: dist/vpk
+          key: ${{ runner.os }}-vpk-1.2.161
+      - uses: actions/cache@v4
+        if: env.SKIP_RELEASE != 'true'
+        with:
+          path: dist/downloads
+          key: ${{ runner.os }}-ffmpeg-9.0-E6B54767A6065919
       - name: Install FFmpeg for software audio tests
         if: env.SKIP_RELEASE != 'true'
         shell: pwsh
@@ -71,8 +90,10 @@ jobs:
         if: env.SKIP_RELEASE != 'true'
         shell: pwsh
         run: |
-          dotnet tool install vpk --version 1.2.161 --tool-path dist/vpk
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot install pinned vpk.' }
+          if (-not (Test-Path -LiteralPath dist/vpk/vpk.exe)) {
+            dotnet tool install vpk --version 1.2.161 --tool-path dist/vpk
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot install pinned vpk.' }
+          }
           ./tools/Build-Package.ps1 -Version $env:MEETTAPE_VERSION -VpkPath ./dist/vpk/vpk.exe
 
       - name: Publish one GitHub Release

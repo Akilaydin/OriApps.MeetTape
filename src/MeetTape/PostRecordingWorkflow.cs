@@ -100,8 +100,16 @@ public sealed class PostRecordingWorkflow(string ffmpegPath) : IDisposable
             SessionStore.Save(selected, Update(current, StageState.Running, error: null));
             TrimParameters choice = a == 0 && b == duration ? new(0, duration, false) { Decision = decision } :
                 await currentTrimmer.ApplyAsync(selected, a, b, duration, decision, token);
-            token.ThrowIfCancellationRequested();
-            SessionStore.Save(selected, Update(current with { Trim = choice }, StageState.Completed, error: null));
+            try
+            {
+                token.ThrowIfCancellationRequested();
+                SessionStore.Save(selected, Update(current with { Trim = choice }, StageState.Completed, error: null));
+            }
+            catch
+            {
+                if (choice.RelativeDirectory is { } relative) AudioTrimmer.DiscardAttempt(selected, relative);
+                throw;
+            }
             Report(new(NoticeKind.Information, "Trim choice saved; originals retained.", current.Id));
         });
     }
@@ -122,7 +130,8 @@ public sealed class PostRecordingWorkflow(string ffmpegPath) : IDisposable
             catch (Exception ex) when (ex is not AudioPreparationShutdownException && ex is (InvalidDataException or IOException or UnauthorizedAccessException
                 or InvalidOperationException or System.ComponentModel.Win32Exception or TimeoutException))
             {
-                SavePaused(selected, "Audio preparation paused; check originals, FFmpeg, permissions and free space.", StageState.Paused);
+                AppDiagnostics.Error("preparation", "Trim", ex);
+                SavePaused(selected, AppDiagnostics.UserMessage(ex, "Audio preparation paused; check originals, FFmpeg, permissions and free space."), StageState.Paused);
             }
         });
     }
@@ -137,12 +146,13 @@ public sealed class PostRecordingWorkflow(string ffmpegPath) : IDisposable
             SessionStore.Save(selected, Update(data, state, diagnostic) with { JobState = JobState.Paused });
         }
         catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
-        { diagnostic += " Could not update session.json; prior state retained."; }
+        { AppDiagnostics.Error("preparation", "Save paused state", ex); diagnostic += " Could not update session.json; prior state retained."; }
         Report(new(NoticeKind.Warning, diagnostic));
     }
 
     private void Report(OperationNotice notice)
     {
+        AppDiagnostics.Info("preparation", notice.Message);
         try { Notice?.Invoke(notice); }
         catch (Exception) { /* Diagnostics must not change preparation outcomes. */ }
     }
@@ -191,17 +201,24 @@ public sealed class PostRecordingWorkflow(string ffmpegPath) : IDisposable
         }
         string name = safe.ToString().Trim(' ', '.');
         var duration = TimeSpan.FromSeconds(data.DurationSeconds.Value);
-        string destination = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(directory))!,
+        string source = Path.GetFullPath(directory);
+        string baseDestination = Path.Combine(Path.GetDirectoryName(source)!,
             string.Create(CultureInfo.InvariantCulture,
                 $"{(name.Length == 0 ? "Unnamed meeting" : name)}_{data.StartedAtUtc.ToLocalTime():dd.MM.yyyy HH-mm} {(long)duration.TotalHours:00}h{duration.Minutes:00}m"));
-        bool move = !string.Equals(Path.GetFullPath(directory), destination, StringComparison.OrdinalIgnoreCase);
-        if (move && (Directory.Exists(destination) || File.Exists(destination)))
-            throw new RecordingException("Named session directory already exists; refusing to overwrite.");
+        string destination = baseDestination;
         // Save first: failure to rename still leaves title and identity discoverable in the old folder.
         SessionStore.Save(directory, data with { Title = title.Length == 0 ? null : title });
         // Windows directory rename requires closing every handle inside the folder, including our lease.
         lease.Dispose();
-        if (move) Directory.Move(directory, destination);
+        int suffix = 1;
+        while (!string.Equals(source, destination, StringComparison.OrdinalIgnoreCase))
+        {
+            try { Directory.Move(source, destination); break; }
+            catch (IOException) when (Directory.Exists(source) && (Directory.Exists(destination) || File.Exists(destination)))
+            {
+                destination = baseDestination + " (" + (++suffix).ToString(CultureInfo.InvariantCulture) + ")";
+            }
+        }
         return destination;
     }
 

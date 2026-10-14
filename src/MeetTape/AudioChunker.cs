@@ -54,25 +54,33 @@ public sealed class AudioChunker(string ffmpegPath)
         var chunks = Plan(first, limit - first, data.Processing.ChunkSeconds, relative);
         token.ThrowIfCancellationRequested();
         Directory.CreateDirectory(Path.Combine(directory, relative));
-        foreach (var chunk in chunks)
+        try
         {
+            foreach (var chunk in chunks)
+            {
+                token.ThrowIfCancellationRequested();
+                string position = (chunk.StartFrame / (double)SampleRate).ToString("R", CultureInfo.InvariantCulture);
+                long frames = chunk.EndFrame - chunk.StartFrame;
+                string target = Path.Combine(directory, chunk.RelativePath);
+                // Input -ss uses FFmpeg's default accurate seek while transcoding; trim the decoded output by sample count.
+                string filter = FormattableString.Invariant($"[0:a][1:a]join=inputs=2:channel_layout=stereo:map=0.0-FL|1.0-FR,atrim=end_sample={frames},asetpts=PTS-STARTPTS[a]");
+                await AudioTrimmer.RunAsync(ffmpegPath, ["-hide_banner", "-nostats", "-nostdin", "-v", "error", "-n",
+                    "-ss", position, "-i", Path.Combine(input, "me.mp3"), "-ss", position, "-i", Path.Combine(input, "them.mp3"),
+                    "-filter_complex", filter, "-map", "[a]", "-ar", "48000", "-ac", "2", "-c:a", "libmp3lame", "-b:a", "192k",
+                    "-write_xing", "1", target], null, token);
+                ValidateUploadSize(target);
+                await ValidateAsync(target, frames, token);
+                using var stream = new FileStream(target, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+                stream.Flush(flushToDisk: true);
+            }
             token.ThrowIfCancellationRequested();
-            string position = (chunk.StartFrame / (double)SampleRate).ToString("R", CultureInfo.InvariantCulture);
-            long frames = chunk.EndFrame - chunk.StartFrame;
-            string target = Path.Combine(directory, chunk.RelativePath);
-            // Input -ss uses FFmpeg's default accurate seek while transcoding; trim the decoded output by sample count.
-            string filter = FormattableString.Invariant($"[0:a][1:a]join=inputs=2:channel_layout=stereo:map=0.0-FL|1.0-FR,atrim=end_sample={frames},asetpts=PTS-STARTPTS[a]");
-            await AudioTrimmer.RunAsync(ffmpegPath, ["-hide_banner", "-nostats", "-nostdin", "-v", "error", "-n",
-                "-ss", position, "-i", Path.Combine(input, "me.mp3"), "-ss", position, "-i", Path.Combine(input, "them.mp3"),
-                "-filter_complex", filter, "-map", "[a]", "-ar", "48000", "-ac", "2", "-c:a", "libmp3lame", "-b:a", "192k",
-                "-write_xing", "1", target], null, token);
-            ValidateUploadSize(target);
-            await ValidateAsync(target, frames, token);
-            using var stream = new FileStream(target, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
-            stream.Flush(flushToDisk: true);
+            return new PreparedAudio(relative, chunks);
         }
-        token.ThrowIfCancellationRequested();
-        return new PreparedAudio(relative, chunks);
+        catch (Exception error) when (error is not AudioPreparationShutdownException)
+        {
+            AudioTrimmer.DiscardAttempt(directory, relative);
+            throw;
+        }
     }
 
     public static void ValidateUploadSize(string path)
