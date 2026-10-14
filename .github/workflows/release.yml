@@ -74,7 +74,7 @@ jobs:
         if: env.SKIP_RELEASE != 'true'
         shell: pwsh
         run: |
-          ./tools/Get-FFmpeg.ps1
+          ./tools/Dependencies/Get-FFmpeg.ps1
           (Join-Path $PWD 'dist/ffmpeg') >> $env:GITHUB_PATH
 
       - name: Run software and headless tests
@@ -87,7 +87,7 @@ jobs:
       - name: Run isolated scheduler regression with bounded diagnostics
         if: env.SKIP_RELEASE != 'true' && !cancelled()
         shell: pwsh
-        run: ./tools/Test-Scheduler.ps1
+        run: ./tools/Tests/Test-Scheduler.ps1
 
       - name: Run headless tests
         if: env.SKIP_RELEASE != 'true'
@@ -113,7 +113,7 @@ jobs:
             dotnet tool install vpk --version 1.2.161 --tool-path dist/vpk
             if ($LASTEXITCODE -ne 0) { throw 'Cannot install pinned vpk.' }
           }
-          ./tools/Build-Package.ps1 -Version $env:MEETTAPE_VERSION -VpkPath ./dist/vpk/vpk.exe
+          ./tools/Packaging/Build-Package.ps1 -Version $env:MEETTAPE_VERSION -VpkPath ./dist/vpk/vpk.exe
 
       - name: Publish one GitHub Release
         if: env.SKIP_RELEASE != 'true'
