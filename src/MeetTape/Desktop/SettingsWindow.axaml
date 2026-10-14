@@ -1,0 +1,187 @@
+<Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="using:OriApps.MeetTape.Desktop" x:Class="OriApps.MeetTape.Desktop.SettingsWindow" x:DataType="local:SettingsViewModel"
+        Title="MeetTape — Settings" Width="660" Height="730" MinWidth="520" MinHeight="480">
+  <Grid RowDefinitions="Auto,*,Auto" Margin="24">
+    <StackPanel Spacing="8" Margin="0,0,0,12">
+      <TextBlock Text="Settings" FontSize="24" />
+      <TextBlock Text="{Binding ConfigurationPath}" TextWrapping="Wrap" Opacity="0.7" />
+    </StackPanel>
+    <TabControl Name="SettingsSections" Grid.Row="1" IsEnabled="{Binding CanSave}">
+      <TabItem Header="Recording">
+        <ScrollViewer>
+          <StackPanel Spacing="8" Margin="4,12,8,8">
+            <TextBlock Text="Microphone (Me)" />
+            <ComboBox Name="MicrophoneChoice" ItemsSource="{Binding Microphones}" SelectedItem="{Binding Microphone}" HorizontalAlignment="Stretch" />
+            <TextBlock Text="System playback (Them)" />
+            <ComboBox ItemsSource="{Binding PlaybackDevices}" SelectedItem="{Binding Playback}" HorizontalAlignment="Stretch" />
+            <TextBlock Text="Meetings folder" /><TextBox Name="MeetingsFolder" Text="{Binding MeetingsRoot}" />
+            <TextBlock Text="FFmpeg executable" /><TextBox Text="{Binding FfmpegPath}" />
+            <TextBlock Text="Recording hotkey (Start / Stop)" />
+            <TextBox Name="RecordingHotkey" Text="{Binding RecordingHotkey}" PlaceholderText="Ctrl+Shift+F9" />
+            <TextBlock Text="Enter a combination, e.g. Ctrl+Alt+F10. Save applies it immediately." TextWrapping="Wrap" Opacity="0.7" />
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+      <TabItem Header="Processing">
+        <ScrollViewer>
+          <StackPanel Spacing="8" Margin="4,12,8,8">
+            <CheckBox Content="Trim" IsChecked="{Binding Trim}" />
+            <CheckBox Content="Transcribe" IsChecked="{Binding Transcribe}" />
+            <CheckBox Content="Automatic Summary" IsChecked="{Binding Summary}" />
+            <TextBlock Text="Automatic Summary applies to new recordings after transcription. Request Summary also works when automatic mode is off. Summary uploads only the complete transcript." TextWrapping="Wrap" Opacity="0.7" />
+            <TextBlock Text="Chunk duration (1–340 seconds)" /><TextBox Name="ChunkDuration" Text="{Binding ChunkSeconds}" />
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+      <TabItem Header="Reminders">
+        <ScrollViewer>
+          <StackPanel Spacing="12" Margin="4,12,8,8">
+            <TextBlock Text="Remind me one minute before a meeting to start recording." TextWrapping="Wrap" Opacity="0.7" />
+            <ListBox Name="RemindersList" Height="176" ItemsSource="{Binding ReminderEditor.Items}"
+                     SelectedItem="{Binding ReminderEditor.Selected}">
+              <ListBox.ItemTemplate>
+                <DataTemplate x:DataType="local:ReminderRow">
+                  <StackPanel Spacing="2" Margin="2,4">
+                    <TextBlock Text="{Binding Title}" FontWeight="SemiBold" />
+                    <TextBlock Text="{Binding When}" Opacity="0.75" />
+                    <TextBlock Text="{Binding Next}" Opacity="0.65" FontSize="11" />
+                  </StackPanel>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+            <WrapPanel>
+              <Button Content="Add" Click="AddReminderClick" Margin="0,0,8,8" />
+              <Button Content="Edit" Click="EditReminderClick" Margin="0,0,8,8" />
+              <Button Content="Enable / disable" Click="ToggleReminderClick" Margin="0,0,8,8" />
+              <Button Content="Delete" Click="DeleteReminderClick" Margin="0,0,8,8" />
+            </WrapPanel>
+            <Border IsVisible="{Binding ReminderEditor.IsEditing}" BorderBrush="#D5DCE5"
+                    BorderThickness="1" CornerRadius="6" Padding="12">
+              <StackPanel Spacing="8">
+                <TextBlock Text="Meeting name (optional)" />
+                <TextBox Name="ReminderName" Text="{Binding ReminderEditor.MeetingName}" />
+                <TextBlock Text="Repeat" />
+                <ComboBox Name="ReminderRecurrence" SelectedIndex="{Binding ReminderEditor.Recurrence}">
+                  <ComboBoxItem Content="Doesn't repeat" />
+                  <ComboBoxItem Content="Repeat on days" />
+                </ComboBox>
+                <TextBlock Text="Date" IsVisible="{Binding ReminderEditor.IsOneTime}" />
+                <DatePicker Name="ReminderDate" SelectedDate="{Binding ReminderEditor.Date}"
+                            IsVisible="{Binding ReminderEditor.IsOneTime}" />
+                <TextBlock Text="Time" />
+                <TimePicker Name="ReminderTime" SelectedTime="{Binding ReminderEditor.Time}" MinuteIncrement="1" />
+                <StackPanel Spacing="6" IsVisible="{Binding ReminderEditor.IsRepeating}">
+                  <TextBlock Text="Repeat on days" />
+                  <WrapPanel>
+                    <CheckBox Content="Mon" IsChecked="{Binding ReminderEditor.Monday}" Margin="0,0,12,6" />
+                    <CheckBox Content="Tue" IsChecked="{Binding ReminderEditor.Tuesday}" Margin="0,0,12,6" />
+                    <CheckBox Content="Wed" IsChecked="{Binding ReminderEditor.Wednesday}" Margin="0,0,12,6" />
+                    <CheckBox Content="Thu" IsChecked="{Binding ReminderEditor.Thursday}" Margin="0,0,12,6" />
+                    <CheckBox Content="Fri" IsChecked="{Binding ReminderEditor.Friday}" Margin="0,0,12,6" />
+                    <CheckBox Content="Sat" IsChecked="{Binding ReminderEditor.Saturday}" Margin="0,0,12,6" />
+                    <CheckBox Content="Sun" IsChecked="{Binding ReminderEditor.Sunday}" Margin="0,0,12,6" />
+                  </WrapPanel>
+                </StackPanel>
+                <TextBlock Text="{Binding ReminderEditor.Error}" TextWrapping="Wrap" />
+                <WrapPanel>
+                  <Button Content="Save reminder" Click="SaveReminderClick" Margin="0,0,8,0" />
+                  <Button Content="Cancel" Click="CancelReminderClick" />
+                </WrapPanel>
+              </StackPanel>
+            </Border>
+            <CheckBox Content="Run MeetTape when Windows starts (in the tray)"
+                      IsChecked="{Binding ReminderEditor.RunAtWindowsStartup}" />
+            <TextBlock Text="MeetTape must be running for reminders to appear. Exit from the tray stops reminders."
+                       TextWrapping="Wrap" Opacity="0.7" />
+            <TextBlock Text="Use Save settings to apply reminders and startup changes." TextWrapping="Wrap" Opacity="0.7" />
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+      <TabItem Header="API &amp; prompts">
+        <TabControl Name="PromptSections">
+          <TabItem Header="Transcription">
+            <ScrollViewer>
+              <StackPanel Spacing="8" Margin="4,12,8,8">
+                <Expander Header="API connection &amp; key" HorizontalAlignment="Stretch">
+                  <StackPanel Spacing="8">
+                    <TextBlock Text="HTTPS endpoint (HTTP allowed for loopback)" />
+                    <TextBox Text="{Binding TranscriptionEndpoint}" />
+                    <TextBlock Text="Model" /><TextBox Text="{Binding TranscriptionModel}" />
+                    <TextBlock Text="API key environment variable" /><TextBox Text="{Binding TranscriptionKeyVariable}" />
+                    <TextBlock Text="New key (empty keeps existing)" />
+                    <TextBox Name="TranscriptionKey" Text="{Binding NewTranscriptionKey}" PasswordChar="●" />
+                    <TextBlock Text="Keys stay in your Windows user environment, never config.json. Existing keys are never displayed." TextWrapping="Wrap" Opacity="0.7" />
+                  </StackPanel>
+                </Expander>
+                <TextBlock Text="Prompt file path" />
+                <Grid ColumnDefinitions="*,Auto">
+                  <TextBox Name="TranscriptionPromptPath" Text="{Binding TranscriptionPrompt}" />
+                  <Button Grid.Column="1" Content="Load file" Click="LoadTranscriptionPromptClick" Margin="8,0,0,0" />
+                </Grid>
+                <TextBlock Text="{Binding TranscriptionPromptError}" TextWrapping="Wrap" />
+                <TextBlock Text="Prompt contents — saved only when edited" />
+                <TextBox Name="TranscriptionPromptEditor" Text="{Binding TranscriptionPromptText}" AcceptsReturn="True" TextWrapping="Wrap"
+                         Height="240" VerticalContentAlignment="Top" ScrollViewer.VerticalScrollBarVisibility="Auto" />
+              </StackPanel>
+            </ScrollViewer>
+          </TabItem>
+          <TabItem Header="Summary">
+            <ScrollViewer>
+              <StackPanel Spacing="8" Margin="4,12,8,8">
+                <Expander Header="API connection &amp; key" HorizontalAlignment="Stretch">
+                  <StackPanel Spacing="8">
+                    <TextBlock Text="HTTPS endpoint (HTTP allowed for loopback)" />
+                    <TextBox Text="{Binding SummaryEndpoint}" />
+                    <TextBlock Text="Model" /><TextBox Text="{Binding SummaryModel}" />
+                    <TextBlock Text="API key environment variable" /><TextBox Text="{Binding SummaryKeyVariable}" />
+                    <TextBlock Text="New key (empty keeps existing)" />
+                    <TextBox Name="SummaryKey" Text="{Binding NewSummaryKey}" PasswordChar="●" />
+                    <TextBlock Text="Keys stay in your Windows user environment, never config.json. Existing keys are never displayed." TextWrapping="Wrap" Opacity="0.7" />
+                  </StackPanel>
+                </Expander>
+                <TextBlock Text="Prompt file path" />
+                <Grid ColumnDefinitions="*,Auto">
+                  <TextBox Name="SummaryPromptPath" Text="{Binding SummaryPrompt}" />
+                  <Button Grid.Column="1" Content="Load file" Click="LoadSummaryPromptClick" Margin="8,0,0,0" />
+                </Grid>
+                <TextBlock Text="{Binding SummaryPromptError}" TextWrapping="Wrap" />
+                <TextBlock Text="Prompt contents — saved only when edited" />
+                <TextBox Name="SummaryPromptEditor" Text="{Binding SummaryPromptText}" AcceptsReturn="True" TextWrapping="Wrap"
+                         Height="240" VerticalContentAlignment="Top" ScrollViewer.VerticalScrollBarVisibility="Auto" />
+              </StackPanel>
+            </ScrollViewer>
+          </TabItem>
+        </TabControl>
+      </TabItem>
+      <TabItem Header="About">
+        <ScrollViewer>
+          <StackPanel Name="AboutPanel" x:DataType="local:MainViewModel" Spacing="12" Margin="4,12,8,8">
+            <TextBlock Text="MeetTape" FontSize="22" FontWeight="SemiBold" />
+            <TextBlock Name="CurrentVersion" Text="{Binding CurrentVersion, StringFormat='Current version: {0}'}" />
+            <TextBlock Name="AvailableVersion" Text="{Binding AvailableVersion, StringFormat='Available version: {0}'}" />
+            <TextBlock Text="{Binding ReleaseText}" TextWrapping="Wrap" Opacity="0.7" />
+            <TextBlock Name="UpdateStatus" Text="{Binding UpdateStatus}" TextWrapping="Wrap" />
+            <WrapPanel>
+              <Button Name="CheckUpdates" Content="Check for updates" IsEnabled="{Binding CanCheckUpdates}" Click="CheckUpdatesClick" Margin="0,0,12,8" />
+              <Button Name="UpdateButton" Content="Update" IsEnabled="{Binding CanApplyUpdate}" Click="UpdateClick" Margin="0,0,12,8" />
+            </WrapPanel>
+            <TextBlock Text="Checking never downloads or installs. Update requires confirmation, stopped recording and saved settings."
+                       TextWrapping="Wrap" Opacity="0.7" />
+            <TextBlock Text="{Binding InfoText}" IsVisible="{Binding IsUpdating}" TextWrapping="Wrap" />
+            <ProgressBar Name="UpdateProgress" Value="{Binding UpdateProgress}" IsVisible="{Binding IsUpdating}" Height="6" />
+            <TextBlock Text="{Binding ErrorSummary}" IsVisible="{Binding HasError}" TextWrapping="Wrap" />
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+    </TabControl>
+    <StackPanel Grid.Row="2" Spacing="12" Margin="0,16,0,0">
+      <TextBlock Name="SettingsMessage" Text="{Binding Message}" TextWrapping="Wrap" />
+      <TextBlock Name="LogsFolderError" IsVisible="False" TextWrapping="Wrap" />
+      <StackPanel Orientation="Horizontal" Spacing="12" HorizontalAlignment="Right">
+        <Button Name="OpenLogsFolder" Content="Open logs folder" Click="OpenLogsFolderClick" />
+        <Button Name="CloseSettings" Content="Close" Click="CloseClick" />
+        <Button Name="SaveSettings" Content="Save settings" IsEnabled="{Binding CanSave}" Click="SaveClick" />
+      </StackPanel>
+    </StackPanel>
+  </Grid>
+</Window>

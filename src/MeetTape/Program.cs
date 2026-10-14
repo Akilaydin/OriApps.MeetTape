@@ -1,3 +1,5 @@
+using OriApps.MeetTape.Desktop;
+using OriApps.MeetTape.Diagnostics;
 using Avalonia;
 using Velopack;
 
@@ -13,7 +15,11 @@ internal static class Program
         ConfigureStartup(args);
         using var instance = App.Smoke || App.StartupError is not null
             ? null : new DesktopInstance(@"Local\OriApps.MeetTape.Desktop");
-        if (instance is { IsPrimary: false }) { instance.ActivateExisting(); return 0; }
+        if (instance is { IsPrimary: false })
+        {
+            if (!App.StartInTray) instance.ActivateExisting();
+            return 0;
+        }
         App.Instance = instance;
         using var diagnostics = App.Smoke || App.StartupError is not null ? null : new FileDiagnostics(AppDiagnostics.DirectoryPath);
         AppDiagnostics.ProcessLog = diagnostics;
@@ -35,7 +41,8 @@ internal static class Program
     internal static void ConfigureStartup(string[] args)
     {
         App.Smoke = args is ["--ui-smoke"];
-        App.StartupError = args.Length > 0 && !App.Smoke
+        App.StartInTray = args is ["--tray"] or ["-ToastActivated"];
+        App.StartupError = args.Length > 0 && !App.Smoke && !App.StartInTray
             ? "MeetTape no longer accepts commands or configuration arguments. Close this window and launch MeetTape without arguments."
             : null;
     }

@@ -8,19 +8,23 @@ function git {
     $global:changeScopeTestPaths
 }
 $cases = @(
+    @{ Paths = @('.mailmap'); Software = 'false'; Package = 'false' },
+    @{ Paths = @('.mailmap', 'src/MeetTape/Processing/TranscriptAssembler.cs'); Software = 'true'; Package = 'false' },
     @{ Paths = @('README.md', 'ARCHITECTURE.md'); Software = 'false'; Package = 'false' },
-    @{ Paths = @('src/MeetTape/TranscriptAssembler.cs'); Software = 'true'; Package = 'false' },
+    @{ Paths = @('src/MeetTape/Processing/TranscriptAssembler.cs'); Software = 'true'; Package = 'false' },
     @{ Paths = @('tests/MeetTape.Tests/JobTests.cs'); Software = 'true'; Package = 'false' },
     @{ Paths = @('prompts/transcription.md'); Software = 'true'; Package = 'false' },
-    @{ Paths = @('README.md', 'src/MeetTape/AppUpdates.cs'); Software = 'true'; Package = 'true' },
-    @{ Paths = @('src/MeetTape/App.cs'); Software = 'true'; Package = 'true' },
-    @{ Paths = @('src/MeetTape/MainViewModel.cs'); Software = 'true'; Package = 'true' },
-    @{ Paths = @('src/MeetTape/DesktopController.cs'); Software = 'true'; Package = 'true' },
-    @{ Paths = @('tools/Test-Package.ps1'); Software = 'true'; Package = 'true' },
+    @{ Paths = @('README.md', 'src/MeetTape/Updates/AppUpdates.cs'); Software = 'true'; Package = 'true' },
+    @{ Paths = @('src/MeetTape/Desktop/App.cs'); Software = 'true'; Package = 'true' },
+    @{ Paths = @('src/MeetTape/Desktop/MainViewModel.cs'); Software = 'true'; Package = 'true' },
+    @{ Paths = @('src/MeetTape/Desktop/DesktopController.cs'); Software = 'true'; Package = 'true' },
+    @{ Paths = @('tools/Packaging/Test-Package.ps1'); Software = 'true'; Package = 'true' },
     @{ Paths = @('.github/workflows/ci.yml'); Software = 'true'; Package = 'true' },
     @{ Paths = @('src/MeetTape/MeetTape.csproj'); Software = 'true'; Package = 'true' },
     @{ Paths = @('assets/MeetTape.ico'); Software = 'true'; Package = 'true' },
     @{ Paths = @('src/MeetTape/FutureNative.cs'); Software = 'true'; Package = 'true' },
+    @{ Paths = @('src/MeetTape/Audio/FutureNative.cs'); Software = 'true'; Package = 'true' },
+    @{ Paths = @('src/MeetTape/Audio/WasapiPacketCapture.cs'); Software = 'true'; Package = 'true' },
     @{ Paths = @('future/unknown.md'); Software = 'true'; Package = 'true' }
 )
 try {
@@ -31,7 +35,7 @@ try {
             throw "Wrong checks for $($case.Paths -join ', ')."
         }
     }
-    $global:changeScopeTestPaths = @('README.md')
+    $global:changeScopeTestPaths = @('README.md', '.mailmap')
     $result = @(& (Join-Path $PSScriptRoot 'Get-ChangeScope.ps1') -BaseSha base -HeadSha head -TargetBranch release)
     if ($result -cnotcontains 'software=true' -or $result -cnotcontains 'package=true') { throw 'Release promotion skipped full checks.' }
     $global:changeScopeTestExitCode = 1
