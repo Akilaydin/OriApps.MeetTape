@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 
 namespace MeetTape.Tests;
 
@@ -682,7 +683,7 @@ public sealed class JobTests : IDisposable
     }
 
     [Fact]
-    public async Task ReadyTrimAutomaticallyPreparesRealStereoAndProcessesAllChunks()
+    public async Task ReadyTrimAutomaticallyPreparesRealMonoTracksAndProcessesAllChunks()
     {
         using var fixture = new ChunkingTests();
         string directory = await fixture.SessionAsync();
@@ -695,9 +696,182 @@ public sealed class JobTests : IDisposable
         await jobs.ProcessSessionAsync(directory, default);
         var saved = SessionStore.Read(directory);
         Assert.Equal(JobState.Completed, saved.JobState);
-        Assert.Equal(3, saved.Audio!.Chunks.Count);
-        Assert.Equal(3, handler.Calls);
+        Assert.Equal(6, saved.Audio!.Chunks.Count);
+        Assert.Equal(6, handler.Calls);
         Assert.Equal(original, SHA256.HashData(File.ReadAllBytes(Path.Combine(directory, "me.mp3"))));
+    }
+
+    [Fact]
+    public async Task IndependentMonoRequestsForceTrackLabelsAndMergeSimultaneousSpeech()
+    {
+        using var tones = new ChunkingTests();
+        string directory = await tones.SessionAsync(overlap: true);
+        var initial = SessionStore.Read(directory);
+        SessionStore.Save(directory, initial with { Processing = initial.Processing with { MeDisplayName = "Артём О" } });
+        string[] replies = [
+            "[00:01.90] Them: Микрофонная реплика.", // Deliberately wrong model source: the Me track wins.
+            "[00:01.90] Me: Одновременный ответ системы.",
+            "[NO_SPEECH]", "[00:01.90] Them: Поздняя реплика системы.",
+            "[NO_SPEECH]", "[NO_SPEECH]"
+        ];
+        using var handler = new InspectingHandler(replies);
+        using var http = new HttpClient(handler);
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "fixture-key");
+        await jobs.ProcessSessionAsync(directory, default);
+        var saved = SessionStore.Read(directory);
+        Assert.Equal(JobState.Completed, saved.JobState);
+        Assert.Equal(6, handler.Requests.Count);
+        Assert.Equal(6, saved.Audio!.Chunks.Count);
+        for (int i = 0; i < saved.Audio.Chunks.Count; i++)
+        {
+            var chunk = saved.Audio.Chunks[i];
+            Assert.Equal(i % 2 == 0 ? "Me" : "Them", chunk.Source);
+            Assert.Contains($"MONO audio from the {chunk.Source} recording source", handler.Requests[i].Instruction);
+            Assert.Equal(File.ReadAllBytes(Path.Combine(directory, chunk.RelativePath)), handler.Requests[i].Audio);
+            Assert.True(File.Exists(ChunkStore.PathFor(directory, chunk.Index)));
+        }
+        string transcript = File.ReadAllText(Path.Combine(directory, "transcription.md"));
+        Assert.Contains("[00:01] **Артём О:** Микрофонная реплика.", transcript);
+        Assert.Contains("[00:01] **Them:** Одновременный ответ системы.", transcript);
+        Assert.True(transcript.IndexOf("Микрофонная реплика.", StringComparison.Ordinal)
+            < transcript.IndexOf("Одновременный ответ системы.", StringComparison.Ordinal));
+        Assert.Contains("**Them:** Поздняя реплика системы.", transcript);
+        Assert.DoesNotContain("**Unknown:**", transcript);
+    }
+
+    [Fact]
+    public async Task RejectedMonoTrackCanResumeWithoutResendingPreviousSourceCheckpoint()
+    {
+        using var tones = new ChunkingTests();
+        string directory = await tones.SessionAsync();
+        using var handler = new Handler((call, _) => Task.FromResult(TextResponse(
+            call == 2 ? "[00:01] Артём О: Incorrect API label" : "[00:01] Me: Accepted track utterance")));
+        using var http = new HttpClient(handler);
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "fixture-key");
+        await jobs.ProcessSessionAsync(directory, default);
+        Assert.Equal(2, handler.Calls);
+        Assert.Equal(JobState.Paused, SessionStore.Read(directory).JobState);
+        Assert.False(File.Exists(Path.Combine(directory, "transcription.md")));
+        byte[] first = File.ReadAllBytes(ChunkStore.PathFor(directory, 1));
+        Assert.False(File.Exists(ChunkStore.PathFor(directory, 2)));
+        Assert.Single(Directory.GetFiles(Path.Combine(directory, "chunks"), "0002.rejected-*.json"));
+
+        jobs.Resume(directory);
+        await jobs.ProcessSessionAsync(directory, default);
+        Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
+        Assert.Equal(7, handler.Calls); // One rejected Them request + remaining four source chunks.
+        Assert.Equal(first, File.ReadAllBytes(ChunkStore.PathFor(directory, 1)));
+        Assert.True(File.Exists(Path.Combine(directory, "transcription.md")));
+    }
+
+    [Fact]
+    public async Task PreUpgradeStereoCheckpointWithModelSpeakerNameIsReusedWithoutAnotherUpload()
+    {
+        string directory = Session(120);
+        var data = SessionStore.Read(directory);
+        var chunk = Assert.Single(data.Audio!.Chunks);
+        Assert.Null(chunk.Source);
+        ChunkStore.Save(directory, new(data.Id, chunk,
+            Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(Path.Combine(directory, chunk.RelativePath)))),
+            "previous-model", "saved-prompt-hash", "[00:01] Alice: Previously transcribed sentence."));
+
+        using var handler = new Handler((_, _) => throw new InvalidOperationException("No paid retranscription expected"));
+        using var http = new HttpClient(handler);
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "fixture-key");
+        await jobs.ProcessSessionAsync(directory, default);
+        Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
+        Assert.Equal(0, handler.Calls);
+        Assert.Contains("**Unknown:** Previously transcribed sentence.",
+            File.ReadAllText(Path.Combine(directory, "transcription.md")));
+        Assert.True(File.Exists(ChunkStore.PathFor(directory, chunk.Index)));
+    }
+
+    [Fact]
+    public async Task SilentThemTrackCompletesWithNoSpeechCheckpointsAndMeSpeech()
+    {
+        using var tones = new ChunkingTests();
+        string directory = await tones.SessionAsync(silentThem: true);
+        string[] replies = [
+            "[00:01.9] Me: First microphone utterance.", "[NO_SPEECH]",
+            "[00:00.4] Me: Second microphone utterance.", "[NO_SPEECH]",
+            "[NO_SPEECH]", "[NO_SPEECH]"
+        ];
+        using var handler = new InspectingHandler(replies);
+        using var http = new HttpClient(handler);
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "fixture-key");
+        await jobs.ProcessSessionAsync(directory, default);
+        Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
+        Assert.Equal(6, handler.Requests.Count);
+        foreach (var chunk in SessionStore.Read(directory).Audio!.Chunks.Where(chunk => chunk.Source == "Them"))
+            Assert.Equal("[NO_SPEECH]", (await ChunkStore.ReadAsync(directory, SessionStore.Read(directory), chunk, default)).Text);
+        string transcript = File.ReadAllText(Path.Combine(directory, "transcription.md"));
+        Assert.Contains("First microphone utterance.", transcript);
+        Assert.Contains("Second microphone utterance.", transcript);
+        Assert.DoesNotContain("**Them:**", transcript);
+    }
+
+    [Fact]
+    public async Task RepeatedMonoBoundaryIsReconciledPerSourceButIdenticalCrossTrackSpeechIsKept()
+    {
+        using var tones = new ChunkingTests();
+        string directory = await tones.SessionAsync(overlap: true);
+        string[] replies = [
+            "[00:01.90] Me: Shared phrase from microphone.",
+            "[00:01.90] Them: Shared phrase from microphone.",
+            "[00:00.40] Me: Shared phrase from microphone.",
+            "[00:00.40] Them: Shared phrase from microphone.",
+            "[NO_SPEECH]", "[NO_SPEECH]"
+        ];
+        using var handler = new InspectingHandler(replies);
+        using var http = new HttpClient(handler);
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "fixture-key");
+        await jobs.ProcessSessionAsync(directory, default);
+        Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
+        string output = File.ReadAllText(Path.Combine(directory, "transcription.md"));
+        Assert.Equal(2, output.Split("Shared phrase from microphone.").Length - 1);
+        Assert.Contains("**Me:** Shared phrase from microphone.", output);
+        Assert.Contains("**Them:** Shared phrase from microphone.", output);
+    }
+
+    [Fact]
+    public async Task CancelDuringSecondMonoUploadResumesFromSavedMeCheckpointOnly()
+    {
+        using var tones = new ChunkingTests();
+        string directory = await tones.SessionAsync();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var first = new Handler(async (call, token) =>
+        {
+            if (call == 2)
+            {
+                entered.TrySetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            }
+            return TextResponse("[NO_SPEECH]");
+        });
+        using var http = new HttpClient(first);
+        using (var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "fixture-key"))
+        {
+            Task running = jobs.ProcessSessionAsync(directory, default);
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await Task.Run(() => jobs.Cancel(directory));
+            await running;
+        }
+        Assert.Equal(2, first.Calls);
+        Assert.Equal(JobState.Canceled, SessionStore.Read(directory).JobState);
+        byte[] savedMe = File.ReadAllBytes(ChunkStore.PathFor(directory, 1));
+        Assert.False(File.Exists(ChunkStore.PathFor(directory, 2)));
+
+        using var remaining = new Handler((_, _) => Task.FromResult(TextResponse("[NO_SPEECH]")));
+        using var nextHttp = new HttpClient(remaining);
+        using var resumed = new ProcessingJobs(config, () => false, nextHttp, readKey: _ => "fixture-key");
+        await resumed.ProcessSessionAsync(directory, default);
+        Assert.Equal(0, remaining.Calls);
+        resumed.Resume(directory);
+        await resumed.ProcessSessionAsync(directory, default);
+        Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
+        Assert.Equal(5, remaining.Calls);
+        Assert.Equal(savedMe, File.ReadAllBytes(ChunkStore.PathFor(directory, 1)));
+        Assert.True(File.Exists(Path.Combine(directory, "transcription.md")));
     }
 
     [Fact]
@@ -886,6 +1060,24 @@ public sealed class JobTests : IDisposable
 
     private static HttpResponseMessage Response(int status = 200) => new((HttpStatusCode)status)
         { Content = new StringContent(status == 200 ? Valid : "private provider error", Encoding.UTF8, "application/json") };
+    private static HttpResponseMessage TextResponse(string text) => new(HttpStatusCode.OK)
+    { Content = new StringContent(JsonSerializer.Serialize(new
+        { choices = new[] { new { finish_reason = "stop", message = new { content = text } } } }), Encoding.UTF8, "application/json") };
+
+    private sealed class InspectingHandler(string[] replies) : HttpMessageHandler
+    {
+        public List<(string Instruction, byte[] Audio)> Requests { get; } = [];
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
+        {
+            using var json = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
+            var parts = json.RootElement.GetProperty("messages")[0].GetProperty("content");
+            string instruction = parts[0].GetProperty("text").GetString()!;
+            byte[] audio = Convert.FromBase64String(parts[1].GetProperty("input_audio").GetProperty("data").GetString()!);
+            int index = Requests.Count;
+            Requests.Add((instruction, audio));
+            return TextResponse(replies[index]);
+        }
+    }
     private sealed class Handler(Func<int, CancellationToken, Task<HttpResponseMessage>> send) : HttpMessageHandler
     {
         public int Calls { get; private set; }

@@ -29,10 +29,21 @@ public sealed class ChatApiClient(HttpClient client, Func<bool> captureActive,
         "Each utterance: [MM:SS] Me/Them/Unknown: text. Timestamps are approximate and relative to the start of this chunk. Do not invent names; use Unknown for an unclear source. " +
         "If the entire chunk contains no speech, output only " + NoSpeechMarker + ". Do not use this marker for unintelligible speech.";
 
+    internal static string InstructionFor(string? source) => source switch
+    {
+        null => SourceInstruction, // Existing stereo checkpoints and unfinished sessions.
+        "Me" or "Them" => $"\nThis is MONO audio from the {source} recording source. " +
+            $"Label every utterance as [MM:SS] {source}: text, regardless of voices or names in the user's prompt. " +
+            "Timestamps are approximate and relative to the start of this chunk. Do not infer speakers or invent names. " +
+            "If the entire chunk contains no speech, output only " + NoSpeechMarker + ". Do not use this marker for unintelligible speech.",
+        _ => throw new InvalidDataException("Unsupported audio source in chunk manifest.")
+    };
+
     public Task<TranscriptionReply> TranscribeAsync(ApiSettings settings, string prompt, string audioPath, CancellationToken token) =>
         TranscribeAsync(settings, prompt, audioPath, token, null);
 
-    internal async Task<TranscriptionReply> TranscribeAsync(ApiSettings settings, string prompt, string audioPath, CancellationToken token, string? context)
+    internal async Task<TranscriptionReply> TranscribeAsync(ApiSettings settings, string prompt, string audioPath, CancellationToken token,
+        string? context, string? source = null)
     {
         EnsureIdle(token);
         try
@@ -58,7 +69,7 @@ public sealed class ChatApiClient(HttpClient client, Func<bool> captureActive,
             throw new ChatApiException(ApiFailureKind.FileSystem, AppDiagnostics.UserMessage(ex, "Cannot read audio chunk; check selected files and permissions."));
         }
         string audioHash = Convert.ToHexString(SHA256.HashData(audio));
-        byte[] body = CreateBody(settings.Model, prompt + SourceInstruction, audio);
+        byte[] body = CreateBody(settings.Model, prompt + InstructionFor(source), audio);
         return new(await SendAsync(settings, key, body, "transcription", context, token), audioHash);
     }
 

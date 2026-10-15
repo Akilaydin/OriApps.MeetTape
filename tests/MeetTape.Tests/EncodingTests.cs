@@ -190,7 +190,10 @@ public sealed class EncodingTests : IDisposable
         };
         var ready = session with { Stages = stages, Trim = session.Trim with { Decision = "skip" } };
         var prepared = await new AudioChunker("ffmpeg").PrepareAsync(folder, ready, CancellationToken.None);
-        Assert.Equal(status.AudioFrames, Assert.Single(prepared.Chunks).OwnEndFrame);
+        Assert.Equal(2, prepared.Chunks.Count);
+        Assert.Collection(prepared.Chunks,
+            chunk => { Assert.Equal("Me", chunk.Source); Assert.Equal(status.AudioFrames, chunk.OwnEndFrame); },
+            chunk => { Assert.Equal("Them", chunk.Source); Assert.Equal(status.AudioFrames, chunk.OwnEndFrame); });
     }
 
     [Fact]

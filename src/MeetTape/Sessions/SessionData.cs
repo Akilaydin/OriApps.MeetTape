@@ -21,9 +21,10 @@ public sealed record NativeAudioFormat(int SampleRate, int BitsPerSample, int Ch
 }
 public sealed record CaptureParameters(AudioDevice? MeDevice, AudioDevice? ThemDevice, NativeAudioFormat MeFormat,
     NativeAudioFormat ThemFormat, int SampleRate = 48000, int Channels = 1, int BitRateKbps = 96, string Codec = "mp3");
-public sealed record ProcessingParameters(int ChunkSeconds, ApiSettings Transcription, ApiSettings Summary, string ConfigurationDirectory);
+public sealed record ProcessingParameters(int ChunkSeconds, ApiSettings Transcription, ApiSettings Summary,
+    string ConfigurationDirectory, string MeDisplayName = "Me");
 public sealed record AudioChunk(int Index, string RelativePath, long StartFrame, long EndFrame,
-    long OwnStartFrame, long OwnEndFrame, long SourceStartFrame);
+    long OwnStartFrame, long OwnEndFrame, long SourceStartFrame, string? Source = null);
 public sealed record PreparedAudio(string RelativeDirectory, List<AudioChunk> Chunks);
 public sealed record RetryProgress(int ChunkIndex, int Attempts, DateTimeOffset NextAttemptUtc);
 public sealed record SummaryResult(Guid SessionId, string TranscriptSha256, string Model, string PromptSha256, string Text);
