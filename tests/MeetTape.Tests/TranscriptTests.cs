@@ -31,6 +31,20 @@ public sealed class TranscriptTests : IDisposable
     }
 
     [Fact]
+    public async Task DailyStylePersonalNameLabelsAreRejectedRatherThanSilentlyMappedToUnknown()
+    {
+        string named = string.Join('\n', Enumerable.Range(0, 53).Select(i => $"[00:00] Артём О: Реплика {i}"));
+        string directory = Prepare([named, "[NO_SPEECH]"], seconds: 120, mono: true);
+        var data = SessionStore.Read(directory);
+        data = data with { Processing = data.Processing with { MeDisplayName = "Артём О" } };
+        SessionStore.Save(directory, data);
+        var error = await Assert.ThrowsAsync<InvalidDataException>(() => new TranscriptAssembler().BuildAsync(directory, data, default));
+        Assert.Contains("Unexpected source label", error.Message);
+        Assert.False(File.Exists(Path.Combine(directory, "transcription.md")));
+        Assert.True(File.Exists(ChunkStore.PathFor(directory, 1))); // Existing response retained for diagnosis.
+    }
+
+    [Fact]
     public async Task SameSourceBoundaryDuplicateIsRemovedButOtherSpeakerAndLaterRepetitionRemain()
     {
         string directory = Prepare([
@@ -291,13 +305,15 @@ public sealed class TranscriptTests : IDisposable
         Assert.False(File.Exists(Path.Combine(second, "transcription.md")));
     }
 
-    internal string Prepare(string[] text, int seconds = 1, int totalSeconds = 3)
+    internal string Prepare(string[] text, int seconds = 1, int totalSeconds = 3, bool mono = false)
     {
         string directory = fixture.Session(seconds);
         var data = SessionStore.Read(directory);
-        if (totalSeconds != 3)
+        if (totalSeconds != 3 || mono)
         {
-            var chunks = AudioChunker.Plan(0, totalSeconds * 48000L, seconds, data.Audio!.RelativeDirectory);
+            var chunks = mono
+                ? AudioChunker.PlanMono(0, totalSeconds * 48000L, seconds, data.Audio!.RelativeDirectory)
+                : AudioChunker.Plan(0, totalSeconds * 48000L, seconds, data.Audio!.RelativeDirectory);
             foreach (var chunk in chunks) File.WriteAllBytes(Path.Combine(directory, chunk.RelativePath), [1, 2, (byte)chunk.Index]);
             data = data with { DurationSeconds = totalSeconds, Audio = data.Audio with { Chunks = chunks } };
         }

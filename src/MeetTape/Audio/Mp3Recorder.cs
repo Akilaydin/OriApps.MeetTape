@@ -38,7 +38,8 @@ public sealed class Mp3Recorder
             {
                 Id = Guid.NewGuid(), StartedAtUtc = DateTimeOffset.UtcNow,
                 Capture = new(sources.MeDevice, sources.ThemDevice, NativeAudioFormat.From(sources.Me.WaveFormat), NativeAudioFormat.From(sources.Them.WaveFormat)),
-                Processing = new(configuration.Settings.ChunkSeconds, configuration.Settings.Transcription, configuration.Settings.Summary, configuration.Directory),
+                Processing = new(configuration.Settings.ChunkSeconds, configuration.Settings.Transcription, configuration.Settings.Summary,
+                    configuration.Directory, configuration.Settings.MeDisplayName),
                 Stages = new()
                 {
                     ["trim"] = new(stages.Trim, stages.Trim ? StageState.AwaitingUser : StageState.Disabled),

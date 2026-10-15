@@ -65,24 +65,30 @@ public sealed class ChunkingTests : IDisposable
     }
 
     [Fact]
-    public async Task StereoChannelsBoundaryContextAndLastChunkPreserveSourceSignals()
+    public async Task IndependentMonoSourcesBoundaryContextAndLastChunkPreserveSignals()
     {
         string directory = await SessionAsync();
         byte[] meHash = Hash(Path.Combine(directory, "me.mp3")), themHash = Hash(Path.Combine(directory, "them.mp3"));
         var data = SessionStore.Read(directory);
         var audio = await new AudioChunker("ffmpeg").PrepareAsync(directory, data, default);
         AudioChunker.ValidateManifest(data with { Audio = audio });
-        Assert.Equal(3, audio.Chunks.Count);
+        Assert.Equal(6, audio.Chunks.Count);
         for (int i = 0; i < audio.Chunks.Count; i++)
         {
             var chunk = audio.Chunks[i];
-            float[] pcm = await DecodeStereoAsync(Path.Combine(directory, chunk.RelativePath));
-            Assert.Equal((chunk.EndFrame - chunk.StartFrame) * 2, pcm.LongLength);
-            Assert.True(Rms(pcm, 0, 0.05, 0.15) < 0.001 || i > 0);
+            Assert.Equal(i % 2 == 0 ? "Me" : "Them", chunk.Source);
+            Assert.Equal(audio.Chunks[(i / 2) * 2].SourceStartFrame, chunk.SourceStartFrame);
+            float[] pcm = await DecodeMonoAsync(Path.Combine(directory, chunk.RelativePath));
+            Assert.Equal(chunk.EndFrame - chunk.StartFrame, pcm.LongLength);
+            Assert.True(Rms(pcm, 0.05, 0.15) < 0.001 || i > 1);
             // Me's tone straddles the 2 s boundary, Them's tone straddles the 4 s boundary.
-            if (i <= 1) Assert.True(Rms(pcm, 0, 1.9 - chunk.StartFrame / 48000d, 2.1 - chunk.StartFrame / 48000d) > 0.05);
-            if (i >= 1) Assert.True(Rms(pcm, 1, 3.9 - chunk.StartFrame / 48000d, 4.1 - chunk.StartFrame / 48000d) > 0.05);
+            if (i <= 2 && chunk.Source == "Me")
+                Assert.True(Rms(pcm, 1.9 - chunk.StartFrame / 48000d, 2.1 - chunk.StartFrame / 48000d) > 0.05);
+            if (i >= 3 && chunk.Source == "Them")
+                Assert.True(Rms(pcm, 3.9 - chunk.StartFrame / 48000d, 4.1 - chunk.StartFrame / 48000d) > 0.05);
         }
+        Assert.NotEqual(Hash(Path.Combine(directory, audio.Chunks[0].RelativePath)),
+            Hash(Path.Combine(directory, audio.Chunks[1].RelativePath)));
         Assert.Equal(meHash, Hash(Path.Combine(directory, "me.mp3")));
         Assert.Equal(themHash, Hash(Path.Combine(directory, "them.mp3")));
         Assert.Null(SessionStore.Read(directory).Audio);
@@ -98,9 +104,10 @@ public sealed class ChunkingTests : IDisposable
         byte[] meHash = Hash(Path.Combine(selected, "me.mp3"));
         SessionStore.Save(directory, data with { Trim = trim });
         var audio = await new AudioChunker("ffmpeg").PrepareAsync(directory, SessionStore.Read(directory), default);
-        Assert.Equal(2, audio.Chunks.Count);
+        Assert.Equal(4, audio.Chunks.Count);
         Assert.Equal(48000, audio.Chunks[0].SourceStartFrame);
-        Assert.Equal(120000, audio.Chunks[1].SourceStartFrame);
+        Assert.Equal(48000, audio.Chunks[1].SourceStartFrame);
+        Assert.Equal(120000, audio.Chunks[2].SourceStartFrame);
         Assert.Equal(3.5 * 48000, audio.Chunks[^1].EndFrame);
         Assert.Equal(meHash, Hash(Path.Combine(selected, "me.mp3")));
     }
@@ -151,7 +158,7 @@ public sealed class ChunkingTests : IDisposable
         Assert.Null(SessionStore.Read(directory).Audio);
     }
 
-    internal async Task<string> SessionAsync()
+    internal async Task<string> SessionAsync(bool overlap = false, bool silentThem = false)
     {
         Directory.CreateDirectory(root);
         string example = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../config.example.json"));
@@ -177,7 +184,8 @@ public sealed class ChunkingTests : IDisposable
                 for (int i = 0; i < 4800; i++)
                 {
                     double time = (n * 4800 + i) / 48000d;
-                    bool active = name == "me.mp3" ? time >= 1.8 && time < 2.2 : time >= 3.8 && time < 4.2;
+                    bool active = name == "me.mp3" ? time >= 1.8 && time < 2.2 :
+                        !silentThem && (time >= 3.8 && time < 4.2 || overlap && time >= 1.8 && time < 2.2);
                     float value = active ? (float)(0.25 * Math.Sin(time * 2 * Math.PI * (name == "me.mp3" ? 440 : 880))) : 0;
                     BinaryPrimitives.WriteSingleLittleEndian(block.AsSpan(i * 4), value);
                 }
@@ -189,11 +197,11 @@ public sealed class ChunkingTests : IDisposable
         return created.Directory;
     }
 
-    private static async Task<float[]> DecodeStereoAsync(string path)
+    private static async Task<float[]> DecodeMonoAsync(string path)
     {
         var start = new ProcessStartInfo("ffmpeg") { UseShellExecute = false, CreateNoWindow = true,
             RedirectStandardOutput = true, RedirectStandardError = true };
-        foreach (string arg in new[] { "-v", "error", "-i", path, "-f", "f32le", "-ar", "48000", "-ac", "2", "pipe:1" })
+        foreach (string arg in new[] { "-v", "error", "-i", path, "-f", "f32le", "-ar", "48000", "-ac", "1", "pipe:1" })
             start.ArgumentList.Add(arg);
         using var process = Process.Start(start)!;
         var errors = process.StandardError.ReadToEndAsync();
@@ -208,11 +216,11 @@ public sealed class ChunkingTests : IDisposable
         return result;
     }
 
-    private static double Rms(float[] pcm, int channel, double start, double end)
+    private static double Rms(float[] pcm, double start, double end)
     {
         int first = (int)Math.Round(start * 48000), limit = (int)Math.Round(end * 48000);
         double sum = 0;
-        for (int i = first; i < limit; i++) sum += pcm[i * 2 + channel] * pcm[i * 2 + channel];
+        for (int i = first; i < limit; i++) sum += pcm[i] * pcm[i];
         return Math.Sqrt(sum / (limit - first));
     }
 

@@ -118,7 +118,7 @@ public sealed class ProcessingJobs : IDisposable
                 stages[name] = stage with { Status = StageState.Pending };
         SessionStore.Save(directory, data with { Stages = stages, JobState = JobState.NotStarted, Error = null,
             Processing = data.Processing with { Transcription = config.Settings.Transcription, Summary = config.Settings.Summary,
-                ConfigurationDirectory = config.Directory } });
+                ConfigurationDirectory = config.Directory, MeDisplayName = config.Settings.MeDisplayName } });
         lock (sessionGate) blocked.Remove(directory);
         completedSessions.Remove(directory);
         observedRetries.Remove(directory);
@@ -270,9 +270,9 @@ public sealed class ProcessingJobs : IDisposable
                                 token.ThrowIfCancellationRequested();
                                 var reply = await api.TranscribeAsync(data.Processing.Transcription, prompt,
                                     AudioChunker.ResolveProcessed(directory, chunk.RelativePath), token,
-                                    $"session={data.Id}; chunk={chunk.Index}; attempt={Math.Min(attempts + 1, 31)}");
+                                    $"session={data.Id}; chunk={chunk.Index}; attempt={Math.Min(attempts + 1, 31)}; source={chunk.Source ?? "stereo"}", chunk.Source);
                                 result = new(data.Id, chunk, reply.AudioSha256, data.Processing.Transcription.Model,
-                                    Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(prompt + ChatApiClient.SourceInstruction))), reply.Text);
+                                    Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(prompt + ChatApiClient.InstructionFor(chunk.Source)))), reply.Text);
                             }
                             catch (ChatApiException ex) when (ex.Kind == ApiFailureKind.Transient || ex.EmptyChoices)
                             {

@@ -11,6 +11,7 @@
     "summary": false
   },
   "chunkSeconds": 120,
+  "meDisplayName": "Me",
   "transcription": {
     "endpoint": "https://api.example.invalid/v1/chat/completions",
     "model": "your-audio-model",

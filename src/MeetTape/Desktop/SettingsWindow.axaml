@@ -30,6 +30,8 @@
             <CheckBox Content="Automatic Summary" IsChecked="{Binding Summary}" />
             <TextBlock Text="Automatic Summary applies to new recordings after transcription. Request Summary also works when automatic mode is off. Summary uploads only the complete transcript." TextWrapping="Wrap" Opacity="0.7" />
             <TextBlock Text="Chunk duration (1–340 seconds)" /><TextBox Name="ChunkDuration" Text="{Binding ChunkSeconds}" />
+            <TextBlock Text="Your name in transcripts (Me)" /><TextBox Name="MeDisplayName" Text="{Binding MeDisplayName}" />
+            <TextBlock Text="Changes how Me appears in new transcripts; API speaker labels remain Me/Them/Unknown." TextWrapping="Wrap" Opacity="0.7" />
           </StackPanel>
         </ScrollViewer>
       </TabItem>

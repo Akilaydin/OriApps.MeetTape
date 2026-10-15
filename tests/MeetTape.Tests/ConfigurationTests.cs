@@ -85,6 +85,17 @@ public sealed class ConfigurationTests : IDisposable
         Assert.Equal("Edited prompt", config.ReadPrompt(config.Settings.Transcription));
     }
 
+    [Theory]
+    [InlineData("Артём О", true)]
+    [InlineData("", false)]
+    [InlineData("bad\nname", false)]
+    public void MeDisplayNameCanBeCustomizedButRejectsInvalidNames(string displayName, bool valid)
+    {
+        json["meDisplayName"] = displayName;
+        if (valid) Assert.Equal(displayName, Load().Settings.MeDisplayName);
+        else Assert.Throws<InvalidDataException>(() => Load());
+    }
+
     [Fact]
     public void DefaultFfmpegPrefersAdjacentExecutableWithoutChangingExplicitSettings()
     {

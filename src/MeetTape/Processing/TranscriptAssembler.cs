@@ -30,17 +30,20 @@ public sealed class TranscriptAssembler
                 using var writer = new StreamWriter(file, new UTF8Encoding(false), 8192, leaveOpen: true) { NewLine = "\n" };
                 writer.WriteLine("# " + (data.Title ?? "MeetTape").Replace('\r', ' ').Replace('\n', ' '));
                 writer.WriteLine();
-                writer.WriteLine("> Full transcript. Timestamps are approximate and relative to the original recording. Me/Them are estimated sources, not verified identities.");
+                writer.WriteLine("> Full transcript. Timestamps are approximate and relative to the original recording. Me/Them identify recording sources, not verified identities.");
                 writer.WriteLine();
                 var pending = new List<Utterance>();
-                var previous = new List<Utterance>();
+                var previousByTrack = new Dictionary<string, (AudioChunk Chunk, List<Utterance> Rows)>();
                 for (int i = 0; i < audio.Chunks.Count; i++)
                 {
                     token.ThrowIfCancellationRequested();
                     var chunk = audio.Chunks[i];
                     var result = await ChunkStore.ReadAsync(directory, data, chunk, token);
                     var current = Parse(result.Text, chunk, token);
-                    AudioChunk? priorChunk = i > 0 ? audio.Chunks[i - 1] : null;
+                    string track = chunk.Source ?? "Stereo";
+                    bool hasPrior = previousByTrack.TryGetValue(track, out var prior);
+                    AudioChunk? priorChunk = hasPrior ? prior.Chunk : null;
+                    var previous = hasPrior ? prior.Rows : [];
                     var consumedPreviousLines = new HashSet<int>();
                     foreach (var row in current)
                     {
@@ -55,12 +58,13 @@ public sealed class TranscriptAssembler
                     {
                         token.ThrowIfCancellationRequested();
                         if (row.Frame >= threshold) break;
-                        writer.WriteLine($"[{FormatTime(row.Frame)}] **{row.Speaker}:** {row.Text}");
+                        string display = row.Speaker == "Me" ? EscapeName(data.Processing.MeDisplayName ?? "Me") : row.Speaker;
+                        writer.WriteLine($"[{FormatTime(row.Frame)}] **{display}:** {row.Text}");
                         writer.WriteLine();
                         flushed++;
                     }
                     pending.RemoveRange(0, flushed);
-                    previous = current;
+                    previousByTrack[track] = (chunk, current);
                 }
                 await writer.FlushAsync(token);
                 file.Flush(flushToDisk: true);
@@ -105,10 +109,15 @@ public sealed class TranscriptAssembler
             if (!match.Success || !AudioTrimmer.TryParseTime(match.Groups[1].Value, out double seconds)
                 || seconds > (chunk.EndFrame - chunk.StartFrame) / 48000d + 1)
                 throw new InvalidDataException("Chunk transcription has invalid/missing local timestamps; saved result retained for repair.");
-            string label = match.Groups[2].Value.Trim();
-            label = label.ToLowerInvariant() switch { "me" => "Me", "them" => "Them", _ => "Unknown" };
+            string label = match.Groups[2].Value.Trim().ToLowerInvariant() switch
+            {
+                "me" => "Me", "them" => "Them", "unknown" => "Unknown",
+                _ when chunk.Source is null => "Unknown", // Preserve existing stereo checkpoints without another paid request.
+                _ => throw new InvalidDataException($"Unexpected source label in chunk {chunk.Index}, utterance {index + 1}; " +
+                    "only Me/Them/Unknown are accepted. Original response retained for diagnosis.")
+            };
             long frame = chunk.SourceStartFrame + Math.Min((long)Math.Round(seconds * 48000), chunk.EndFrame - chunk.StartFrame);
-            rows.Add(new(frame, label, match.Groups[3].Value, chunk.Index, index++));
+            rows.Add(new(frame, chunk.Source ?? label, match.Groups[3].Value, chunk.Index, index++));
         }
         if (rows.Count == 0) throw new InvalidDataException("No timed utterances in saved chunk; full transcript not published.");
         rows = rows.OrderBy(r => r.Frame).ThenBy(r => r.Line).ToList();
@@ -138,7 +147,7 @@ public sealed class TranscriptAssembler
         foreach (var old in previous)
         {
             token.ThrowIfCancellationRequested();
-            if (old.Chunk != row.Chunk - 1 || old.Speaker != row.Speaker || consumedPreviousLines.Contains(old.Line)
+            if (old.Chunk != priorChunk.Index || old.Speaker != row.Speaker || consumedPreviousLines.Contains(old.Line)
                 || old.Frame >= overlapEnd || old.NextSameSourceFrame < row.Frame) continue;
             bool closeStarts = Math.Abs(old.Frame - row.Frame) <= BoundaryMatchToleranceFrames;
             bool earlierBoundaryStart = old.Frame < overlapStart && old.Frame >= overlapStart - (overlapEnd - overlapStart)
@@ -179,6 +188,9 @@ public sealed class TranscriptAssembler
         return seconds >= 3600 ? FormattableString.Invariant($"{seconds / 3600:D2}:{seconds / 60 % 60:D2}:{seconds % 60:D2}") :
             FormattableString.Invariant($"{seconds / 60:D2}:{seconds % 60:D2}");
     }
+
+    private static string EscapeName(string name) => name.Trim().Replace("\\", "\\\\").Replace("*", "\\*")
+        .Replace("[", "\\[").Replace("]", "\\]").Replace("`", "\\`");
 
     internal static async Task<string> HashAsync(string path, CancellationToken token)
     {

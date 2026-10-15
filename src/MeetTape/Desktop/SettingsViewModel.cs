@@ -38,6 +38,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     public bool Transcribe { get; set; }
     public bool Summary { get; set; }
     public string ChunkSeconds { get; set; }
+    public string MeDisplayName { get; set; }
     public string TranscriptionEndpoint { get; set; }
     public string TranscriptionModel { get; set; }
     public string TranscriptionPrompt { get; set; }
@@ -81,6 +82,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         originalRecordingHotkey = RecordingHotkey;
         Trim = settings.Stages.Trim; Transcribe = settings.Stages.Transcribe; Summary = settings.Stages.Summary;
         ChunkSeconds = settings.ChunkSeconds.ToString(CultureInfo.InvariantCulture);
+        MeDisplayName = settings.MeDisplayName;
         TranscriptionEndpoint = settings.Transcription.Endpoint; TranscriptionModel = settings.Transcription.Model;
         TranscriptionPrompt = settings.Transcription.PromptFile; TranscriptionKeyVariable = settings.Transcription.ApiKeyEnvironmentVariable;
         SummaryEndpoint = settings.Summary.Endpoint; SummaryModel = settings.Summary.Model;
@@ -96,7 +98,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     }
 
     private string[] Fields() => [Microphone.Id ?? "", Playback.Id ?? "", MeetingsRoot, FfmpegPath,
-        Trim.ToString(), Transcribe.ToString(), Summary.ToString(), ChunkSeconds, RecordingHotkey,
+        Trim.ToString(), Transcribe.ToString(), Summary.ToString(), ChunkSeconds, MeDisplayName, RecordingHotkey,
         TranscriptionEndpoint, TranscriptionModel, TranscriptionPrompt, TranscriptionKeyVariable,
         SummaryEndpoint, SummaryModel, SummaryPrompt, SummaryKeyVariable, ReminderEditor.Signature];
 
@@ -144,6 +146,8 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
                 json["recordingHotkey"] = RecordingHotkey;
             json["stages"] = new JsonObject { ["trim"] = Trim, ["transcribe"] = Transcribe, ["summary"] = Summary };
             json["chunkSeconds"] = seconds;
+            if (json.ContainsKey("meDisplayName") || MeDisplayName.Trim() != "Me")
+                json["meDisplayName"] = MeDisplayName.Trim();
             json["transcription"] = Api(TranscriptionEndpoint, TranscriptionModel, TranscriptionPrompt, TranscriptionKeyVariable);
             json["summary"] = Api(SummaryEndpoint, SummaryModel, SummaryPrompt, SummaryKeyVariable);
             if (json.ContainsKey("reminders") || ReminderEditor.Items.Count > 0 || ReminderEditor.RunAtWindowsStartup)
