@@ -12,7 +12,7 @@ public sealed class TranscriptTests : IDisposable
         string directory = Prepare([
             "[00:00.8] Me: MP3 track 42 не потерял начало?",
             "[00:00.05] Me: MP3 track 42 не потерял начало? Дополнительный аргумент: bitrate 96 килобит в секунду.",
-            "[00:00.25] Them: USB-C 3.2 — кабель, не адаптер.\n[00:00] Invented Name: Версия FLAC 1.4."
+            "[00:00.25] Them: USB-C 3.2 — кабель, не адаптер.\n[00:00] Unknown: Версия FLAC 1.4."
         ]);
         var data = SessionStore.Read(directory);
         byte[] meHash = Hash(Path.Combine(directory, "me.mp3"));
@@ -28,6 +28,20 @@ public sealed class TranscriptTests : IDisposable
         Assert.Equal(first, await builder.BuildAsync(directory, data, default));
         Assert.Equal(meHash, Hash(Path.Combine(directory, "me.mp3")));
         Assert.Equal(output, File.ReadAllText(Path.Combine(directory, "transcription.md")));
+    }
+
+    [Fact]
+    public async Task DailyStylePersonalNameLabelsAreRejectedRatherThanSilentlyMappedToUnknown()
+    {
+        string named = string.Join('\n', Enumerable.Range(0, 53).Select(i => $"[00:00] Артём О: Реплика {i}"));
+        string directory = Prepare([named], seconds: 120);
+        var data = SessionStore.Read(directory);
+        data = data with { Processing = data.Processing with { MeDisplayName = "Артём О" } };
+        SessionStore.Save(directory, data);
+        var error = await Assert.ThrowsAsync<InvalidDataException>(() => new TranscriptAssembler().BuildAsync(directory, data, default));
+        Assert.Contains("Unexpected source label", error.Message);
+        Assert.False(File.Exists(Path.Combine(directory, "transcription.md")));
+        Assert.True(File.Exists(ChunkStore.PathFor(directory, 1))); // Existing response retained for diagnosis.
     }
 
     [Fact]

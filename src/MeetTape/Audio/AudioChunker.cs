@@ -7,7 +7,8 @@ namespace OriApps.MeetTape.Audio;
 public sealed class AudioChunker(string ffmpegPath)
 {
     public const int SampleRate = 48000;
-    // 192 kbps CBR, up to two seconds of context per side, plus five seconds for MP3 overhead.
+    // Retain the conservative 192 kbps stereo size limit for saved chunk duration compatibility;
+    // new source chunks are 96 kbps mono, with up to two seconds of context on either side.
     public const int MaxChunkSeconds = ChatApiClient.MaxAudioBytes / (192_000 / 8) - 4 - 5;
 
     public static List<AudioChunk> Plan(long sourceStartFrame, long frameCount, int chunkSeconds, string relativeDirectory)
@@ -24,6 +25,20 @@ public sealed class AudioChunker(string ffmpegPath)
             long start = Math.Max(0, ownStart - context), end = Math.Min(frameCount, ownEnd + context);
             int index = chunks.Count + 1;
             chunks.Add(new(index, $"{relativeDirectory}/{index:D4}.mp3", start, end, ownStart, ownEnd, sourceStartFrame + start));
+        }
+        return chunks;
+    }
+
+    public static List<AudioChunk> PlanMono(long sourceStartFrame, long frameCount, int chunkSeconds, string relativeDirectory)
+    {
+        var intervals = Plan(sourceStartFrame, frameCount, chunkSeconds, relativeDirectory);
+        var chunks = new List<AudioChunk>(intervals.Count * 2);
+        foreach (var interval in intervals)
+        {
+            chunks.Add(interval with { Index = chunks.Count + 1,
+                RelativePath = $"{relativeDirectory}/{interval.Index:D4}-me.mp3", Source = "Me" });
+            chunks.Add(interval with { Index = chunks.Count + 1,
+                RelativePath = $"{relativeDirectory}/{interval.Index:D4}-them.mp3", Source = "Them" });
         }
         return chunks;
     }
@@ -53,7 +68,7 @@ public sealed class AudioChunker(string ffmpegPath)
                 throw new InvalidDataException("Selected audio is empty; originals retained.");
         long first = (long)Math.Round(startSeconds * SampleRate), limit = (long)Math.Round(endSeconds * SampleRate);
         string relative = "processed/audio_" + Guid.NewGuid().ToString("N");
-        var chunks = Plan(first, limit - first, data.Processing.ChunkSeconds, relative);
+        var chunks = PlanMono(first, limit - first, data.Processing.ChunkSeconds, relative);
         token.ThrowIfCancellationRequested();
         Directory.CreateDirectory(Path.Combine(directory, relative));
         try
@@ -64,11 +79,11 @@ public sealed class AudioChunker(string ffmpegPath)
                 string position = (chunk.StartFrame / (double)SampleRate).ToString("R", CultureInfo.InvariantCulture);
                 long frames = chunk.EndFrame - chunk.StartFrame;
                 string target = Path.Combine(directory, chunk.RelativePath);
-                // Input -ss uses FFmpeg's default accurate seek while transcoding; trim the decoded output by sample count.
-                string filter = FormattableString.Invariant($"[0:a][1:a]join=inputs=2:channel_layout=stereo:map=0.0-FL|1.0-FR,atrim=end_sample={frames},asetpts=PTS-STARTPTS[a]");
+                // Input -ss uses accurate seek while transcoding; preserve frame timing independently per track.
+                string filter = FormattableString.Invariant($"atrim=end_sample={frames},asetpts=PTS-STARTPTS");
                 await AudioTrimmer.RunAsync(ffmpegPath, ["-hide_banner", "-nostats", "-nostdin", "-v", "error", "-n",
-                    "-ss", position, "-i", Path.Combine(input, "me.mp3"), "-ss", position, "-i", Path.Combine(input, "them.mp3"),
-                    "-filter_complex", filter, "-map", "[a]", "-ar", "48000", "-ac", "2", "-c:a", "libmp3lame", "-b:a", "192k",
+                    "-ss", position, "-i", Path.Combine(input, chunk.Source == "Me" ? "me.mp3" : "them.mp3"),
+                    "-af", filter, "-ar", "48000", "-ac", "1", "-c:a", "libmp3lame", "-b:a", "96k",
                     "-write_xing", "1", target], null, token);
                 ValidateUploadSize(target);
                 await ValidateAsync(target, frames, token);
@@ -88,7 +103,7 @@ public sealed class AudioChunker(string ffmpegPath)
     public static void ValidateUploadSize(string path)
     {
         if (new FileInfo(path).Length is <= 0 or > ChatApiClient.MaxAudioBytes)
-            throw new InvalidDataException("Prepared stereo chunk exceeds the 8 MiB API limit; chunk set not selected.");
+            throw new InvalidDataException("Prepared audio chunk exceeds the 8 MiB API limit; chunk set not selected.");
     }
 
     private async Task ValidateAsync(string path, long expected, CancellationToken token)
@@ -99,7 +114,7 @@ public sealed class AudioChunker(string ffmpegPath)
             "-af", "ashowinfo", "-f", "null", "-"], line =>
         {
             if (!line.Contains("[Parsed_ashowinfo_", StringComparison.Ordinal)) return;
-            if (!line.Contains("channels:2", StringComparison.Ordinal) || !line.Contains("rate:48000", StringComparison.Ordinal))
+            if (!line.Contains("channels:1", StringComparison.Ordinal) || !line.Contains("rate:48000", StringComparison.Ordinal))
                 wrongFormat = true;
             const string marker = "nb_samples:";
             int at = line.IndexOf(marker, StringComparison.Ordinal);
@@ -121,7 +136,10 @@ public sealed class AudioChunker(string ffmpegPath)
         if (!double.IsFinite(end) || audio.Chunks is null || string.IsNullOrWhiteSpace(audio.RelativeDirectory))
             throw new InvalidDataException("Invalid selected audio manifest.");
         long total = (long)Math.Round(end * 48000) - first;
-        var expected = Plan(first, total, data.Processing.ChunkSeconds, audio.RelativeDirectory);
+        // Older sessions already contain paid stereo checkpoints; retain that manifest and its results.
+        var expected = audio.Chunks.Any(chunk => chunk.Source is not null)
+            ? PlanMono(first, total, data.Processing.ChunkSeconds, audio.RelativeDirectory)
+            : Plan(first, total, data.Processing.ChunkSeconds, audio.RelativeDirectory);
         if (!audio.Chunks.SequenceEqual(expected)) throw new InvalidDataException("Selected chunk intervals do not cover the recording correctly.");
     }
 

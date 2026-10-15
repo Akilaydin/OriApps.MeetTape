@@ -13,6 +13,7 @@ public sealed record Configuration
     public string RecordingHotkey { get; init; } = RecordingHotkeyBinding.DefaultShortcut;
     public StageSettings Stages { get; init; } = new();
     public int ChunkSeconds { get; init; } = 120;
+    public string MeDisplayName { get; init; } = "Me";
     public ReminderSettings Reminders { get; init; } = new();
     public required ApiSettings Transcription { get; init; }
     public required ApiSettings Summary { get; init; }
@@ -118,7 +119,10 @@ public static class ConfigurationLoader
         if (string.IsNullOrWhiteSpace(settings.MeetingsRoot))
             throw new InvalidDataException("meetingsRoot is required.");
         if (settings.ChunkSeconds <= 0 || settings.ChunkSeconds > AudioChunker.MaxChunkSeconds)
-            throw new InvalidDataException($"chunkSeconds must be between 1 and {AudioChunker.MaxChunkSeconds} to stay within the 8 MiB stereo MP3 API limit; recommended 60-180.");
+            throw new InvalidDataException($"chunkSeconds must be between 1 and {AudioChunker.MaxChunkSeconds} to stay within the 8 MiB MP3 API limit; recommended 60-180.");
+        if (string.IsNullOrWhiteSpace(settings.MeDisplayName) || settings.MeDisplayName.Length > 80
+            || settings.MeDisplayName.Any(char.IsControl))
+            throw new InvalidDataException("meDisplayName must be 1–80 characters without control characters.");
         if (settings.Capture is null || settings.Stages is null || settings.Reminders is null || settings.Reminders.Items is null)
             throw new InvalidDataException("capture, stages and reminders must not be null.");
         var reminderIds = new HashSet<Guid>();

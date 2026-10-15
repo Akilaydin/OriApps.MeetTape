@@ -362,6 +362,27 @@ public sealed class SettingsTests : IDisposable
         }
     }
 
+    [AvaloniaFact]
+    public async Task MeDisplayNameIsEditableInProcessingTabAndPersistsWithoutChangingCustomPrompt()
+    {
+        var model = Model();
+        var window = new SettingsWindow { DataContext = model };
+        string originalPrompt = File.ReadAllText(TranscriptionPath);
+        window.Show();
+        window.FindControl<TabControl>("SettingsSections")!.SelectedIndex = 1;
+        var name = window.FindControl<TextBox>("MeDisplayName")!;
+        Assert.Equal("Me", name.Text);
+        name.Text = "Артём О";
+        Assert.True(model.HasUnsavedChanges);
+        Assert.Equal("Артём О", model.MeDisplayName);
+        await model.SaveAsync();
+        Assert.True(model.Saved);
+        Assert.False(model.HasUnsavedChanges);
+        Assert.Equal("Артём О", ConfigurationLoader.Load(ConfigPath).Settings.MeDisplayName);
+        Assert.Equal(originalPrompt, File.ReadAllText(TranscriptionPath));
+        window.Close();
+    }
+
     [AvaloniaTheory]
     [InlineData(false)]
     [InlineData(true)]
