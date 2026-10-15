@@ -112,6 +112,7 @@ public sealed class TranscriptAssembler
             string label = match.Groups[2].Value.Trim().ToLowerInvariant() switch
             {
                 "me" => "Me", "them" => "Them", "unknown" => "Unknown",
+                _ when chunk.Source is null => "Unknown", // Preserve existing stereo checkpoints without another paid request.
                 _ => throw new InvalidDataException($"Unexpected source label in chunk {chunk.Index}, utterance {index + 1}; " +
                     "only Me/Them/Unknown are accepted. Original response retained for diagnosis.")
             };

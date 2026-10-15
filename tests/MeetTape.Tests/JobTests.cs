@@ -765,6 +765,28 @@ public sealed class JobTests : IDisposable
     }
 
     [Fact]
+    public async Task PreUpgradeStereoCheckpointWithModelSpeakerNameIsReusedWithoutAnotherUpload()
+    {
+        string directory = Session(120);
+        var data = SessionStore.Read(directory);
+        var chunk = Assert.Single(data.Audio!.Chunks);
+        Assert.Null(chunk.Source);
+        ChunkStore.Save(directory, new(data.Id, chunk,
+            Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(Path.Combine(directory, chunk.RelativePath)))),
+            "previous-model", "saved-prompt-hash", "[00:01] Alice: Previously transcribed sentence."));
+
+        using var handler = new Handler((_, _) => throw new InvalidOperationException("No paid retranscription expected"));
+        using var http = new HttpClient(handler);
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "fixture-key");
+        await jobs.ProcessSessionAsync(directory, default);
+        Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
+        Assert.Equal(0, handler.Calls);
+        Assert.Contains("**Unknown:** Previously transcribed sentence.",
+            File.ReadAllText(Path.Combine(directory, "transcription.md")));
+        Assert.True(File.Exists(ChunkStore.PathFor(directory, chunk.Index)));
+    }
+
+    [Fact]
     public async Task SilentThemTrackCompletesWithNoSpeechCheckpointsAndMeSpeech()
     {
         using var tones = new ChunkingTests();

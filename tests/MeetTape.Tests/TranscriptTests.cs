@@ -12,7 +12,7 @@ public sealed class TranscriptTests : IDisposable
         string directory = Prepare([
             "[00:00.8] Me: MP3 track 42 не потерял начало?",
             "[00:00.05] Me: MP3 track 42 не потерял начало? Дополнительный аргумент: bitrate 96 килобит в секунду.",
-            "[00:00.25] Them: USB-C 3.2 — кабель, не адаптер.\n[00:00] Unknown: Версия FLAC 1.4."
+            "[00:00.25] Them: USB-C 3.2 — кабель, не адаптер.\n[00:00] Invented Name: Версия FLAC 1.4."
         ]);
         var data = SessionStore.Read(directory);
         byte[] meHash = Hash(Path.Combine(directory, "me.mp3"));
@@ -34,7 +34,7 @@ public sealed class TranscriptTests : IDisposable
     public async Task DailyStylePersonalNameLabelsAreRejectedRatherThanSilentlyMappedToUnknown()
     {
         string named = string.Join('\n', Enumerable.Range(0, 53).Select(i => $"[00:00] Артём О: Реплика {i}"));
-        string directory = Prepare([named], seconds: 120);
+        string directory = Prepare([named, "[NO_SPEECH]"], seconds: 120, mono: true);
         var data = SessionStore.Read(directory);
         data = data with { Processing = data.Processing with { MeDisplayName = "Артём О" } };
         SessionStore.Save(directory, data);
@@ -305,13 +305,15 @@ public sealed class TranscriptTests : IDisposable
         Assert.False(File.Exists(Path.Combine(second, "transcription.md")));
     }
 
-    internal string Prepare(string[] text, int seconds = 1, int totalSeconds = 3)
+    internal string Prepare(string[] text, int seconds = 1, int totalSeconds = 3, bool mono = false)
     {
         string directory = fixture.Session(seconds);
         var data = SessionStore.Read(directory);
-        if (totalSeconds != 3)
+        if (totalSeconds != 3 || mono)
         {
-            var chunks = AudioChunker.Plan(0, totalSeconds * 48000L, seconds, data.Audio!.RelativeDirectory);
+            var chunks = mono
+                ? AudioChunker.PlanMono(0, totalSeconds * 48000L, seconds, data.Audio!.RelativeDirectory)
+                : AudioChunker.Plan(0, totalSeconds * 48000L, seconds, data.Audio!.RelativeDirectory);
             foreach (var chunk in chunks) File.WriteAllBytes(Path.Combine(directory, chunk.RelativePath), [1, 2, (byte)chunk.Index]);
             data = data with { DurationSeconds = totalSeconds, Audio = data.Audio with { Chunks = chunks } };
         }
