@@ -259,35 +259,46 @@ public sealed class ProcessingJobs : IDisposable
                         string checkpoint = ChunkStore.PathFor(directory, chunk.Index);
                         bool saved = File.Exists(checkpoint);
                         ChunkResult result;
+                        bool recovered = false;
                         if (saved)
                             result = await ChunkStore.ReadAsync(directory, data, chunk, token);
                         else
                         {
                             prompt ??= ReadPrompt(data.Processing.Transcription, data.Processing.ConfigurationDirectory, "transcription");
-                            int attempts = data.Retry?.ChunkIndex == chunk.Index ? data.Retry.Attempts : 0;
-                            try
+                            string promptHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+                                prompt + ChatApiClient.InstructionFor(chunk.Source))));
+                            var rejected = await RecoverRejectedAsync(directory, data, chunk, promptHash, token);
+                            if (rejected is not null)
                             {
-                                token.ThrowIfCancellationRequested();
-                                var reply = await api.TranscribeAsync(data.Processing.Transcription, prompt,
-                                    AudioChunker.ResolveProcessed(directory, chunk.RelativePath), token,
-                                    $"session={data.Id}; chunk={chunk.Index}; attempt={Math.Min(attempts + 1, 31)}; source={chunk.Source ?? "stereo"}", chunk.Source);
-                                result = new(data.Id, chunk, reply.AudioSha256, data.Processing.Transcription.Model,
-                                    Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(prompt + ChatApiClient.InstructionFor(chunk.Source)))), reply.Text);
+                                result = rejected;
+                                recovered = true;
                             }
-                            catch (ChatApiException ex) when (ex.Kind == ApiFailureKind.Transient || ex.EmptyChoices)
+                            else
                             {
-                                token.ThrowIfCancellationRequested();
-                                attempts = Math.Min(attempts + 1, 30);
-                                if (ex.EmptyChoices && attempts >= 3)
-                                    throw new ChatApiException(ApiFailureKind.InvalidResponse,
-                                        $"Chunk {chunk.Index}: API returned empty choices after {attempts} attempts; automatic retry stopped. " +
-                                        "Check the provider/settings, then Resume; valid earlier chunks are retained.", ex.Status);
-                                var backoff = Backoff(attempts, ex.RetryAfter);
-                                AppDiagnostics.Error("processing", $"Transcribe chunk {chunk.Index}; attempt {attempts}; retry in {backoff.TotalSeconds:F0}s", ex);
-                                data = data with { Retry = new(chunk.Index, attempts, utcNow() + backoff), Error = ex.Message };
-                                SessionStore.Save(directory, data);
-                                Report($"Job {data.Id}: chunk {chunk.Index} transient failure; retry in {backoff.TotalSeconds:F0}s. {ex.Message}", NoticeKind.Warning, data.Id);
-                                return; // Leave this session ready for a later pass; process other meetings now.
+                                int attempts = data.Retry?.ChunkIndex == chunk.Index ? data.Retry.Attempts : 0;
+                                try
+                                {
+                                    token.ThrowIfCancellationRequested();
+                                    var reply = await api.TranscribeAsync(data.Processing.Transcription, prompt,
+                                        AudioChunker.ResolveProcessed(directory, chunk.RelativePath), token,
+                                        $"session={data.Id}; chunk={chunk.Index}; attempt={Math.Min(attempts + 1, 31)}; source={chunk.Source ?? "stereo"}", chunk.Source);
+                                    result = new(data.Id, chunk, reply.AudioSha256, data.Processing.Transcription.Model, promptHash, reply.Text);
+                                }
+                                catch (ChatApiException ex) when (ex.Kind == ApiFailureKind.Transient || ex.EmptyChoices)
+                                {
+                                    token.ThrowIfCancellationRequested();
+                                    attempts = Math.Min(attempts + 1, 30);
+                                    if (ex.EmptyChoices && attempts >= 3)
+                                        throw new ChatApiException(ApiFailureKind.InvalidResponse,
+                                            $"Chunk {chunk.Index}: API returned empty choices after {attempts} attempts; automatic retry stopped. " +
+                                            "Check the provider/settings, then Resume; valid earlier chunks are retained.", ex.Status);
+                                    var backoff = Backoff(attempts, ex.RetryAfter);
+                                    AppDiagnostics.Error("processing", $"Transcribe chunk {chunk.Index}; attempt {attempts}; retry in {backoff.TotalSeconds:F0}s", ex);
+                                    data = data with { Retry = new(chunk.Index, attempts, utcNow() + backoff), Error = ex.Message };
+                                    SessionStore.Save(directory, data);
+                                    Report($"Job {data.Id}: chunk {chunk.Index} transient failure; retry in {backoff.TotalSeconds:F0}s. {ex.Message}", NoticeKind.Warning, data.Id);
+                                    return; // Leave this session ready for a later pass; process other meetings now.
+                                }
                             }
                         }
                         try { TranscriptAssembler.ValidateChunk(result.Text, chunk); }
@@ -300,7 +311,11 @@ public sealed class ProcessingJobs : IDisposable
                                 $"Chunk {chunk.Index} has invalid timed text. {ex.Message} " +
                                 "Response retained in chunks/*.rejected-*.json. Check the transcription prompt/settings, then Resume to retry this chunk; valid earlier chunks are retained.");
                         }
-                        if (!saved) ChunkStore.Save(directory, result);
+                        if (!saved)
+                        {
+                            ChunkStore.Save(directory, result);
+                            if (recovered) AppDiagnostics.Info("processing", $"Chunk {chunk.Index} recovered from rejected response without another API request.");
+                        }
                         // The flushed chunk checkpoint is authoritative if a crash happens before this metadata save.
                         // Checkpoints before the failing chunk must not reset its accumulated backoff.
                         var remainingRetry = data.Retry is { } retry && retry.ChunkIndex != chunk.Index ? retry : null;
@@ -423,6 +438,27 @@ public sealed class ProcessingJobs : IDisposable
         try { return (config with { Directory = directory }).ReadPrompt(settings, stage); }
         catch (InvalidDataException ex)
         { throw new ChatApiException(ApiFailureKind.Configuration, ex.Message + " No request made."); }
+    }
+
+    private static async Task<ChunkResult?> RecoverRejectedAsync(string directory, SessionData data,
+        AudioChunk chunk, string promptHash, CancellationToken token)
+    {
+        string folder = Path.Combine(directory, "chunks");
+        if (!Directory.Exists(folder)) return null;
+        foreach (string path in Directory.EnumerateFiles(folder, $"{chunk.Index:D4}.rejected-*.json")
+                     .OrderByDescending(File.GetLastWriteTimeUtc))
+        {
+            token.ThrowIfCancellationRequested();
+            try
+            {
+                var result = await ChunkStore.ReadValidatedAsync(path, directory, data, chunk, token);
+                if (result.Model != data.Processing.Transcription.Model || result.PromptSha256 != promptHash) continue;
+                TranscriptAssembler.ValidateChunk(result.Text, chunk);
+                return result;
+            }
+            catch (InvalidDataException) { /* Incompatible or malformed responses remain available for diagnosis. */ }
+        }
+        return null;
     }
 
     private async Task<bool> GenerateSummaryAsync(string directory, SessionData data, CancellationToken token)
