@@ -32,9 +32,12 @@ public static class ChunkStore
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
 
-    public static async Task<ChunkResult> ReadAsync(string directory, SessionData session, AudioChunk chunk, CancellationToken token)
+    public static Task<ChunkResult> ReadAsync(string directory, SessionData session, AudioChunk chunk, CancellationToken token)
+        => ReadValidatedAsync(PathFor(directory, chunk.Index), directory, session, chunk, token);
+
+    internal static async Task<ChunkResult> ReadValidatedAsync(string path, string directory,
+        SessionData session, AudioChunk chunk, CancellationToken token)
     {
-        string path = PathFor(directory, chunk.Index);
         var result = await ReadFileAsync<ChunkResult>(path, token);
         if (result is null || result.SessionId != session.Id || result.Chunk != chunk || string.IsNullOrWhiteSpace(result.Text)
             || string.IsNullOrWhiteSpace(result.Model) || string.IsNullOrWhiteSpace(result.PromptSha256))
