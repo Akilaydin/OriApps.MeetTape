@@ -298,7 +298,7 @@ public sealed class WindowTests
         Dispatcher.UIThread.RunJobs();
         Assert.True(model.IsRecording); Assert.False(model.HasError);
         Assert.Contains("notification unavailable", model.InfoText);
-        Assert.DoesNotContain("PRIVATE", model.DiagnosticText);
+        Assert.DoesNotContain("PRIVATE", model.InfoText);
         fake.ShutdownCompletion = new();
         Task<bool> exit = model.ShutdownAsync();
         await model.ToggleFromHotkeyAsync(); Assert.Equal(1, fake.Starts); Assert.Equal(0, fake.Stops);
@@ -405,7 +405,7 @@ public sealed class WindowTests
         Assert.Equal(markdown, Assert.Single(copied));
         foreach (var (file, bytes) in originals) Assert.Equal(bytes, File.ReadAllBytes(file));
         Assert.Equal(originals.Count, Directory.GetFiles(fixture.SessionDirectory).Length);
-        Assert.DoesNotContain("PRIVATE", model.DiagnosticText);
+        Assert.DoesNotContain("PRIVATE", model.SelectedMeetingDetails);
         Assert.Equal(0, fake.Starts); Assert.Equal(0, fake.Resumes); Assert.Equal(0, fake.Summaries);
         Close(window, model);
     }
@@ -658,7 +658,7 @@ public sealed class WindowTests
         Assert.Equal(0d, me.Value);
         Assert.Equal(40d, them.Value);
         Assert.False(model.HasError);
-        Assert.False(model.HasWarnings);
+        Assert.DoesNotContain("Warning", model.TrayText);
         Click(window, "RecordButton");
         Assert.False(levels.IsVisible);
         Assert.Equal(0d, me.Value);
@@ -672,7 +672,7 @@ public sealed class WindowTests
     }
 
     [AvaloniaFact]
-    public async Task RecordingStatusStaysCompactWithTimingAndDevicesAvailableInCollapsedDetails()
+    public async Task RecordingCardHidesCaptureTimingDiagnosticsWithoutSuppressingRecordingStatus()
     {
         using var fixture = new Fixture();
         var fake = new FakeController(fixture);
@@ -693,51 +693,35 @@ public sealed class WindowTests
         window.Show(); await model.RefreshAsync();
         Assert.Equal("Recording", window.FindControl<TextBlock>("CaptureStatus")!.Text);
         Assert.Equal("00:00:09", window.FindControl<TextBlock>("RecordingTimer")!.Text);
-        Assert.False(window.FindControl<Expander>("DiagnosticsExpander")!.IsExpanded);
-        var details = window.FindControl<TextBox>("DiagnosticDetails")!;
-        Assert.False(details.IsEffectivelyVisible && TopLevel.GetTopLevel(details) is not null);
-        Assert.Contains("2270", details.Text);
-        Assert.Contains("Fixture QPC timing diagnostic", details.Text);
-        Assert.Contains("long device name", details.Text);
+        Assert.Null(window.FindControl<Expander>("DiagnosticsExpander"));
+        Assert.Null(window.FindControl<TextBox>("DiagnosticDetails"));
+        Assert.Null(window.FindControl<Button>("CopyDiagnostics"));
+        Assert.False(window.FindControl<TextBlock>("ErrorMessage")!.IsVisible);
+        Assert.DoesNotContain("Warning", model.TrayText);
+        Assert.DoesNotContain("Fixture QPC timing diagnostic",
+            string.Join(" ", window.GetVisualDescendants().OfType<TextBlock>().Select(block => block.Text)));
         Assert.True(window.FindControl<Button>("RecordButton")!.IsEnabled);
         Close(window, model);
     }
 
     [AvaloniaFact]
-    public async Task FullDiagnosticsCanBeSelectedAndCopiedEvenWhenTheVisibleErrorIsBrief()
+    public async Task CaptureFailureShowsFullRecoveryMessageWithoutRecordingDetails()
     {
         using var fixture = new Fixture();
         var model = new MainViewModel(new FakeController(fixture));
-        const string original = "Cannot start capture. Check microphone permissions and reconnect the selected device.\nOriginal diagnostic retained for investigation.";
+        const string original = "Cannot start capture. Check microphone permissions and reconnect the selected device.";
         model.SetError(original);
         var window = new MainWindow { DataContext = model };
         window.Show(); await model.RefreshAsync();
-        Assert.Equal("Cannot start capture.", window.FindControl<TextBlock>("ErrorMessage")!.Text);
+        Assert.Equal(original, window.FindControl<TextBlock>("ErrorMessage")!.Text);
         Assert.True(window.FindControl<TextBlock>("ErrorMessage")!.IsVisible);
-        window.FindControl<Expander>("DiagnosticsExpander")!.IsExpanded = true;
-        Dispatcher.UIThread.RunJobs();
-        var details = window.FindControl<TextBox>("DiagnosticDetails")!;
-        Assert.True(details.IsReadOnly);
-        Assert.True(details.Focus());
-        details.SelectAll();
-        Assert.Equal(model.DiagnosticText, details.SelectedText);
-        Assert.Contains(original, details.SelectedText);
-        var clipboard = window.Clipboard!;
-        await clipboard.ClearAsync();
-        window.KeyPress(Key.C, RawInputModifiers.Control, PhysicalKey.C, "c");
-        window.KeyRelease(Key.C, RawInputModifiers.Control, PhysicalKey.C, "c");
-        Assert.Equal(model.DiagnosticText, await clipboard.TryGetTextAsync());
-        details.SelectionEnd = details.SelectionStart;
-        await clipboard.ClearAsync();
-        Click(window, "CopyDiagnostics");
-        await WaitFor(() => model.InfoText == "Details copied.");
-        Assert.Equal(model.DiagnosticText, await clipboard.TryGetTextAsync());
-        await clipboard.ClearAsync();
+        Assert.Null(window.FindControl<Expander>("DiagnosticsExpander"));
+        Assert.Contains("Error: open MeetTape", model.TrayText);
         Close(window, model);
     }
 
     [AvaloniaFact]
-    public async Task RepeatedCaptureWarningsAreBoundedAndBackgroundErrorsStaySeparate()
+    public async Task BackgroundIssuesAndPreparationFailuresStayVisibleWithoutRecordingDetails()
     {
         using var fixture = new Fixture();
         var fake = new FakeController(fixture);
@@ -745,23 +729,21 @@ public sealed class WindowTests
         var window = new MainWindow { DataContext = model };
         window.Show(); await model.RefreshAsync();
         Click(window, "RecordButton");
-        const string warning = "Them: invalid WASAPI timestamp. Recording continues.";
-        for (int i = 0; i < 20; i++) fake.Report(new(NoticeKind.Warning, warning));
         fake.Report(new(NoticeKind.Error, "Previous meeting: processing paused; saved chunks retained.", Guid.NewGuid()));
         fake.Report(new(NoticeKind.Information, "Job progress fixture diagnostic", Guid.NewGuid()));
         Dispatcher.UIThread.RunJobs();
-        Assert.Equal(warning, model.WarningText);
-        Assert.DoesNotContain("WASAPI", window.FindControl<TextBlock>("Warnings")!.Text);
         Assert.Empty(model.ErrorText);
         Assert.True(model.HasProcessingErrors);
         Assert.True(model.IsRecording);
         Assert.True(window.FindControl<TextBlock>("ProcessingIssues")!.IsVisible);
-        Assert.Contains("processing paused; saved chunks retained", model.DiagnosticText);
+        Assert.Contains("Background processing reported an error", window.FindControl<TextBlock>("ProcessingIssues")!.Text);
         Assert.DoesNotContain("Job progress fixture", model.InfoText);
-        for (int i = 0; i < 10; i++) fake.Report(new(NoticeKind.Warning, "Fixture warning " + i));
+        fake.Report(new(NoticeKind.Warning, "Audio preparation paused; check FFmpeg and resume."));
         Dispatcher.UIThread.RunJobs();
-        Assert.Equal(8, model.WarningText.Split(Environment.NewLine).Length);
-        Assert.DoesNotContain("Fixture warning 0" + Environment.NewLine, model.WarningText);
+        Assert.Equal("Audio preparation paused; check FFmpeg and resume.",
+            window.FindControl<TextBlock>("ErrorMessage")!.Text);
+        Assert.Contains("Error: open MeetTape", model.TrayText);
+        Assert.Null(window.FindControl<Expander>("DiagnosticsExpander"));
         Close(window, model);
     }
 
@@ -921,7 +903,7 @@ public sealed class WindowTests
     }
 
     [AvaloniaFact]
-    public async Task CaptureFailuresAndWarningsStayVisibleAndProcessingControlsAreDisabledWhileRecording()
+    public async Task CaptureFailuresStayVisibleAndProcessingControlsAreDisabledWhileRecording()
     {
         using var fixture = new Fixture();
         var fake = new FakeController(fixture);
@@ -931,13 +913,10 @@ public sealed class WindowTests
         window.FindControl<ListBox>("SessionList")!.SelectedIndex = 0;
         Click(window, "RecordButton");
         Assert.False(window.FindControl<MenuItem>("ResumeSession")!.IsEnabled);
-        fake.Report(new(NoticeKind.Warning, "Them: invalid WASAPI timestamp. Recording continues."));
-        Dispatcher.UIThread.RunJobs();
-        Assert.Contains("Recording continues", window.FindControl<TextBlock>("Warnings")!.Text);
         fake.Snapshot = fake.Snapshot with { Capture = new(false, TimeSpan.FromSeconds(9), 0, 0, "Device stopped; originals retained.") };
         await model.RefreshAsync();
-        Assert.Contains("Device stopped", window.FindControl<TextBlock>("ErrorMessage")!.Text);
-        Assert.Contains("Recording continues", model.WarningText);
+        Assert.Equal("Device stopped; originals retained.", window.FindControl<TextBlock>("ErrorMessage")!.Text);
+        Assert.Contains("Error: open MeetTape", model.TrayText);
         fake.FailStart = true;
         Click(window, "RecordButton");
         Assert.DoesNotContain("private-secret", model.ErrorText);
@@ -1309,8 +1288,7 @@ public sealed class WindowTests
                 Diagnostic = "Fixture provider response was rejected. Saved chunks retained; fix Settings and Resume." };
         fake.Snapshot = fake.Snapshot with { Sessions = [basis with { Data = basis.Data with { Title = "Unnamed meeting", RecordingState = RecordingState.Recording } }, completed, paused],
             Capture = new(true, TimeSpan.FromSeconds(874), 1, 1, null) { MeLevel = 0.64, ThemLevel = 0.38, RecordingDirectory = fixture.SessionDirectory } };
-        fake.Report(new(NoticeKind.Warning, "Microphone discontinuity detected; recording continues. Fixture timing correction preserved."));
-        window.Show(); await model.RefreshAsync(); window.FindControl<Expander>("DiagnosticsExpander")!.IsExpanded = true;
+        window.Show(); await model.RefreshAsync();
         Assert.Equal("14:34", model.Sessions[0].Duration);
         Dispatcher.UIThread.RunJobs();
         using (var frame = window.CaptureRenderedFrame()) { Assert.NotNull(frame); frame.Save(Path.Combine(output, "main-recording.png"), PngBitmapEncoderOptions.Default); }
@@ -1321,7 +1299,7 @@ public sealed class WindowTests
         window.Width = 1050; window.Height = 820;
         fake.Snapshot = fake.Snapshot with { Capture = fake.Snapshot.Capture with { IsActive = false }, AwaitingTitleDirectory = fixture.SessionDirectory,
             Sessions = [basis with { Data = basis.Data with { Title = "Unnamed meeting" } }, completed, paused] };
-        await model.RefreshAsync(); window.FindControl<Expander>("DiagnosticsExpander")!.IsExpanded = false;
+        await model.RefreshAsync();
         Dispatcher.UIThread.RunJobs();
         using (var frame = window.CaptureRenderedFrame()) { Assert.NotNull(frame); frame.Save(Path.Combine(output, "main-after-stop.png"), PngBitmapEncoderOptions.Default); }
         window.Width = 700; window.Height = 560;

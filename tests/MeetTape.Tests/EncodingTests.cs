@@ -76,7 +76,7 @@ public sealed class EncodingTests : IDisposable
     }
 
     [Fact]
-    public async Task TimingWarningIsVisibleDuringCaptureAndSavedInSession()
+    public async Task TimingCorrectionsAreCountedDuringCaptureAndSavedInSession()
     {
         string example = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../config.example.json"));
         var loaded = ConfigurationLoader.Load(example);
@@ -87,19 +87,15 @@ public sealed class EncodingTests : IDisposable
             them = new SyntheticSource();
             return new CaptureSources(new SyntheticSource(), them);
         }).Capture;
-        var warnings = new System.Collections.Concurrent.ConcurrentQueue<string>();
-        capture.Warning += warnings.Enqueue;
         capture.Start();
         long qpc = Mp3Track.To100ns(Stopwatch.GetTimestamp());
         them!.Emit(qpc, devicePosition: 0);
         them.Emit(qpc, devicePosition: 0);
         them.Emit(qpc, devicePosition: 0);
         Assert.True(SpinWait.SpinUntil(() => capture.Status.ThemTiming.Corrections > 0,
-            TimeSpan.FromSeconds(5)), "Audio timing warning was not reported during capture.");
+            TimeSpan.FromSeconds(5)), "Audio timing correction was not counted during capture.");
         Assert.True(capture.Status.IsActive);
         Assert.Null(capture.Status.Error);
-        Assert.Single(warnings);
-        Assert.Contains("Recording continues", warnings.Single());
         capture.Stop();
         var session = SessionStore.Read(capture.RecordingDirectory!);
         Assert.Equal(RecordingState.Recorded, session.RecordingState);
@@ -112,7 +108,7 @@ public sealed class EncodingTests : IDisposable
     }
 
     [Fact]
-    public async Task TimestampErrorFromWasapiStillProducesCompleteRecordedSession()
+    public async Task TimestampErrorAndDiscontinuityRemainRecordedWithoutUserWarnings()
     {
         string example = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../config.example.json"));
         var loaded = ConfigurationLoader.Load(example);
@@ -123,22 +119,22 @@ public sealed class EncodingTests : IDisposable
             them = new SyntheticSource();
             return new CaptureSources(new SyntheticSource(), them);
         }).Capture;
-        var warnings = new System.Collections.Concurrent.ConcurrentQueue<string>();
-        capture.Warning += warnings.Enqueue;
         capture.Start();
         them!.Emit(qpc: 0, flags: NAudio.CoreAudioApi.AudioClientBufferFlags.TimestampError);
         them.Emit();
+        them.Emit(flags: NAudio.CoreAudioApi.AudioClientBufferFlags.DataDiscontinuity);
         Assert.True(SpinWait.SpinUntil(() => capture.Status.ThemTiming.InvalidTimestamps == 1,
             TimeSpan.FromSeconds(5)), "TimestampError did not reach the recording timeline.");
+        Assert.True(SpinWait.SpinUntil(() => capture.Status.ThemTiming.Discontinuities == 1,
+            TimeSpan.FromSeconds(5)), "DataDiscontinuity did not reach the recording timeline.");
         Assert.True(capture.Status.IsActive);
-        Assert.True(SpinWait.SpinUntil(() => warnings.Any(warning => warning.Contains("invalid WASAPI timestamp")),
-            TimeSpan.FromSeconds(5)), "Timestamp warning did not reach the recording observer.");
-        Assert.Contains(warnings, warning => warning.Contains("invalid WASAPI timestamp"));
         capture.Stop();
         var saved = SessionStore.Read(capture.RecordingDirectory!);
         Assert.Equal(RecordingState.Recorded, saved.RecordingState);
         Assert.Null(saved.Error);
         Assert.Equal(1, saved.ThemTiming.InvalidTimestamps);
+        Assert.Equal(1, saved.ThemTiming.Discontinuities);
+        Assert.Equal(1, saved.Discontinuities);
         Assert.True(saved.ClockAdjustments >= 1);
         Assert.Equal(saved.ThemTiming.Corrections, saved.ClockAdjustments);
         Assert.Equal((await DecodeAsync(Path.Combine(capture.RecordingDirectory!, "me.mp3"))).Length,

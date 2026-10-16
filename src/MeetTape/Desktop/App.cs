@@ -200,11 +200,10 @@ public sealed class App : Application
                 if (tick == 3)
                 {
                     ShowWindow();
-                    model.SetError("Smoke recording diagnostic. Original fixture detail retained for copying.");
-                    window!.FindControl<Expander>("DiagnosticsExpander")!.IsExpanded = true;
-                    var details = window!.FindControl<TextBox>("DiagnosticDetails")!;
-                    details.SelectAll();
-                    if (details.SelectedText != model.DiagnosticText || !Equals(status!.Header, model.CaptureText)
+                    model.SetError("Smoke recording failure. Check the selected device and retry.");
+                    if (window!.FindControl<TextBlock>("ErrorMessage")?.Text != model.ErrorText
+                        || window!.FindControl<Expander>("DiagnosticsExpander") is not null
+                        || !Equals(status!.Header, model.CaptureText)
                         || !Equals(processingStatus!.Header, model.ProcessingText) || tray!.ToolTipText != model.TrayText
                         || window!.Icon is null || !ReferenceEquals(window.Icon, tray.Icon))
                     { Console.Error.WriteLine($"Icon smoke tick {tick}: recording={model.IsRecording}, taskbarApplied={taskbar?.Applied}, buttonCreated={taskbarCreated}."); timer.Stop(); desktop!.Shutdown(1); return; }

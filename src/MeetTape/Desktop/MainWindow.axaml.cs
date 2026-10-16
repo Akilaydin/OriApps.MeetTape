@@ -41,15 +41,6 @@ public sealed partial class MainWindow : Window
         new DeleteRecordingWindow(recording) { Icon = Icon }.ShowDialog<bool>(this));
     private async void SettingsClick(object? sender, RoutedEventArgs e) { if (OpenSettings is not null) await OpenSettings(); }
     private async void UpdateClick(object? sender, RoutedEventArgs e) { if (UpdateApplication is not null) await UpdateApplication(); }
-    private async void CopyDiagnosticsClick(object? sender, RoutedEventArgs e)
-    {
-        try
-        {
-            await WriteClipboardAsync(Model.DiagnosticText);
-            Model.SetInfo("Details copied.");
-        }
-        catch (Exception) { Model.SetError("Cannot copy details. Select the text in Details and press Ctrl+C."); }
-    }
     private Task WriteClipboardAsync(string text) => WriteClipboard is { } write ? write(text) :
         (Clipboard ?? throw new InvalidOperationException()).SetTextAsync(text);
     private async void CopyTranscriptClick(object? sender, RoutedEventArgs e) => await CopyDocumentAsync("transcription.md");

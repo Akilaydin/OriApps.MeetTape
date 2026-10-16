@@ -31,10 +31,6 @@
     <Style Selector="TextBlock.capture-status.recording">
       <Setter Property="Foreground" Value="#F42842" />
     </Style>
-    <Style Selector="Expander.warning">
-      <Setter Property="Background" Value="#FFF0E7" />
-      <Setter Property="BorderBrush" Value="#FFE0CB" />
-    </Style>
     <Style Selector="ListBoxItem">
       <Setter Property="Padding" Value="0" />
       <Setter Property="HorizontalContentAlignment" Value="Stretch" />
@@ -84,22 +80,8 @@
               </StackPanel>
             </Grid>
             <TextBlock Text="{Binding PreparationText}" IsVisible="{Binding IsPreparing}" TextWrapping="Wrap" />
-            <Expander Name="DiagnosticsExpander" Classes.warning="{Binding HasWarnings}" HorizontalAlignment="Stretch">
-              <Expander.Header>
-                <StackPanel Spacing="4">
-                  <TextBlock Name="Warnings" Text="{Binding WarningSummary}" IsVisible="{Binding HasWarnings}"
-                             TextWrapping="Wrap" Foreground="#A65009" />
-                  <TextBlock Name="ErrorMessage" Text="{Binding ErrorSummary}" IsVisible="{Binding HasError}"
-                             TextWrapping="Wrap" Foreground="#B91C38" />
-                  <TextBlock Text="Details" FontSize="12" Foreground="#53637D" />
-                </StackPanel>
-              </Expander.Header>
-              <StackPanel Spacing="8" Margin="0,8,0,0">
-                <TextBox Name="DiagnosticDetails" Text="{Binding DiagnosticText, Mode=OneWay}" IsReadOnly="True"
-                         AcceptsReturn="True" TextWrapping="Wrap" MaxHeight="140" />
-                <Button Name="CopyDiagnostics" Content="Copy details" Click="CopyDiagnosticsClick" HorizontalAlignment="Left" />
-              </StackPanel>
-            </Expander>
+            <TextBlock Name="ErrorMessage" Text="{Binding ErrorText}" IsVisible="{Binding HasError}"
+                       TextWrapping="Wrap" Foreground="#B91C38" />
             <Border IsVisible="{Binding IsNaming}" Padding="14" Background="#F3F6FB" CornerRadius="8">
               <StackPanel Spacing="10">
                 <TextBlock Text="Recording saved. Name the meeting, then continue or start the next recording." TextWrapping="Wrap" />
