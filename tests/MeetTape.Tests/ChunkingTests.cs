@@ -64,6 +64,34 @@ public sealed class ChunkingTests : IDisposable
         Assert.Throws<InvalidDataException>(() => AudioChunker.ValidateUploadSize(path));
     }
 
+    [Theory]
+    [InlineData(-48)]
+    [InlineData(-7)]
+    [InlineData(0)]
+    [InlineData(7)]
+    [InlineData(48)]
+    public void Mp3RoundingWithinOneMillisecondDoesNotRejectChunks(int difference)
+    {
+        const long expected = 5_887_912;
+        AudioChunker.ValidateDecodedSamples(expected, expected + difference, wrongFormat: false);
+    }
+
+    [Theory]
+    [InlineData(-24000, false)]
+    [InlineData(-49, false)]
+    [InlineData(49, false)]
+    [InlineData(24000, false)]
+    [InlineData(0, true)]
+    public void Mp3DurationMismatchAndWrongFormatStillRejectChunks(int difference, bool wrongFormat)
+    {
+        const long expected = 5_887_912;
+        long actual = expected + difference;
+        var exception = Assert.Throws<InvalidDataException>(() =>
+            AudioChunker.ValidateDecodedSamples(expected, actual, wrongFormat));
+        Assert.Contains($"expected {expected} samples, decoded {actual}", exception.Message);
+        Assert.Contains("No chunk set selected", exception.Message);
+    }
+
     [Fact]
     public async Task IndependentMonoSourcesBoundaryContextAndLastChunkPreserveSignals()
     {

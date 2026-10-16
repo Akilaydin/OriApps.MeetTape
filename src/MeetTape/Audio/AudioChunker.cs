@@ -124,8 +124,15 @@ public sealed class AudioChunker(string ffmpegPath)
             if (space >= 0) number = number[..space];
             if (int.TryParse(number, NumberStyles.None, CultureInfo.InvariantCulture, out int count)) samples += count;
         }, token);
-        if (wrongFormat || samples != expected)
-            throw new InvalidDataException("Chunk format/duration mismatch; selected inputs may be truncated. No chunk set selected.");
+        ValidateDecodedSamples(expected, samples, wrongFormat);
+    }
+
+    internal static void ValidateDecodedSamples(long expected, long actual, bool wrongFormat)
+    {
+        // MP3 encode/decode can shift the decoded length by a few samples without losing speech.
+        const int maxMp3RoundingFrames = SampleRate / 1000;
+        if (wrongFormat || Math.Abs(actual - expected) > maxMp3RoundingFrames)
+            throw new InvalidDataException($"Chunk format/duration mismatch (expected {expected} samples, decoded {actual}; 48 kHz mono required). Selected inputs may be truncated. No chunk set selected.");
     }
 
     internal static void ValidateManifest(SessionData data)
