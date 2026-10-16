@@ -62,7 +62,6 @@ public sealed class DesktopController : IDesktopController
         preparation = new(config.Settings.Capture.FfmpegPath);
         jobs = new(config, () => this.capture.Status.IsActive || Volatile.Read(ref awaitingTitle) is not null,
             http: http, readKey: readKey);
-        this.capture.Warning += Warn;
         this.capture.Failed += Fail;
         this.capture.Finished += Finished;
         this.capture.StateChanged += PublishRecording;
@@ -212,7 +211,6 @@ public sealed class DesktopController : IDesktopController
         }
     }
 
-    private void Warn(string message) => Publish(new(NoticeKind.Warning, message));
     private void PublishRecording(CaptureStatus status)
     {
         try { RecordingChanged?.Invoke(status); }
@@ -262,7 +260,6 @@ public sealed class DesktopController : IDesktopController
                 }
                 preparation.Dispose();
                 jobs.Dispose();
-                capture.Warning -= Warn;
                 capture.Failed -= Fail;
                 capture.Finished -= Finished;
                 capture.StateChanged -= PublishRecording;

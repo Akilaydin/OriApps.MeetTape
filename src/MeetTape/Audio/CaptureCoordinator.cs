@@ -37,8 +37,6 @@ public sealed class CaptureCoordinator(
     private long meLevelAt, themLevelAt;
     private AudioTimingStats meTiming = new();
     private AudioTimingStats themTiming = new();
-    private int notifiedMe;
-    private int notifiedThem;
     private CaptureSources? active;
     private long startedAt;
     private long stoppedAt;
@@ -49,7 +47,6 @@ public sealed class CaptureCoordinator(
     private bool disposed;
 
     public event Action<string>? Failed;
-    internal event Action<string>? Warning;
     public event Action<CaptureStatus>? Finished;
     internal event Action<CaptureStatus>? StateChanged;
     public string? RecordingDirectory { get; internal set; }
@@ -117,7 +114,6 @@ public sealed class CaptureCoordinator(
                     meTiming = new(); themTiming = new();
                     mePeak = themPeak = 0;
                     meLevelAt = themLevelAt = 0;
-                    notifiedMe = 0; notifiedThem = 0;
                     Discontinuities = 0; ClockAdjustments = 0;
                 }
                 started?.Invoke(sources, startedAt);
@@ -230,16 +226,10 @@ public sealed class CaptureCoordinator(
 
     internal void ReportTiming(CaptureChannel channel, AudioTimingIssue issue)
     {
-        bool notify;
-        bool significantIncrease;
         lock (timingGate)
         {
             AudioTimingStats previous = channel == CaptureChannel.Me ? meTiming : themTiming;
             bool discontinuity = issue.Kind == AudioTimingIssueKind.Discontinuity;
-            // A correction exceeding the packet's own length is worth another warning, even if
-            // smaller corrections of this type were already reported. No fixed time threshold.
-            significantIncrease = issue.Kind == AudioTimingIssueKind.Overlap
-                && previous.LargestShiftFrames < issue.PacketFrames && issue.ShiftFrames >= issue.PacketFrames;
             var updated = previous with
             {
                 Corrections = previous.Corrections + (discontinuity ? 0 : 1),
@@ -249,32 +239,11 @@ public sealed class CaptureCoordinator(
                 LastIssue = issue.Detail
             };
             if (channel == CaptureChannel.Me)
-            {
                 meTiming = updated;
-                notify = (notifiedMe & (int)issue.Kind) == 0;
-                notifiedMe |= (int)issue.Kind;
-            }
             else
-            {
                 themTiming = updated;
-                notify = (notifiedThem & (int)issue.Kind) == 0;
-                notifiedThem |= (int)issue.Kind;
-            }
             Discontinuities = meTiming.Discontinuities + themTiming.Discontinuities;
             ClockAdjustments = meTiming.Corrections + themTiming.Corrections;
-        }
-        // Report the first incident of each kind per track, and keep counting later ones in status.
-        // A slow/broken console subscriber must never abort audio encoding.
-        if ((notify || significantIncrease) && !stopping)
-        {
-            string cause = issue.Kind switch
-            {
-                AudioTimingIssueKind.InvalidTimestamp => "invalid WASAPI timestamp; placed by arrival time",
-                AudioTimingIssueKind.Discontinuity => "WASAPI reported an audio discontinuity",
-                _ => FormattableString.Invariant($"audio timing moved by {issue.ShiftFrames * 1000d / PcmTimeline.SampleRate:F3} ms")
-            };
-            try { Warning?.Invoke($"{channel}: {cause}. Recording continues; see status for totals."); }
-            catch (Exception) { /* Diagnostics must not interrupt recording. */ }
         }
     }
 
