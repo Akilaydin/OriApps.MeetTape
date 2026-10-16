@@ -278,6 +278,45 @@ public sealed class TranscriptTests : IDisposable
     }
 
     [Fact]
+    public async Task MonoUtterancesWithMissingRepeatedLabelsUseTheRecordedSource()
+    {
+        string directory = Prepare([
+            "[00:00] Me: Я понял.",
+            "[00:00] Them: Первое предложение.\n[00:01] Второе предложение без метки."
+        ], seconds: 2, totalSeconds: 2, mono: true);
+        var data = SessionStore.Read(directory);
+        foreach (var chunk in data.Audio!.Chunks)
+            TranscriptAssembler.ValidateChunk((await ChunkStore.ReadAsync(directory, data, chunk, default)).Text, chunk);
+        await new TranscriptAssembler().BuildAsync(directory, data, default);
+        string transcript = File.ReadAllText(Path.Combine(directory, "transcription.md"));
+        Assert.Contains("[00:00] **Me:** Я понял.", transcript);
+        Assert.Contains("[00:00] **Them:** Первое предложение.", transcript);
+        Assert.Contains("[00:01] **Them:** Второе предложение без метки.", transcript);
+        Assert.Equal(2, transcript.Split("**Them:**").Length - 1);
+    }
+
+    [Theory]
+    [InlineData("[00:01] Unknown Person: Invented voice.")]
+    [InlineData("The user wants a transcript.\n[00:01] A real utterance.")]
+    [InlineData("[00:01] A real utterance.\nLet's refine it.")]
+    [InlineData("[00:01] [NO_SPEECH]")]
+    [InlineData("[00:01] Me:")]
+    [InlineData("[00:60] Utterance with invalid seconds.")]
+    [InlineData("[20:00] Utterance outside the chunk.")]
+    public void UnsafeMonoFormattingIsStillRejected(string text)
+    {
+        var chunk = AudioChunker.PlanMono(0, 5L * 48000, 5, "processed/test")[0];
+        Assert.Throws<InvalidDataException>(() => TranscriptAssembler.ValidateChunk(text, chunk));
+    }
+
+    [Fact]
+    public void StereoChunksStillRequireExplicitLabels()
+    {
+        var chunk = AudioChunker.Plan(0, 5L * 48000, 5, "processed/test")[0];
+        Assert.Throws<InvalidDataException>(() => TranscriptAssembler.ValidateChunk("[00:01] Speech without speaker.", chunk));
+    }
+
+    [Fact]
     public async Task MissingChunkOrPartialStageNeverPublishesFullOutput()
     {
         string directory = fixture.Session();

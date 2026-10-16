@@ -765,6 +765,83 @@ public sealed class JobTests : IDisposable
     }
 
     [Fact]
+    public async Task MonoResponsesWithMissingTrackLabelsCompleteWithoutAnotherApiRequest()
+    {
+        using var tones = new ChunkingTests();
+        string directory = await tones.SessionAsync();
+        using var handler = new Handler((call, _) => Task.FromResult(TextResponse(call % 2 == 0
+            ? "[00:00] Them: Первое предложение.\n[00:01] Следующая реплика без метки."
+            : "[00:00] Me: Принято.")));
+        using var http = new HttpClient(handler);
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "fixture-key");
+        await jobs.ProcessSessionAsync(directory, default);
+        Assert.Equal(6, handler.Calls);
+        Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
+        Assert.Empty(Directory.GetFiles(Path.Combine(directory, "chunks"), "*.rejected-*.json"));
+        Assert.Contains("**Them:** Следующая реплика без метки.",
+            File.ReadAllText(Path.Combine(directory, "transcription.md")));
+    }
+
+    [Theory]
+    [InlineData("matching", true)]
+    [InlineData("wrong-model", false)]
+    [InlineData("wrong-prompt", false)]
+    [InlineData("wrong-audio", false)]
+    [InlineData("reasoning", false)]
+    public async Task ResumeReusesOnlyCompatibleLocallyRepairableRejectedMonoReplies(string variant, bool expectedReuse)
+    {
+        using var tones = new ChunkingTests();
+        string directory = await tones.SessionAsync();
+        var data = SessionStore.Read(directory);
+        var prepared = await new AudioChunker("ffmpeg").PrepareAsync(directory, data, default);
+        data = data with
+        {
+            Audio = prepared, JobState = JobState.Paused,
+            Stages = new(data.Stages)
+            {
+                ["prepare"] = new(true, StageState.Completed, prepared.Chunks.Count, prepared.Chunks.Count),
+                ["transcribe"] = new(true, StageState.Paused)
+            }
+        };
+        SessionStore.Save(directory, data);
+        var first = prepared.Chunks[0];
+        var rejectedChunk = prepared.Chunks[1];
+        string prompt = (config with { Directory = data.Processing.ConfigurationDirectory })
+            .ReadPrompt(data.Processing.Transcription, "transcription");
+        string firstHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+            prompt + ChatApiClient.InstructionFor(first.Source))));
+        string secondHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+            prompt + ChatApiClient.InstructionFor(rejectedChunk.Source))));
+        static string AudioHash(string path) => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)));
+        ChunkStore.Save(directory, new(data.Id, first, AudioHash(Path.Combine(directory, first.RelativePath)),
+            data.Processing.Transcription.Model, firstHash, "[00:00] Me: Already paid."));
+        byte[] previous = File.ReadAllBytes(ChunkStore.PathFor(directory, first.Index));
+        var rejected = new ChunkResult(data.Id, rejectedChunk,
+            variant == "wrong-audio" ? "NOT_THE_SELECTED_AUDIO" : AudioHash(Path.Combine(directory, rejectedChunk.RelativePath)),
+            variant == "wrong-model" ? "different-model" : data.Processing.Transcription.Model,
+            variant == "wrong-prompt" ? "different-prompt" : secondHash,
+            variant == "reasoning" ? "Let me analyze the audio.\n[00:00] Them: Some speech."
+                : "[00:00] Them: Первое.\n[00:01] Продолжение без метки.");
+        string rejectedPath = Path.Combine(directory, "chunks", $"0002.rejected-{Guid.NewGuid():N}.json");
+        ChunkStore.SaveFile(rejectedPath, rejected);
+        byte[] rejectedBytes = File.ReadAllBytes(rejectedPath);
+
+        using var handler = new Handler((_, _) => Task.FromResult(TextResponse("[00:00] Me: Fresh response.")));
+        using var http = new HttpClient(handler);
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "fixture-key");
+        jobs.Resume(directory);
+        await jobs.ProcessSessionAsync(directory, default);
+
+        Assert.Equal(expectedReuse ? 4 : 5, handler.Calls);
+        Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
+        Assert.Equal(previous, File.ReadAllBytes(ChunkStore.PathFor(directory, first.Index)));
+        Assert.Equal(rejectedBytes, File.ReadAllBytes(rejectedPath));
+        var recovered = await ChunkStore.ReadAsync(directory, SessionStore.Read(directory), rejectedChunk, default);
+        Assert.Equal(expectedReuse ? rejected.Text : "[00:00] Me: Fresh response.", recovered.Text);
+        Assert.True(File.Exists(Path.Combine(directory, "transcription.md")));
+    }
+
+    [Fact]
     public async Task PreUpgradeStereoCheckpointWithModelSpeakerNameIsReusedWithoutAnotherUpload()
     {
         string directory = Session(120);

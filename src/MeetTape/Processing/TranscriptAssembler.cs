@@ -13,6 +13,8 @@ public sealed class TranscriptAssembler
     private sealed record Utterance(long Frame, string Speaker, string Text, int Chunk, int Line, long? NextSameSourceFrame = null);
     private static readonly Regex LinePattern = new(@"^\[(\d+(?::\d+){1,2}(?:\.\d+)?)\]\s*([^:]+):\s*(.+)$",
         RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+    private static readonly Regex MonoWithoutLabel = new(@"^\[(\d+(?::\d+){1,2}(?:\.\d+)?)\]\s+(.+)$",
+        RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
     private static readonly Regex Words = new(@"[\p{L}\p{N}]+", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
 
     public async Task<string> BuildAsync(string directory, SessionData data, CancellationToken token)
@@ -106,10 +108,17 @@ public sealed class TranscriptAssembler
             if (line.Length > 32768) throw new InvalidDataException("Transcription utterance exceeds its bounded line limit.");
             if (rows.Count >= 4096) throw new InvalidDataException("Transcription exceeds its bounded utterance-count limit.");
             var match = LinePattern.Match(line);
-            if (!match.Success || !AudioTrimmer.TryParseTime(match.Groups[1].Value, out double seconds)
+            var missingLabel = !match.Success && (chunk.Source is "Me" or "Them") ? MonoWithoutLabel.Match(line) : Match.Empty;
+            if (!match.Success && (!missingLabel.Success
+                || missingLabel.Groups[2].Value.Contains(ChatApiClient.NoSpeechMarker, StringComparison.Ordinal)
+                || missingLabel.Groups[2].Value.EndsWith(':')))
+                throw new InvalidDataException("Chunk transcription has invalid/missing local timestamps; saved result retained for repair.");
+            string time = match.Success ? match.Groups[1].Value : missingLabel.Groups[1].Value;
+            string utteranceText = match.Success ? match.Groups[3].Value : missingLabel.Groups[2].Value;
+            if (!AudioTrimmer.TryParseTime(time, out double seconds)
                 || seconds > (chunk.EndFrame - chunk.StartFrame) / 48000d + 1)
                 throw new InvalidDataException("Chunk transcription has invalid/missing local timestamps; saved result retained for repair.");
-            string label = match.Groups[2].Value.Trim().ToLowerInvariant() switch
+            string label = (match.Success ? match.Groups[2].Value.Trim() : chunk.Source!).ToLowerInvariant() switch
             {
                 "me" => "Me", "them" => "Them", "unknown" => "Unknown",
                 _ when chunk.Source is null => "Unknown", // Preserve existing stereo checkpoints without another paid request.
@@ -117,7 +126,7 @@ public sealed class TranscriptAssembler
                     "only Me/Them/Unknown are accepted. Original response retained for diagnosis.")
             };
             long frame = chunk.SourceStartFrame + Math.Min((long)Math.Round(seconds * 48000), chunk.EndFrame - chunk.StartFrame);
-            rows.Add(new(frame, chunk.Source ?? label, match.Groups[3].Value, chunk.Index, index++));
+            rows.Add(new(frame, chunk.Source ?? label, utteranceText, chunk.Index, index++));
         }
         if (rows.Count == 0) throw new InvalidDataException("No timed utterances in saved chunk; full transcript not published.");
         rows = rows.OrderBy(r => r.Frame).ThenBy(r => r.Line).ToList();
