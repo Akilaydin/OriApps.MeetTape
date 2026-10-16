@@ -25,7 +25,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
         recordingShortcut = text; Changed();
     }
     private bool notificationActive;
-    private readonly Queue<string> warnings = new();
     private readonly Queue<OperationNotice> processingIssues = new();
     private DesktopSnapshot snapshot = new(new(false, TimeSpan.Zero, 0, 0, null), [], null, null, false, null);
     private bool refreshing;
@@ -103,7 +102,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
     }
     public string TrayText => $"MeetTape — {CaptureText} · {ProcessingText}" +
-        (HasError || HasProcessingErrors ? " · Error: open MeetTape" : HasWarnings ? " · Warning: open MeetTape" : "");
+        (HasError || HasProcessingErrors ? " · Error: open MeetTape" : "");
     public bool CanRecord => controller is not null && !busy && !updating && !shutdownStarted && NamingDirectory is null && snapshot.AwaitingTitleDirectory is null;
     public bool CanProcess => controller is not null && !busy && !updating && !shutdownStarted && !snapshot.Capture.IsActive && selected is not null && NamingDirectory is null;
     public bool CanPrepare => CanProcess && selected!.NeedsPreparation;
@@ -135,17 +134,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public bool IsRecording => snapshot.Capture.IsActive;
     public double MeLevel => IsRecording ? snapshot.Capture.MeLevel * 100 : 0;
     public double ThemLevel => IsRecording ? snapshot.Capture.ThemLevel * 100 : 0;
-    public string WarningText => string.Join(Environment.NewLine, warnings);
-    public bool HasWarnings => warnings.Count > 0;
     public bool HasError => ErrorText.Length > 0;
     public string ErrorSummary => Brief(ErrorText);
-    public string WarningSummary => IsRecording ? "Recording continues with warnings. See Details." : "Recording or preparation reported warnings. See Details.";
     public bool HasProcessingIssues => processingIssues.Count > 0;
     public bool HasProcessingErrors => processingIssues.Any(n => n.Kind == NoticeKind.Error);
     public string ProcessingIssueSummary => HasProcessingErrors
-        ? "Background processing reported an error. Select a meeting or open Details."
-        : "Background processing reported warnings. Select a meeting or open Details.";
-    public bool HasTiming => TimingText.Length > 0;
+        ? "Background processing reported an error. Open the affected meeting's Details."
+        : "Background processing reported warnings. Open the affected meeting's Details.";
     public bool IsPreparing => snapshot.Preparing;
     public string ErrorText { get; private set; } = "";
     public string InfoText { get; private set; } = "Close hides the window. Use tray Exit to stop MeetTape.";
@@ -155,17 +150,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string SelectedDiagnosticSummary => Brief(SelectedDiagnostic);
     public string SelectedMeetingDetails => selected is null ? "The selected meeting is no longer available." :
         $"{selected.Title}\n{selected.Date}\nDuration: {selected.Duration}\nStatus: {selected.DisplayStatus}\n{selected.Status}\n{selected.Progress}\n\n{selected.Details}\n\n{selected.Diagnostic}";
-    public string DiagnosticText => string.Join(Environment.NewLine + Environment.NewLine, new[]
-    {
-        DevicesText,
-        HasError ? "Current operation / recording:" + Environment.NewLine + ErrorText : "",
-        HasWarnings ? "Recording / preparation warnings:" + Environment.NewLine + WarningText : "",
-        TimingText,
-        HasProcessingIssues ? "Background processing (latest issues):" + Environment.NewLine +
-            string.Join(Environment.NewLine, processingIssues.Select(n => n.Message)) : "",
-        SelectedDiagnostic.Length > 0 ? "Selected meeting:" + Environment.NewLine + SelectedDiagnostic : ""
-    }.Where(text => text.Length > 0));
-
     private static string Brief(string text)
     {
         int end = text.IndexOfAny(['\r', '\n']);
@@ -173,29 +157,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
         int sentence = first.IndexOf(". ", StringComparison.Ordinal);
         if (sentence >= 0) first = first[..(sentence + 1)];
         return first.Length <= 180 ? first : first[..180] + "…";
-    }
-    public string DevicesText
-    {
-        get
-        {
-            var data = snapshot.Sessions.FirstOrDefault(s => s.Directory == snapshot.Capture.RecordingDirectory)?.Data;
-            return data is null ? "Me: microphone · Them: system playback" :
-                $"Me: {data.Capture.MeDevice?.Name ?? "microphone"} · Them: {data.Capture.ThemDevice?.Name ?? "system playback"}";
-        }
-    }
-    public string TimingText
-    {
-        get
-        {
-            var capture = snapshot.Capture;
-            string text = capture.ClockAdjustments == 0 && capture.Discontinuities == 0 ? "" :
-                FormattableString.Invariant($"Timing: Me {capture.MeTiming.Corrections} corrections, {capture.MeTiming.InvalidTimestamps} invalid timestamps, max shift {capture.MeTiming.LargestShiftFrames * 1000d / PcmTimeline.SampleRate:F3} ms; ") +
-                FormattableString.Invariant($"Them {capture.ThemTiming.Corrections} corrections, {capture.ThemTiming.InvalidTimestamps} invalid timestamps, max shift {capture.ThemTiming.LargestShiftFrames * 1000d / PcmTimeline.SampleRate:F3} ms. Discontinuities: {capture.Discontinuities}.") +
-                $" {capture.MeTiming.LastIssue} {capture.ThemTiming.LastIssue}";
-            if (!capture.IsActive && capture.AudioFrames > Math.Round(capture.Duration.TotalSeconds * PcmTimeline.SampleRate))
-                text += FormattableString.Invariant($" Recovered audio: {capture.AudioFrames / (double)PcmTimeline.SampleRate:F3}s saved; both tracks retained at the same length.");
-            return text;
-        }
     }
     public string? NamingDirectory { get; private set; }
     public bool IsNaming => NamingDirectory is not null;
@@ -253,12 +214,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             processingIssues.Enqueue(notice);
         }
         else if (notice.Kind == NoticeKind.Error) ErrorText = notice.Message;
-        else if (notice.Kind == NoticeKind.Warning)
-        {
-            if (warnings.Contains(notice.Message)) return;
-            if (warnings.Count == 8) warnings.Dequeue();
-            warnings.Enqueue(notice.Message);
-        }
+        else if (notice.Kind == NoticeKind.Warning) ErrorText = notice.Message;
         else InfoText = notice.Message;
         Changed();
     });
@@ -351,7 +307,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
         else
         {
-            warnings.Clear();
             await controller!.StartAsync();
         }
     });
@@ -364,7 +319,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
         await ExecuteAsync(async () =>
         {
             if ((await controller!.ReadAsync()).Capture.IsActive) return;
-            warnings.Clear();
             await controller.StartAsync();
             started = (await controller.ReadAsync()).Capture.IsActive;
         });
@@ -406,7 +360,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
         {
             await controller!.PrepareAsync(NamingDirectory!, MeetingTitle);
             NamingDirectory = null;
-            warnings.Clear();
             await controller.StartAsync();
         });
     }

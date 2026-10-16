@@ -216,35 +216,30 @@ public sealed class CaptureTests
         await Assert.ThrowsAsync<InvalidOperationException>(controller.StartAsync);
     }
     [Fact]
-    public void RepeatedTimingProblemsNotifyOnceUntilTheirImpactEscalates()
+    public void RepeatedTimingProblemsKeepAggregatedCountersWithoutWarnings()
     {
         var me = new FakeSource();
         var them = new FakeSource();
         using var capture = new CaptureCoordinator(() => new(me, them));
-        var warnings = new List<string>();
-        capture.Warning += warnings.Add;
         capture.Start();
         capture.ReportTiming(CaptureChannel.Them, new(AudioTimingIssueKind.Overlap, 1, 480, "one frame"));
         capture.ReportTiming(CaptureChannel.Them, new(AudioTimingIssueKind.Overlap, 2, 480, "two frames"));
-        Assert.Single(warnings);
         capture.ReportTiming(CaptureChannel.Them, new(AudioTimingIssueKind.Overlap, 960, 480, "larger than packet"));
         capture.ReportTiming(CaptureChannel.Them, new(AudioTimingIssueKind.Overlap, 970, 480, "still larger"));
-        Assert.Equal(2, warnings.Count);
         capture.ReportTiming(CaptureChannel.Them, new(AudioTimingIssueKind.InvalidTimestamp, 0, 480, "QPC invalid"));
         capture.ReportTiming(CaptureChannel.Them, new(AudioTimingIssueKind.Discontinuity, 0, 480, "WASAPI gap"));
-        Assert.Equal(4, warnings.Count);
-        Assert.All(warnings, warning => Assert.Contains("Recording continues", warning));
         Assert.True(capture.Status.IsActive);
         Assert.Equal(5, capture.Status.ClockAdjustments);
         Assert.Equal(1, capture.Status.Discontinuities);
         Assert.Equal(1, capture.Status.ThemTiming.InvalidTimestamps);
         Assert.Equal(970, capture.Status.ThemTiming.LargestShiftFrames);
+        Assert.Equal("WASAPI gap", capture.Status.ThemTiming.LastIssue);
         capture.Stop();
         Assert.Null(capture.Status.Error);
     }
 
     [Fact]
-    public async Task ControllerPublishesLiveWarningsAndRetainsTimingCounters()
+    public async Task ControllerDoesNotPublishTimingWarningsAndRetainsTimingCounters()
     {
         string example = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../config.example.json"));
         var config = ConfigurationLoader.Load(example);
@@ -257,7 +252,7 @@ public sealed class CaptureTests
         {
             await controller.StartAsync();
             capture.ReportTiming(CaptureChannel.Them, new(AudioTimingIssueKind.Overlap, 307, 480, "synthetic QPC regression"));
-            Assert.Contains(notices, notice => notice.Kind == NoticeKind.Warning && notice.Message.Contains("Recording continues"));
+            Assert.Empty(notices);
             var active = await controller.ReadAsync();
             Assert.True(active.Capture.IsActive);
             Assert.Equal(1, active.Capture.ClockAdjustments);
