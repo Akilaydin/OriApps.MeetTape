@@ -2,6 +2,7 @@
   "meetingsRoot": "Meetings",
   "capture": {
     "microphoneDeviceId": null,
+    "microphoneMode": "windowsDefault",
     "playbackDeviceId": null,
     "ffmpegPath": "ffmpeg"
   },

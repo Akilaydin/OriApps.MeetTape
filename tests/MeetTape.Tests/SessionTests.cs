@@ -294,6 +294,30 @@ public sealed class SessionTests : IDisposable
     }
 
     [Fact]
+    public void HistoricalSessionWithoutMicrophoneModeRemainsReadableWithoutTouchingAudioOrCheckpoint()
+    {
+        var created = SessionStore.Create(root, Data() with { RecordingState = RecordingState.Recorded });
+        created.Lease.Dispose();
+        string metadata = Path.Combine(created.Directory, "session.json");
+        var json = JsonNode.Parse(File.ReadAllText(metadata))!.AsObject();
+        json["capture"]!.AsObject().Remove("microphoneMode");
+        File.WriteAllText(metadata, json.ToJsonString());
+        byte[] originalMetadata = File.ReadAllBytes(metadata);
+        byte[] originalMe = [1, 2, 3];
+        byte[] originalThem = [4, 5, 6];
+        byte[] checkpoint = [7, 8, 9];
+        File.WriteAllBytes(Path.Combine(created.Directory, "me.mp3"), originalMe);
+        File.WriteAllBytes(Path.Combine(created.Directory, "them.mp3"), originalThem);
+        File.WriteAllBytes(Path.Combine(created.Directory, "checkpoint-fixture.json"), checkpoint);
+
+        Assert.Equal(MicrophoneCaptureMode.WindowsDefault, SessionStore.Read(created.Directory).Capture.MicrophoneMode);
+        Assert.Equal(originalMetadata, File.ReadAllBytes(metadata));
+        Assert.Equal(originalMe, File.ReadAllBytes(Path.Combine(created.Directory, "me.mp3")));
+        Assert.Equal(originalThem, File.ReadAllBytes(Path.Combine(created.Directory, "them.mp3")));
+        Assert.Equal(checkpoint, File.ReadAllBytes(Path.Combine(created.Directory, "checkpoint-fixture.json")));
+    }
+
+    [Fact]
     public void InvalidMetadataProducesSafeDiagnosticAndRetainsAudio()
     {
         Directory.CreateDirectory(Path.Combine(root, "broken"));

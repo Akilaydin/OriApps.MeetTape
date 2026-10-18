@@ -37,7 +37,8 @@ public sealed class Mp3Recorder
             session = new()
             {
                 Id = Guid.NewGuid(), StartedAtUtc = DateTimeOffset.UtcNow,
-                Capture = new(sources.MeDevice, sources.ThemDevice, NativeAudioFormat.From(sources.Me.WaveFormat), NativeAudioFormat.From(sources.Them.WaveFormat)),
+                Capture = new(sources.MeDevice, sources.ThemDevice, NativeAudioFormat.From(sources.Me.WaveFormat), NativeAudioFormat.From(sources.Them.WaveFormat))
+                { MicrophoneMode = configuration.Settings.Capture.MicrophoneMode },
                 Processing = new(configuration.Settings.ChunkSeconds, configuration.Settings.Transcription, configuration.Settings.Summary,
                     configuration.Directory, configuration.Settings.MeDisplayName),
                 Stages = new()

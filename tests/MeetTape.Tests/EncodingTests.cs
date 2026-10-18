@@ -262,12 +262,13 @@ public sealed class EncodingTests : IDisposable
         var first = config with { Settings = config.Settings with
         {
             MeetingsRoot = Path.Combine(directory, "first"), ChunkSeconds = 60,
-            Capture = config.Settings.Capture with { MicrophoneDeviceId = "first-mic" }
+            Capture = config.Settings.Capture with { MicrophoneDeviceId = "first-mic", MicrophoneMode = MicrophoneCaptureMode.WindowsDefault }
         } };
         var next = first with { Settings = first.Settings with
         {
             MeetingsRoot = Path.Combine(directory, "next"), ChunkSeconds = 90,
-            Capture = first.Settings.Capture with { MicrophoneDeviceId = "next-mic", PlaybackDeviceId = "next-playback" },
+            Capture = first.Settings.Capture with { MicrophoneDeviceId = "next-mic", PlaybackDeviceId = "next-playback",
+                MicrophoneMode = MicrophoneCaptureMode.WindowsCommunications },
             Stages = new() { Trim = false, Transcribe = false },
             Transcription = first.Settings.Transcription with { Model = "next-model" }
         } };
@@ -291,9 +292,11 @@ public sealed class EncodingTests : IDisposable
             Assert.Single(opened);
             Assert.True((await controller.ReadAsync()).Capture.IsActive);
             Assert.Equal(recordedContract, SessionStore.Read(previous).Processing);
+            Assert.Equal(MicrophoneCaptureMode.WindowsDefault, SessionStore.Read(previous).Capture.MicrophoneMode);
             sources[0].Me.Emit(); sources[0].Them.Emit();
             previous = (await controller.StopAsync())!;
             Assert.Equal(RecordingState.Recorded, SessionStore.Read(previous).RecordingState);
+            Assert.Equal(MicrophoneCaptureMode.WindowsDefault, SessionStore.Read(previous).Capture.MicrophoneMode);
             byte[] originalMe = File.ReadAllBytes(Path.Combine(previous, "me.mp3"));
             byte[] originalThem = File.ReadAllBytes(Path.Combine(previous, "them.mp3"));
             await controller.PrepareAsync(previous, "First meeting");
@@ -304,6 +307,7 @@ public sealed class EncodingTests : IDisposable
             Assert.StartsWith(next.MeetingsRoot + Path.DirectorySeparatorChar, current);
             Assert.Equal(new[] { first.Settings.Capture, next.Settings.Capture }, opened);
             var data = SessionStore.Read(current);
+            Assert.Equal(MicrophoneCaptureMode.WindowsCommunications, data.Capture.MicrophoneMode);
             Assert.Equal(90, data.Processing.ChunkSeconds);
             Assert.Equal("next-model", data.Processing.Transcription.Model);
             Assert.False(data.Stages["transcribe"].Enabled);

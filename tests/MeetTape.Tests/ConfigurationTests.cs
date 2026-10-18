@@ -80,9 +80,38 @@ public sealed class ConfigurationTests : IDisposable
         Assert.Equal(Path.Combine(directory, "Meetings"), config.MeetingsRoot);
         Assert.Equal(120, config.Settings.ChunkSeconds);
         Assert.Null(config.Settings.Capture.MicrophoneDeviceId);
+        Assert.Equal(MicrophoneCaptureMode.WindowsDefault, config.Settings.Capture.MicrophoneMode);
         Assert.False(config.Settings.Stages.Summary);
         File.WriteAllText(Path.Combine(directory, "prompt.md"), "Edited prompt");
         Assert.Equal("Edited prompt", config.ReadPrompt(config.Settings.Transcription));
+    }
+
+    [Fact]
+    public void ExistingConfigurationsDefaultToUnprocessedMicrophoneAndExplicitModesRoundTrip()
+    {
+        json["capture"] = new JsonObject { ["microphoneDeviceId"] = "fixture-mic" };
+        Assert.Equal(MicrophoneCaptureMode.WindowsDefault, Load().Settings.Capture.MicrophoneMode);
+        json["capture"]!["microphoneMode"] = "windowsCommunications";
+        Assert.Equal(MicrophoneCaptureMode.WindowsCommunications, Load().Settings.Capture.MicrophoneMode);
+        json["capture"]!["microphoneMode"] = "windowsDefault";
+        Assert.Equal(MicrophoneCaptureMode.WindowsDefault, Load().Settings.Capture.MicrophoneMode);
+    }
+
+    [Theory]
+    [InlineData("unknown")]
+    [InlineData("communications")]
+    [InlineData("1")]
+    public void RejectsUnsupportedMicrophoneMode(string value)
+    {
+        json["capture"] = new JsonObject { ["microphoneMode"] = value };
+        Assert.Throws<InvalidDataException>(() => Load());
+    }
+
+    [Fact]
+    public void RejectsNumericMicrophoneMode()
+    {
+        json["capture"] = new JsonObject { ["microphoneMode"] = 1 };
+        Assert.Throws<InvalidDataException>(() => Load());
     }
 
     [Theory]

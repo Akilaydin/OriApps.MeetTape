@@ -12,6 +12,9 @@
           <StackPanel Spacing="8" Margin="4,12,8,8">
             <TextBlock Text="Microphone (Me)" />
             <ComboBox Name="MicrophoneChoice" ItemsSource="{Binding Microphones}" SelectedItem="{Binding Microphone}" HorizontalAlignment="Stretch" />
+            <TextBlock Text="Microphone processing (Me only)" />
+            <ComboBox Name="MicrophoneModeChoice" ItemsSource="{Binding MicrophoneModes}" SelectedItem="{Binding MicrophoneMode}" HorizontalAlignment="Stretch" />
+            <TextBlock Text="Windows Default keeps the current capture behavior. Windows Communications requests device-dependent Windows effects (such as noise suppression and echo cancellation); they are not guaranteed. Windows may lower other playback audio (ducking), so check Them and quiet speech after switching. Applies to the next recording only." TextWrapping="Wrap" Opacity="0.7" />
             <TextBlock Text="System playback (Them)" />
             <ComboBox ItemsSource="{Binding PlaybackDevices}" SelectedItem="{Binding Playback}" HorizontalAlignment="Stretch" />
             <TextBlock Text="Meetings folder" /><TextBox Name="MeetingsFolder" Text="{Binding MeetingsRoot}" />

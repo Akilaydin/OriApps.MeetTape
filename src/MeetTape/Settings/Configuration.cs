@@ -23,8 +23,11 @@ public sealed record CaptureSettings
 {
     public string? MicrophoneDeviceId { get; init; }
     public string? PlaybackDeviceId { get; init; }
+    public MicrophoneCaptureMode MicrophoneMode { get; init; } = MicrophoneCaptureMode.WindowsDefault;
     public string FfmpegPath { get; init; } = "ffmpeg";
 }
+
+public enum MicrophoneCaptureMode { WindowsDefault, WindowsCommunications }
 
 public sealed record StageSettings
 {
@@ -91,7 +94,8 @@ public static class ConfigurationLoader
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
-        RespectNullableAnnotations = true
+        RespectNullableAnnotations = true,
+        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase, allowIntegerValues: false) }
     };
 
     public static LoadedConfiguration Load(string path) =>
@@ -139,6 +143,8 @@ public static class ConfigurationLoader
             throw new InvalidDataException("stages.summary requires stages.transcribe to be enabled.");
         if (string.IsNullOrWhiteSpace(settings.Capture.FfmpegPath))
             throw new InvalidDataException("capture.ffmpegPath is required.");
+        if (!Enum.IsDefined(settings.Capture.MicrophoneMode))
+            throw new InvalidDataException("capture.microphoneMode must be windowsDefault or windowsCommunications.");
         _ = RecordingHotkey.Parse(settings.RecordingHotkey);
         ValidateApi(settings.Transcription, "transcription");
         ValidateApi(settings.Summary, "summary");
