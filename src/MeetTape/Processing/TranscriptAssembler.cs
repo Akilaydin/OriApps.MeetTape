@@ -123,6 +123,8 @@ public sealed class TranscriptAssembler
                 {
                     // A final orphan marker is harmless only after a complete utterance with no following speech.
                     if (i == markers.Count - 1 && rows.Count > 0 && HasCompleteEnding(rows[^1].Text)
+                        && AudioTrimmer.TryParseTime(markers[i].Value[1..^1], out double orphanSeconds)
+                        && orphanSeconds <= (chunk.EndFrame - chunk.StartFrame) / 48000d + 0.05
                         && string.IsNullOrWhiteSpace(input.ReadToEnd())) break;
                     throw new InvalidDataException("Chunk transcription ends in an incomplete or ambiguous timed utterance.");
                 }

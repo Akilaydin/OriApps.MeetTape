@@ -325,6 +325,8 @@ public sealed class TranscriptTests : IDisposable
     [Theory]
     [InlineData("[00:00] Them: А. [00:12] Them:")]
     [InlineData("[00:00] Them: модель говорит [00:12] секунд")]
+    [InlineData("[00:00] Them: А. [99:99]")]
+    [InlineData("[00:00] Them: А. [00:16]")]
     [InlineData("[00:00] Them: А [00:12]")]
     [InlineData("[00:00] Them: А. [00:12] Б [00:14]")]
     [InlineData("[00:00] Them: А. [00:16] Them: Б.")]
