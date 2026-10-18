@@ -15,6 +15,11 @@ public sealed record DeviceChoice(string? Id, string Label)
     public override string ToString() => Label;
 }
 
+public sealed record MicrophoneModeChoice(MicrophoneCaptureMode Value, string Label)
+{
+    public override string ToString() => Label;
+}
+
 public sealed class SettingsViewModel : INotifyPropertyChanged
 {
     private string original;
@@ -29,8 +34,14 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     public string ConfigurationPath { get; }
     public IReadOnlyList<DeviceChoice> Microphones { get; }
     public IReadOnlyList<DeviceChoice> PlaybackDevices { get; }
+    public IReadOnlyList<MicrophoneModeChoice> MicrophoneModes { get; } =
+    [
+        new(MicrophoneCaptureMode.WindowsDefault, "Windows Default"),
+        new(MicrophoneCaptureMode.WindowsCommunications, "Windows Communications")
+    ];
     public DeviceChoice Microphone { get; set; }
     public DeviceChoice Playback { get; set; }
+    public MicrophoneModeChoice MicrophoneMode { get; set; }
     public string MeetingsRoot { get; set; }
     public string FfmpegPath { get; set; }
     public string RecordingHotkey { get; set; }
@@ -91,13 +102,14 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         PlaybackDevices = Choices(devices, CaptureChannel.Them, settings.Capture.PlaybackDeviceId);
         Microphone = Microphones.Single(d => d.Id == settings.Capture.MicrophoneDeviceId);
         Playback = PlaybackDevices.Single(d => d.Id == settings.Capture.PlaybackDeviceId);
+        MicrophoneMode = MicrophoneModes.Single(mode => mode.Value == settings.Capture.MicrophoneMode);
         string directory = Path.GetDirectoryName(ConfigurationPath)!;
         transcriptionDocument = new(Path.GetFullPath(TranscriptionPrompt, directory), "transcription");
         summaryDocument = new(Path.GetFullPath(SummaryPrompt, directory), "summary");
         originalFields = Fields();
     }
 
-    private string[] Fields() => [Microphone.Id ?? "", Playback.Id ?? "", MeetingsRoot, FfmpegPath,
+    private string[] Fields() => [Microphone.Id ?? "", Playback.Id ?? "", MicrophoneMode.Value.ToString(), MeetingsRoot, FfmpegPath,
         Trim.ToString(), Transcribe.ToString(), Summary.ToString(), ChunkSeconds, MeDisplayName, RecordingHotkey,
         TranscriptionEndpoint, TranscriptionModel, TranscriptionPrompt, TranscriptionKeyVariable,
         SummaryEndpoint, SummaryModel, SummaryPrompt, SummaryKeyVariable, ReminderEditor.Signature];
@@ -141,6 +153,8 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             json["capture"] ??= new JsonObject();
             json["capture"]!["microphoneDeviceId"] = Microphone.Id;
             json["capture"]!["playbackDeviceId"] = Playback.Id;
+            if (json["capture"]!.AsObject().ContainsKey("microphoneMode") || MicrophoneMode.Value != MicrophoneCaptureMode.WindowsDefault)
+                json["capture"]!["microphoneMode"] = JsonNamingPolicy.CamelCase.ConvertName(MicrophoneMode.Value.ToString());
             json["capture"]!["ffmpegPath"] = FfmpegPath.Trim();
             if (json.ContainsKey("recordingHotkey") || RecordingHotkey != RecordingHotkeyBinding.DefaultShortcut)
                 json["recordingHotkey"] = RecordingHotkey;

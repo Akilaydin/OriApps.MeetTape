@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using OriApps.MeetTape.Settings;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 
@@ -21,12 +22,34 @@ public sealed class WasapiPacketCapture : IWaveIn
     private Thread? worker;
     private bool disposed;
 
-    public WasapiPacketCapture(MMDevice device, bool loopback)
+    public WasapiPacketCapture(MMDevice device, bool loopback, MicrophoneCaptureMode microphoneMode = MicrophoneCaptureMode.WindowsDefault)
     {
-        client = device.AudioClient;
+        client = device.CreateAudioClient();
         this.loopback = loopback;
-        try { WaveFormat = client.MixFormat; }
+        try
+        {
+            ApplyMicrophoneMode(loopback, microphoneMode, client.SetClientProperties);
+            WaveFormat = client.MixFormat;
+        }
         catch { client.Dispose(); throw; }
+    }
+
+    internal static void ApplyMicrophoneMode(bool loopback, MicrophoneCaptureMode mode, Action<AudioStreamCategory> setCategory)
+    {
+        if (loopback)
+        {
+            if (mode != MicrophoneCaptureMode.WindowsDefault)
+                throw new InvalidDataException("System playback (Them) does not support microphone processing modes.");
+            return;
+        }
+        if (mode == MicrophoneCaptureMode.WindowsDefault) return;
+        if (mode != MicrophoneCaptureMode.WindowsCommunications)
+            throw new InvalidDataException("Unknown microphone capture mode.");
+        try { setCategory(AudioStreamCategory.Communications); }
+        catch (Exception ex) when (ex is COMException or InvalidOperationException or NotSupportedException)
+        {
+            throw new RecordingException("The selected microphone cannot use Windows Communications. Choose Windows Default in Settings → Recording.");
+        }
     }
 
     public WaveFormat WaveFormat { get; set; }

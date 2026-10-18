@@ -42,7 +42,7 @@ public static class AudioDevices
         {
             me = Select(enumerator, settings.MicrophoneDeviceId, DataFlow.Capture);
             them = Select(enumerator, settings.PlaybackDeviceId, DataFlow.Render);
-            microphone = new WasapiPacketCapture(me, loopback: false);
+            microphone = new WasapiPacketCapture(me, loopback: false, settings.MicrophoneMode);
             loopback = new WasapiPacketCapture(them, loopback: true);
             return new CaptureSources(microphone, loopback, me, them)
             {
