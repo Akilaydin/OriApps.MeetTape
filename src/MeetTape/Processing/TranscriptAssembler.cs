@@ -19,6 +19,8 @@ public sealed class TranscriptAssembler
         RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
     private static readonly Regex TimeMarkers = new(@"\[\d+(?::\d+){1,2}(?:\.\d+)?\]",
         RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+    private static readonly Regex SilenceWrapper = new(@"^\s*(?:\[(?<time>\d+(?::\d+){1,2}(?:\.\d+)?)\]\s*)?(?:(?:Me|Them):\s*)?\[NO_SPEECH\]\s*$",
+        RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
     private static readonly Regex Words = new(@"[\p{L}\p{N}]+", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
 
     public async Task<string> BuildAsync(string directory, SessionData data, CancellationToken token)
@@ -100,12 +102,23 @@ public sealed class TranscriptAssembler
     private static List<Utterance> Parse(string text, AudioChunk chunk, CancellationToken token)
     {
         if (text.Trim() == ChatApiClient.NoSpeechMarker) return [];
+        bool mono = chunk.Source is "Me" or "Them";
+        if (mono && SilenceWrapper.Match(text) is { Success: true } silence)
+        {
+            string timestamp = silence.Groups["time"].Value;
+            if (timestamp.Length == 0 || AudioTrimmer.TryParseTime(timestamp, out double at)
+                && at <= (chunk.EndFrame - chunk.StartFrame) / 48000d + TimestampRoundingToleranceSeconds)
+                return []; // A model silence claim is not independent acoustic evidence.
+            throw new InvalidDataException("Chunk transcription has invalid/missing local timestamps; saved result retained for repair.");
+        }
         if (text.Contains(ChatApiClient.NoSpeechMarker, StringComparison.Ordinal))
             throw new InvalidDataException("Chunk transcription combines [NO_SPEECH] with other content.");
+        if (mono) text = NormalizeMonoTimestamps(text);
         var rows = new List<Utterance>();
         using var input = new StringReader(text);
         string? line;
         int index = 0;
+        double? previousMonoTimestamp = null;
         while ((line = input.ReadLine()) is not null)
         {
             token.ThrowIfCancellationRequested();
@@ -131,16 +144,23 @@ public sealed class TranscriptAssembler
                     throw new InvalidDataException("Chunk transcription ends in an incomplete or ambiguous timed utterance.");
                 }
                 var match = LinePattern.Match(segment);
+                if (match.Success && mono && !IsKnownSource(match.Groups[2].Value.Trim())
+                    && IsClearlySpokenPrefix(match.Groups[2].Value))
+                    match = Match.Empty; // A spoken clause with ':' is not a speaker label.
                 if (i > 0 && !match.Success && !HasCompleteEnding(rows[^1].Text))
                     throw new InvalidDataException("Joined timestamp has no clear utterance boundary or explicit source label.");
                 var missingLabel = !match.Success && (chunk.Source is "Me" or "Them") ? MonoWithoutLabel.Match(segment) : Match.Empty;
-                if (!match.Success && (!missingLabel.Success || missingLabel.Groups[2].Value.EndsWith(':')))
+                if (!match.Success && (!missingLabel.Success || missingLabel.Groups[2].Value.EndsWith(':')
+                    && !IsClearlySpokenPrefix(missingLabel.Groups[2].Value.TrimEnd(':'))))
                     throw new InvalidDataException("Chunk transcription has invalid/missing local timestamps; saved result retained for repair.");
                 string time = match.Success ? match.Groups[1].Value : missingLabel.Groups[1].Value;
                 string utteranceText = match.Success ? match.Groups[3].Value : missingLabel.Groups[2].Value;
                 if (!AudioTrimmer.TryParseTime(time, out double seconds)
                     || seconds > (chunk.EndFrame - chunk.StartFrame) / 48000d + TimestampRoundingToleranceSeconds)
                     throw new InvalidDataException("Chunk transcription has invalid/missing local timestamps; saved result retained for repair.");
+                if (mono && previousMonoTimestamp is { } previous && seconds < previous)
+                    throw new InvalidDataException("Chunk timestamps are out of chronological order; original response retained for repair.");
+                if (mono) previousMonoTimestamp = seconds;
                 string label = (match.Success ? match.Groups[2].Value.Trim() : chunk.Source!).ToLowerInvariant() switch
                 {
                     "me" => "Me", "them" => "Them", "unknown" => "Unknown",
@@ -153,7 +173,8 @@ public sealed class TranscriptAssembler
             }
         }
         if (rows.Count == 0) throw new InvalidDataException("No timed utterances in saved chunk; full transcript not published.");
-        rows = rows.OrderBy(r => r.Frame).ThenBy(r => r.Line).ToList();
+        // Keep legacy stereo checkpoints compatible; mono chronology was checked in input order.
+        if (!mono) rows = rows.OrderBy(r => r.Frame).ThenBy(r => r.Line).ToList();
         var nextBySpeaker = new Dictionary<string, long>(StringComparer.Ordinal);
         for (int i = rows.Count - 1; i >= 0; i--)
         {
@@ -164,6 +185,60 @@ public sealed class TranscriptAssembler
         }
         return rows;
     }
+
+    // Normalize only unambiguous record boundaries. The raw model reply remains in ChunkResult.Text;
+    // both validation and final assembly apply this identical deterministic interpretation.
+    internal static string NormalizeMonoTimestamps(string text)
+    {
+        var normalized = new StringBuilder(text.Length + 16);
+        using var reader = new StringReader(text);
+        string? line;
+        while ((line = reader.ReadLine()) is not null)
+        {
+            // Normalization must not evade the original bounded input-line contract.
+            if (line.Length > 32768)
+                throw new InvalidDataException("Transcription utterance exceeds its bounded line limit.");
+            var markers = TimeMarkers.Matches(line);
+            if (markers.Count < 2 || markers[0].Index != 0)
+            {
+                normalized.AppendLine(line);
+                continue;
+            }
+            bool unambiguous = true;
+            for (int i = 1; i < markers.Count; i++)
+            {
+                string prior = line[(markers[i - 1].Index + markers[i - 1].Length)..markers[i].Index].Trim();
+                int end = i + 1 < markers.Count ? markers[i + 1].Index : line.Length;
+                string next = line[(markers[i].Index + markers[i].Length)..end].TrimStart();
+                var explicitSource = LinePattern.Match(markers[i].Value + " " + next);
+                bool explicitlyLabeled = explicitSource.Success && IsKnownSource(explicitSource.Groups[2].Value.Trim());
+                // A lone time mention inside unfinished speech is ambiguous. A multi-phrase
+                // sequence or a substantial next phrase provides a structural boundary.
+                if (!explicitlyLabeled && !HasCompleteEnding(prior)
+                    && (next.Length == 0 || markers.Count == 2 && Words.Matches(next).Count < 3 && !HasCompleteEnding(next)))
+                { unambiguous = false; break; }
+            }
+            if (!unambiguous)
+            {
+                normalized.AppendLine(line);
+                continue;
+            }
+            for (int i = 0; i < markers.Count; i++)
+            {
+                int end = i + 1 < markers.Count ? markers[i + 1].Index : line.Length;
+                normalized.AppendLine(line[markers[i].Index..end].TrimEnd());
+            }
+        }
+        return normalized.ToString();
+    }
+
+    private static bool IsKnownSource(string label) => label.Equals("Me", StringComparison.OrdinalIgnoreCase)
+        || label.Equals("Them", StringComparison.OrdinalIgnoreCase)
+        || label.Equals("Unknown", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsClearlySpokenPrefix(string text) => Words.Matches(text).Count >= 4
+        && text.Any(c => c is >= '\u0400' and <= '\u052F')
+        || text.Any(c => c is >= 'A' and <= 'Z') && !text.Any(c => c is >= 'a' and <= 'z');
 
     private static bool HasCompleteEnding(string text)
     {
