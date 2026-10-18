@@ -74,7 +74,8 @@ public static class SessionStore
         if (data is null || data.SchemaVersion != 1 || data.Id == Guid.Empty || data.Capture is null || data.Processing is null
             || data.Capture.MeFormat is null || data.Capture.ThemFormat is null || data.Processing.Transcription is null || data.Processing.Summary is null
             || data.Trim is null || data.Stages is null || data.Stages.Values.Any(s => s is null)
-            || data.DurationSeconds is < 0 || data.DurationSeconds is { } duration && !double.IsFinite(duration))
+            || data.DurationSeconds is < 0 || data.DurationSeconds is { } duration && !double.IsFinite(duration)
+            || data.Retry is { InvalidTimedTextFailures: < 0 or > 1 })
             throw new InvalidDataException("Unsupported or invalid session metadata; original files were not changed.");
         return data;
     }

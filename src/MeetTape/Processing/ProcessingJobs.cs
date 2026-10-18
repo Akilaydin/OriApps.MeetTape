@@ -116,7 +116,11 @@ public sealed class ProcessingJobs : IDisposable
         foreach (string name in ProcessingStages)
             if (stages.TryGetValue(name, out var stage) && stage.Enabled && stage.Status == StageState.Paused)
                 stages[name] = stage with { Status = StageState.Pending };
+        // A deliberate Resume starts a new bounded timed-text attempt without altering HTTP retry counts.
+        var retry = data.Retry is { InvalidTimedTextFailures: > 0 } invalid
+            ? invalid with { InvalidTimedTextFailures = 0, NextAttemptUtc = utcNow() } : data.Retry;
         SessionStore.Save(directory, data with { Stages = stages, JobState = JobState.NotStarted, Error = null,
+            Retry = retry,
             Processing = data.Processing with { Transcription = config.Settings.Transcription, Summary = config.Settings.Summary,
                 ConfigurationDirectory = config.Directory, MeDisplayName = config.Settings.MeDisplayName } });
         lock (sessionGate) blocked.Remove(directory);
@@ -294,7 +298,8 @@ public sealed class ProcessingJobs : IDisposable
                                             "Check the provider/settings, then Resume; valid earlier chunks are retained.", ex.Status);
                                     var backoff = Backoff(attempts, ex.RetryAfter);
                                     AppDiagnostics.Error("processing", $"Transcribe chunk {chunk.Index}; attempt {attempts}; retry in {backoff.TotalSeconds:F0}s", ex);
-                                    data = data with { Retry = new(chunk.Index, attempts, utcNow() + backoff), Error = ex.Message };
+                                    int invalidFailures = data.Retry?.ChunkIndex == chunk.Index ? data.Retry.InvalidTimedTextFailures : 0;
+                                    data = data with { Retry = new(chunk.Index, attempts, utcNow() + backoff, invalidFailures), Error = ex.Message };
                                     SessionStore.Save(directory, data);
                                     Report($"Job {data.Id}: chunk {chunk.Index} transient failure; retry in {backoff.TotalSeconds:F0}s. {ex.Message}", NoticeKind.Warning, data.Id);
                                     return; // Leave this session ready for a later pass; process other meetings now.
@@ -307,9 +312,23 @@ public sealed class ProcessingJobs : IDisposable
                             string rejected = Path.Combine(directory, "chunks", $"{chunk.Index:D4}.rejected-{Guid.NewGuid():N}.json");
                             if (saved) File.Move(checkpoint, rejected, overwrite: false);
                             else ChunkStore.SaveFile(rejected, result);
+                            int invalidFailures = data.Retry?.ChunkIndex == chunk.Index ? data.Retry.InvalidTimedTextFailures : 0;
+                            if (!saved && invalidFailures == 0)
+                            {
+                                int httpAttempts = data.Retry?.ChunkIndex == chunk.Index ? data.Retry.Attempts : 0;
+                                var backoff = TimeSpan.FromSeconds(1);
+                                data = data with { Retry = new(chunk.Index, httpAttempts, utcNow() + backoff, 1),
+                                    Error = $"Chunk {chunk.Index} has invalid timed text; one automatic retry scheduled. {ex.Message}" };
+                                SessionStore.Save(directory, data);
+                                AppDiagnostics.Error("processing", $"Chunk {chunk.Index} invalid timed text; saved rejected response; one automatic retry scheduled", ex);
+                                Report($"Job {data.Id}: chunk {chunk.Index} format invalid; retry once in {backoff.TotalSeconds:F0}s. Earlier chunks retained.",
+                                    NoticeKind.Warning, data.Id);
+                                return;
+                            }
                             throw new ChatApiException(ApiFailureKind.InvalidResponse,
                                 $"Chunk {chunk.Index} has invalid timed text. {ex.Message} " +
-                                "Response retained in chunks/*.rejected-*.json. Check the transcription prompt/settings, then Resume to retry this chunk; valid earlier chunks are retained.");
+                                "Response retained in chunks/*.rejected-*.json. Automatic format retry exhausted or saved checkpoint invalid; " +
+                                "check the transcription prompt/settings, then Resume to retry this chunk; valid earlier chunks are retained.");
                         }
                         if (!saved)
                         {

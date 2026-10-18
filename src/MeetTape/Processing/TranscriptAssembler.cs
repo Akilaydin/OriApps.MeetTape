@@ -15,6 +15,8 @@ public sealed class TranscriptAssembler
         RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
     private static readonly Regex MonoWithoutLabel = new(@"^\[(\d+(?::\d+){1,2}(?:\.\d+)?)\]\s+(.+)$",
         RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+    private static readonly Regex TimeMarkers = new(@"\[\d+(?::\d+){1,2}(?:\.\d+)?\]",
+        RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
     private static readonly Regex Words = new(@"[\p{L}\p{N}]+", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
 
     public async Task<string> BuildAsync(string directory, SessionData data, CancellationToken token)
@@ -96,6 +98,8 @@ public sealed class TranscriptAssembler
     private static List<Utterance> Parse(string text, AudioChunk chunk, CancellationToken token)
     {
         if (text.Trim() == ChatApiClient.NoSpeechMarker) return [];
+        if (text.Contains(ChatApiClient.NoSpeechMarker, StringComparison.Ordinal))
+            throw new InvalidDataException("Chunk transcription combines [NO_SPEECH] with other content.");
         var rows = new List<Utterance>();
         using var input = new StringReader(text);
         string? line;
@@ -106,27 +110,43 @@ public sealed class TranscriptAssembler
             line = line.Trim();
             if (line.Length == 0 || line is "```" or "```markdown") continue;
             if (line.Length > 32768) throw new InvalidDataException("Transcription utterance exceeds its bounded line limit.");
-            if (rows.Count >= 4096) throw new InvalidDataException("Transcription exceeds its bounded utterance-count limit.");
-            var match = LinePattern.Match(line);
-            var missingLabel = !match.Success && (chunk.Source is "Me" or "Them") ? MonoWithoutLabel.Match(line) : Match.Empty;
-            if (!match.Success && (!missingLabel.Success
-                || missingLabel.Groups[2].Value.Contains(ChatApiClient.NoSpeechMarker, StringComparison.Ordinal)
-                || missingLabel.Groups[2].Value.EndsWith(':')))
+            var markers = TimeMarkers.Matches(line);
+            if (markers.Count == 0 || markers[0].Index != 0)
                 throw new InvalidDataException("Chunk transcription has invalid/missing local timestamps; saved result retained for repair.");
-            string time = match.Success ? match.Groups[1].Value : missingLabel.Groups[1].Value;
-            string utteranceText = match.Success ? match.Groups[3].Value : missingLabel.Groups[2].Value;
-            if (!AudioTrimmer.TryParseTime(time, out double seconds)
-                || seconds > (chunk.EndFrame - chunk.StartFrame) / 48000d + 1)
-                throw new InvalidDataException("Chunk transcription has invalid/missing local timestamps; saved result retained for repair.");
-            string label = (match.Success ? match.Groups[2].Value.Trim() : chunk.Source!).ToLowerInvariant() switch
+            for (int i = 0; i < markers.Count; i++)
             {
-                "me" => "Me", "them" => "Them", "unknown" => "Unknown",
-                _ when chunk.Source is null => "Unknown", // Preserve existing stereo checkpoints without another paid request.
-                _ => throw new InvalidDataException($"Unexpected source label in chunk {chunk.Index}, utterance {index + 1}; " +
-                    "only Me/Them/Unknown are accepted. Original response retained for diagnosis.")
-            };
-            long frame = chunk.SourceStartFrame + Math.Min((long)Math.Round(seconds * 48000), chunk.EndFrame - chunk.StartFrame);
-            rows.Add(new(frame, chunk.Source ?? label, utteranceText, chunk.Index, index++));
+                token.ThrowIfCancellationRequested();
+                if (rows.Count >= 4096) throw new InvalidDataException("Transcription exceeds its bounded utterance-count limit.");
+                int end = i + 1 < markers.Count ? markers[i + 1].Index : line.Length;
+                string segment = line[markers[i].Index..end].Trim();
+                if (segment == markers[i].Value)
+                {
+                    // A final orphan marker is harmless only after a complete utterance with no following speech.
+                    if (i == markers.Count - 1 && rows.Count > 0 && HasCompleteEnding(rows[^1].Text)
+                        && string.IsNullOrWhiteSpace(input.ReadToEnd())) break;
+                    throw new InvalidDataException("Chunk transcription ends in an incomplete or ambiguous timed utterance.");
+                }
+                var match = LinePattern.Match(segment);
+                if (i > 0 && !match.Success && !HasCompleteEnding(rows[^1].Text))
+                    throw new InvalidDataException("Joined timestamp has no clear utterance boundary or explicit source label.");
+                var missingLabel = !match.Success && (chunk.Source is "Me" or "Them") ? MonoWithoutLabel.Match(segment) : Match.Empty;
+                if (!match.Success && (!missingLabel.Success || missingLabel.Groups[2].Value.EndsWith(':')))
+                    throw new InvalidDataException("Chunk transcription has invalid/missing local timestamps; saved result retained for repair.");
+                string time = match.Success ? match.Groups[1].Value : missingLabel.Groups[1].Value;
+                string utteranceText = match.Success ? match.Groups[3].Value : missingLabel.Groups[2].Value;
+                if (!AudioTrimmer.TryParseTime(time, out double seconds)
+                    || seconds > (chunk.EndFrame - chunk.StartFrame) / 48000d + 0.05)
+                    throw new InvalidDataException("Chunk transcription has invalid/missing local timestamps; saved result retained for repair.");
+                string label = (match.Success ? match.Groups[2].Value.Trim() : chunk.Source!).ToLowerInvariant() switch
+                {
+                    "me" => "Me", "them" => "Them", "unknown" => "Unknown",
+                    _ when chunk.Source is null => "Unknown", // Preserve existing stereo checkpoints without another paid request.
+                    _ => throw new InvalidDataException($"Unexpected source label in chunk {chunk.Index}, utterance {index + 1}; " +
+                        "only Me/Them/Unknown are accepted. Original response retained for diagnosis.")
+                };
+                long frame = chunk.SourceStartFrame + Math.Min((long)Math.Round(seconds * 48000), chunk.EndFrame - chunk.StartFrame);
+                rows.Add(new(frame, chunk.Source ?? label, utteranceText, chunk.Index, index++));
+            }
         }
         if (rows.Count == 0) throw new InvalidDataException("No timed utterances in saved chunk; full transcript not published.");
         rows = rows.OrderBy(r => r.Frame).ThenBy(r => r.Line).ToList();
@@ -139,6 +159,13 @@ public sealed class TranscriptAssembler
             nextBySpeaker[row.Speaker] = row.Frame;
         }
         return rows;
+    }
+
+    private static bool HasCompleteEnding(string text)
+    {
+        text = text.TrimEnd(' ', '\t', '"', '\'', '»', '”', ')');
+        return text.EndsWith('.') && !text.EndsWith("..", StringComparison.Ordinal)
+            || text.EndsWith('!') || text.EndsWith('?');
     }
 
     private static string? Reconcile(Utterance row, List<Utterance> previous, HashSet<int> consumedPreviousLines,

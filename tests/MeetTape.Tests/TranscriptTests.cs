@@ -296,6 +296,49 @@ public sealed class TranscriptTests : IDisposable
     }
 
     [Theory]
+    [InlineData("[00:00] Them: А. [00:12] Them: Б.")]
+    [InlineData("[00:00] А. [00:12] Б.")]
+    [InlineData("[00:00] Them: А. [00:12] Б.")]
+    [InlineData("[00:00] А. [00:12] Me: Б.")]
+    [InlineData("[00:00] Them: А. [00:12] Б. [00:14]")]
+    public async Task JoinedMonoTimestampsSplitIntoIndependentTrackAttributedUtterances(string reply)
+    {
+        string directory = Prepare(["[NO_SPEECH]", reply], seconds: 15, totalSeconds: 15, mono: true);
+        var data = SessionStore.Read(directory);
+        var them = data.Audio!.Chunks[1];
+        TranscriptAssembler.ValidateChunk(reply, them);
+        await new TranscriptAssembler().BuildAsync(directory, data, default);
+        string transcript = File.ReadAllText(Path.Combine(directory, "transcription.md"));
+        Assert.Equal(2, transcript.Split("**Them:**").Length - 1);
+        Assert.Contains("[00:00] **Them:** А.", transcript);
+        Assert.Contains("[00:12] **Them:** Б.", transcript);
+        Assert.DoesNotContain("[00:12] Б.", transcript);
+    }
+
+    [Fact]
+    public void JoinedExplicitRolesRemainUnambiguousWithoutTerminalPunctuation()
+    {
+        var them = AudioChunker.PlanMono(0, 15L * 48000, 15, "processed/test")[1];
+        TranscriptAssembler.ValidateChunk("[00:00] Them: А [00:12] Them: Б", them);
+    }
+
+    [Theory]
+    [InlineData("[00:00] Them: А. [00:12] Them:")]
+    [InlineData("[00:00] Them: модель говорит [00:12] секунд")]
+    [InlineData("[00:00] Them: А [00:12]")]
+    [InlineData("[00:00] Them: А. [00:12] Б [00:14]")]
+    [InlineData("[00:00] Them: А. [00:16] Them: Б.")]
+    [InlineData("[00:00] Them: А. [00:12] Assistant: Б.")]
+    [InlineData("[00:00] Them: А. [00:12] Them: [NO_SPEECH]")]
+    [InlineData("Analysis first.\n[00:00] Them: А. [00:12] Them: Б.")]
+    [InlineData("[00:00] Them: А. [00:12] Them: Б. [00:14]\nUnrelated text")]
+    public void JoinedMonoFragmentsWithLostSpeechOrAmbiguousStructureAreRejected(string reply)
+    {
+        var them = AudioChunker.PlanMono(0, 15L * 48000, 15, "processed/test")[1];
+        Assert.Throws<InvalidDataException>(() => TranscriptAssembler.ValidateChunk(reply, them));
+    }
+
+    [Theory]
     [InlineData("[00:01] Unknown Person: Invented voice.")]
     [InlineData("The user wants a transcript.\n[00:01] A real utterance.")]
     [InlineData("[00:01] A real utterance.\nLet's refine it.")]
