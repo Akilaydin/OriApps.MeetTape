@@ -322,14 +322,25 @@ public sealed class TranscriptTests : IDisposable
         TranscriptAssembler.ValidateChunk("[00:00] Them: А [00:12] Them: Б", them);
     }
 
+    [Fact]
+    public void WholeSecondRoundingNearFractionalChunkEndRemainsValid()
+    {
+        // The final 2.9-second segment can legitimately be marked [00:03] by the model.
+        var them = AudioChunker.PlanMono(0, 139200, 45, "processed/test")[1];
+        TranscriptAssembler.ValidateChunk("[00:03] Them: Последняя реплика.", them);
+        TranscriptAssembler.ValidateChunk("[00:02] Them: Полная фраза. [00:03]", them);
+        Assert.Throws<InvalidDataException>(() => TranscriptAssembler.ValidateChunk("[00:04] Them: Outside rounding tolerance.", them));
+        Assert.Throws<InvalidDataException>(() => TranscriptAssembler.ValidateChunk("[00:02] Them: Полная фраза. [00:04]", them));
+    }
+
     [Theory]
     [InlineData("[00:00] Them: А. [00:12] Them:")]
     [InlineData("[00:00] Them: модель говорит [00:12] секунд")]
     [InlineData("[00:00] Them: А. [99:99]")]
-    [InlineData("[00:00] Them: А. [00:16]")]
+    [InlineData("[00:00] Them: А. [00:17]")]
     [InlineData("[00:00] Them: А [00:12]")]
     [InlineData("[00:00] Them: А. [00:12] Б [00:14]")]
-    [InlineData("[00:00] Them: А. [00:16] Them: Б.")]
+    [InlineData("[00:00] Them: А. [00:17] Them: Б.")]
     [InlineData("[00:00] Them: А. [00:12] Assistant: Б.")]
     [InlineData("[00:00] Them: А. [00:12] Them: [NO_SPEECH]")]
     [InlineData("Analysis first.\n[00:00] Them: А. [00:12] Them: Б.")]

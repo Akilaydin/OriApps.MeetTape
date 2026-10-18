@@ -10,6 +10,8 @@ namespace OriApps.MeetTape.Processing;
 public sealed class TranscriptAssembler
 {
     private const long BoundaryMatchToleranceFrames = AudioChunker.SampleRate;
+    // Providers may round the end of a fractional-length chunk to a whole second.
+    private const double TimestampRoundingToleranceSeconds = 1;
     private sealed record Utterance(long Frame, string Speaker, string Text, int Chunk, int Line, long? NextSameSourceFrame = null);
     private static readonly Regex LinePattern = new(@"^\[(\d+(?::\d+){1,2}(?:\.\d+)?)\]\s*([^:]+):\s*(.+)$",
         RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
@@ -124,7 +126,7 @@ public sealed class TranscriptAssembler
                     // A final orphan marker is harmless only after a complete utterance with no following speech.
                     if (i == markers.Count - 1 && rows.Count > 0 && HasCompleteEnding(rows[^1].Text)
                         && AudioTrimmer.TryParseTime(markers[i].Value[1..^1], out double orphanSeconds)
-                        && orphanSeconds <= (chunk.EndFrame - chunk.StartFrame) / 48000d + 0.05
+                        && orphanSeconds <= (chunk.EndFrame - chunk.StartFrame) / 48000d + TimestampRoundingToleranceSeconds
                         && string.IsNullOrWhiteSpace(input.ReadToEnd())) break;
                     throw new InvalidDataException("Chunk transcription ends in an incomplete or ambiguous timed utterance.");
                 }
@@ -137,7 +139,7 @@ public sealed class TranscriptAssembler
                 string time = match.Success ? match.Groups[1].Value : missingLabel.Groups[1].Value;
                 string utteranceText = match.Success ? match.Groups[3].Value : missingLabel.Groups[2].Value;
                 if (!AudioTrimmer.TryParseTime(time, out double seconds)
-                    || seconds > (chunk.EndFrame - chunk.StartFrame) / 48000d + 0.05)
+                    || seconds > (chunk.EndFrame - chunk.StartFrame) / 48000d + TimestampRoundingToleranceSeconds)
                     throw new InvalidDataException("Chunk transcription has invalid/missing local timestamps; saved result retained for repair.");
                 string label = (match.Success ? match.Groups[2].Value.Trim() : chunk.Source!).ToLowerInvariant() switch
                 {
