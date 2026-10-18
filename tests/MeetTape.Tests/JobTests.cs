@@ -851,6 +851,38 @@ public sealed class JobTests : IDisposable
             File.ReadAllText(Path.Combine(directory, "transcription.md")));
     }
 
+    [Fact]
+    public async Task MonoFormattingIsRecoveredBeforeCheckpointWithoutExtraAudioRequests()
+    {
+        using var tones = new ChunkingTests();
+        string directory = await tones.SessionAsync();
+        const string meReply = "[00:00] Me: Я не меняю число 15 [00:01] Теперь нужно сохранить число 50 и два повтора.";
+        const string themReply = "[00:00] Это обычная часть ответа: не придумывайте имя говорящего.";
+        using var handler = new Handler((call, _) => Task.FromResult(TextResponse(
+            call % 2 == 0 ? themReply : meReply)));
+        using var http = new HttpClient(handler);
+        using (var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "fixture-key"))
+            await jobs.ProcessSessionAsync(directory, default);
+
+        Assert.Equal(6, handler.Calls);
+        var data = SessionStore.Read(directory);
+        Assert.Equal(JobState.Completed, data.JobState);
+        Assert.Null(data.Retry);
+        Assert.Empty(Directory.GetFiles(Path.Combine(directory, "chunks"), "*.rejected-*.json"));
+        Assert.Equal(meReply, (await ChunkStore.ReadAsync(directory, data, data.Audio!.Chunks[0], default)).Text);
+        Assert.Equal(themReply, (await ChunkStore.ReadAsync(directory, data, data.Audio.Chunks[1], default)).Text);
+        string transcript = File.ReadAllText(Path.Combine(directory, "transcription.md"));
+        Assert.Contains("не меняю число 15", transcript);
+        Assert.Contains("сохранить число 50 и два повтора.", transcript);
+        Assert.Contains("**Them:** Это обычная часть ответа: не придумывайте имя говорящего.", transcript);
+
+        using var restarted = new ProcessingJobs(config, () => false,
+            new HttpClient(new Handler((_, _) => throw new InvalidOperationException("No already saved chunk may be resent."))),
+            readKey: _ => "fixture-key");
+        await restarted.ProcessSessionAsync(directory, default);
+        Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
+    }
+
     [Theory]
     [InlineData("matching", true)]
     [InlineData("wrong-model", false)]
@@ -890,7 +922,7 @@ public sealed class JobTests : IDisposable
             variant == "wrong-model" ? "different-model" : data.Processing.Transcription.Model,
             variant == "wrong-prompt" ? "different-prompt" : secondHash,
             variant == "reasoning" ? "Let me analyze the audio.\n[00:00] Them: Some speech."
-                : "[00:00] Them: Первое.\n[00:01] Продолжение без метки.");
+                : "[00:00] Them: Начало не завершено [00:01] Продолжение содержит несколько слов без метки.");
         string rejectedPath = Path.Combine(directory, "chunks", $"0002.rejected-{Guid.NewGuid():N}.json");
         ChunkStore.SaveFile(rejectedPath, rejected);
         byte[] rejectedBytes = File.ReadAllBytes(rejectedPath);
