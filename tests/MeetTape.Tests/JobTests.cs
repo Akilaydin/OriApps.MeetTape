@@ -205,30 +205,47 @@ public sealed class JobTests : IDisposable
     [InlineData(2, "Text without timestamps")]
     [InlineData(1, "[00:10] Me: Outside the chunk")]
     [InlineData(1, "```markdown\n```")]
-    public async Task InvalidTimedReplyStopsBeforeNextUploadAndResumeRetainsValidChunks(int invalidIndex, string invalidText)
+    public async Task InvalidTimedReplyRetriesOnceThenPausesWithoutReuploadingEarlierChunks(int invalidIndex, string invalidText)
     {
         string directory = Session();
-        using var first = new Handler((call, _) => Task.FromResult(call == invalidIndex
+        var now = DateTimeOffset.UtcNow;
+        using var first = new Handler((call, _) => Task.FromResult(call == invalidIndex || call == invalidIndex + 1
             ? new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(
                 System.Text.Json.JsonSerializer.Serialize(new
                 { choices = new[] { new { finish_reason = "stop", message = new { content = invalidText } } } }),
                 Encoding.UTF8, "application/json") }
             : Response()));
-        using (var http = new HttpClient(first))
-        using (var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key"))
+        using var http = new HttpClient(first);
+        using (var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key", utcNow: () => now))
             await jobs.ProcessSessionAsync(directory, default);
-
         Assert.Equal(invalidIndex, first.Calls);
+        var deferred = SessionStore.Read(directory);
+        Assert.NotEqual(JobState.Paused, deferred.JobState);
+        var retry = Assert.IsType<RetryProgress>(deferred.Retry);
+        Assert.Equal(1, retry.InvalidTimedTextFailures);
+        Assert.Equal(1, (retry.NextAttemptUtc - now).TotalSeconds);
+        byte[]? retained = invalidIndex > 1 ? File.ReadAllBytes(ChunkStore.PathFor(directory, 1)) : null;
+        using (var restarted = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key", utcNow: () => now))
+        {
+            await restarted.ProcessSessionAsync(directory, default);
+            Assert.Equal(invalidIndex, first.Calls); // The budget and deadline survived restart.
+            now = retry.NextAttemptUtc;
+            await restarted.ProcessSessionAsync(directory, default);
+            await restarted.ProcessSessionAsync(directory, default);
+        }
+        Assert.Equal(invalidIndex + 1, first.Calls);
         var paused = SessionStore.Read(directory);
         Assert.Equal(JobState.Paused, paused.JobState);
         Assert.Equal(StageState.Paused, paused.Stages["transcribe"].Status);
         Assert.Contains("Resume", paused.Error);
+        Assert.Contains("retry exhausted", paused.Error);
         Assert.Equal(invalidIndex - 1, paused.Stages["transcribe"].CompletedChunks);
         Assert.False(File.Exists(ChunkStore.PathFor(directory, invalidIndex)));
         Assert.False(File.Exists(Path.Combine(directory, "transcription.md")));
-        string rejected = Assert.Single(Directory.GetFiles(Path.Combine(directory, "chunks"), "*.rejected-*.json"));
-        Assert.Contains(invalidText, (await ChunkStore.ReadFileAsync<ChunkResult>(rejected, default))!.Text);
-        byte[]? retained = invalidIndex > 1 ? File.ReadAllBytes(ChunkStore.PathFor(directory, 1)) : null;
+        string[] rejected = Directory.GetFiles(Path.Combine(directory, "chunks"), "*.rejected-*.json");
+        Assert.Equal(2, rejected.Length);
+        foreach (string path in rejected)
+            Assert.Contains(invalidText, (await ChunkStore.ReadFileAsync<ChunkResult>(path, default))!.Text);
 
         using var next = new Handler((_, _) => Task.FromResult(Response()));
         using var client = new HttpClient(next);
@@ -238,7 +255,7 @@ public sealed class JobTests : IDisposable
         Assert.Equal(4 - invalidIndex, next.Calls);
         Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
         if (retained is not null) Assert.Equal(retained, File.ReadAllBytes(ChunkStore.PathFor(directory, 1)));
-        Assert.True(File.Exists(rejected));
+        Assert.All(rejected, path => Assert.True(File.Exists(path)));
     }
 
     [Fact]
@@ -263,6 +280,57 @@ public sealed class JobTests : IDisposable
         await jobs.ProcessSessionAsync(directory, default);
         Assert.Equal(3, handler.Calls);
         Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
+    }
+
+    [Fact]
+    public async Task AutomaticFormatRetrySucceedsAfterRestartWithoutResendingACompletedChunk()
+    {
+        string directory = Session(120);
+        var now = DateTimeOffset.UtcNow;
+        using var handler = new Handler((call, _) => Task.FromResult(TextResponse(call == 1
+            ? "Unformatted answer from the model." : "[00:00] Me: Recovered.")));
+        using var http = new HttpClient(handler);
+        using (var first = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key", utcNow: () => now))
+            await first.ProcessSessionAsync(directory, default);
+        var retry = Assert.IsType<RetryProgress>(SessionStore.Read(directory).Retry);
+        Assert.Equal(1, retry.InvalidTimedTextFailures);
+        string rejected = Assert.Single(Directory.GetFiles(Path.Combine(directory, "chunks"), "*.rejected-*.json"));
+        byte[] original = File.ReadAllBytes(rejected);
+        now = retry.NextAttemptUtc;
+        using (var next = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key", utcNow: () => now))
+        {
+            await next.ProcessSessionAsync(directory, default);
+            await next.ProcessSessionAsync(directory, default);
+        }
+        Assert.Equal(2, handler.Calls);
+        Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
+        Assert.Null(SessionStore.Read(directory).Retry);
+        Assert.Equal(original, File.ReadAllBytes(rejected));
+        Assert.Contains("Recovered.", File.ReadAllText(Path.Combine(directory, "transcription.md")));
+    }
+
+    [Fact]
+    public async Task TransientFailureBetweenMalformedRepliesDoesNotResetFormatRetryBudget()
+    {
+        string directory = Session(120);
+        var now = DateTimeOffset.UtcNow;
+        using var handler = new Handler((call, _) => Task.FromResult(call == 2
+            ? Response(503) : TextResponse("No valid timestamps here.")));
+        using var http = new HttpClient(handler);
+        for (int call = 1; call <= 3; call++)
+        {
+            using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key", utcNow: () => now);
+            await jobs.ProcessSessionAsync(directory, default);
+            Assert.Equal(call, handler.Calls);
+            if (call < 3)
+            {
+                var retry = Assert.IsType<RetryProgress>(SessionStore.Read(directory).Retry);
+                Assert.Equal(1, retry.InvalidTimedTextFailures);
+                now = retry.NextAttemptUtc;
+            }
+        }
+        Assert.Equal(JobState.Paused, SessionStore.Read(directory).JobState);
+        Assert.Equal(2, Directory.GetFiles(Path.Combine(directory, "chunks"), "*.rejected-*.json").Length);
     }
 
     [Fact]
@@ -744,19 +812,20 @@ public sealed class JobTests : IDisposable
     {
         using var tones = new ChunkingTests();
         string directory = await tones.SessionAsync();
+        var now = DateTimeOffset.UtcNow;
         using var handler = new Handler((call, _) => Task.FromResult(TextResponse(
             call == 2 ? "[00:01] Артём О: Incorrect API label" : "[00:01] Me: Accepted track utterance")));
         using var http = new HttpClient(handler);
-        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "fixture-key");
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "fixture-key", utcNow: () => now);
         await jobs.ProcessSessionAsync(directory, default);
         Assert.Equal(2, handler.Calls);
-        Assert.Equal(JobState.Paused, SessionStore.Read(directory).JobState);
+        Assert.NotEqual(JobState.Paused, SessionStore.Read(directory).JobState);
         Assert.False(File.Exists(Path.Combine(directory, "transcription.md")));
         byte[] first = File.ReadAllBytes(ChunkStore.PathFor(directory, 1));
         Assert.False(File.Exists(ChunkStore.PathFor(directory, 2)));
         Assert.Single(Directory.GetFiles(Path.Combine(directory, "chunks"), "0002.rejected-*.json"));
 
-        jobs.Resume(directory);
+        now = SessionStore.Read(directory).Retry!.NextAttemptUtc;
         await jobs.ProcessSessionAsync(directory, default);
         Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
         Assert.Equal(7, handler.Calls); // One rejected Them request + remaining four source chunks.

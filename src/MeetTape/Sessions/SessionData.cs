@@ -26,7 +26,8 @@ public sealed record ProcessingParameters(int ChunkSeconds, ApiSettings Transcri
 public sealed record AudioChunk(int Index, string RelativePath, long StartFrame, long EndFrame,
     long OwnStartFrame, long OwnEndFrame, long SourceStartFrame, string? Source = null);
 public sealed record PreparedAudio(string RelativeDirectory, List<AudioChunk> Chunks);
-public sealed record RetryProgress(int ChunkIndex, int Attempts, DateTimeOffset NextAttemptUtc);
+public sealed record RetryProgress(int ChunkIndex, int Attempts, DateTimeOffset NextAttemptUtc,
+    int InvalidTimedTextFailures = 0);
 public sealed record SummaryResult(Guid SessionId, string TranscriptSha256, string Model, string PromptSha256, string Text);
 
 public sealed record SessionData
