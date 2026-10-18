@@ -99,6 +99,33 @@ public sealed class SettingsTests : IDisposable
     }
 
     [AvaloniaFact]
+    public async Task MicrophoneProcessingCanBeSelectedSavedAndReopenedWithoutChangingThem()
+    {
+        var model = Model();
+        var window = new SettingsWindow { DataContext = model }; window.Show();
+        var combo = window.FindControl<ComboBox>("MicrophoneModeChoice")!;
+        Assert.Equal("Windows Default", Assert.IsType<MicrophoneModeChoice>(combo.SelectedItem).Label);
+        Assert.False(model.HasUnsavedChanges);
+        combo.SelectedIndex = 1;
+        Assert.True(model.HasUnsavedChanges);
+        await model.SaveAsync();
+        Assert.True(model.Saved);
+        Assert.False(model.HasUnsavedChanges);
+        Assert.Equal(MicrophoneCaptureMode.WindowsCommunications, ConfigurationLoader.Load(ConfigPath).Settings.Capture.MicrophoneMode);
+        Assert.Null(ConfigurationLoader.Load(ConfigPath).Settings.Capture.PlaybackDeviceId);
+        Assert.Equal("windowsCommunications", JsonNode.Parse(File.ReadAllText(ConfigPath))!["capture"]!["microphoneMode"]!.GetValue<string>());
+        window.Close();
+
+        var reloaded = Model();
+        Assert.Equal(MicrophoneCaptureMode.WindowsCommunications, reloaded.MicrophoneMode.Value);
+        reloaded.MicrophoneMode = reloaded.MicrophoneModes.Single(x => x.Value == MicrophoneCaptureMode.WindowsDefault);
+        Assert.True(reloaded.HasUnsavedChanges);
+        await reloaded.SaveAsync();
+        Assert.Equal(MicrophoneCaptureMode.WindowsDefault, ConfigurationLoader.Load(ConfigPath).Settings.Capture.MicrophoneMode);
+        Assert.Null(ConfigurationLoader.Load(ConfigPath).Settings.Capture.PlaybackDeviceId);
+    }
+
+    [AvaloniaFact]
     public async Task OccupiedShortcutAndFailedPersistenceKeepTheOldBindingAndReleaseTheCandidate()
     {
         using var keys = new HotkeyFixture();
@@ -354,6 +381,7 @@ public sealed class SettingsTests : IDisposable
             object? value = field.GetValue(model);
             object changed = field.PropertyType == typeof(bool) ? !(bool)value! :
                 field.PropertyType == typeof(DeviceChoice) ? new DeviceChoice("fixture-device", "Fixture device") :
+                field.PropertyType == typeof(MicrophoneModeChoice) ? model.MicrophoneModes.Single(mode => mode.Value != ((MicrophoneModeChoice)value!).Value) :
                 (string)value! + "fixture-edit";
             field.SetValue(model, changed);
             Assert.True(model.HasUnsavedChanges, field.Name);

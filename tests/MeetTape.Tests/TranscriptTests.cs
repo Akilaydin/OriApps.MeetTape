@@ -333,6 +333,90 @@ public sealed class TranscriptTests : IDisposable
         Assert.Throws<InvalidDataException>(() => TranscriptAssembler.ValidateChunk("[00:02] Them: Полная фраза. [00:04]", them));
     }
 
+    // Synthetic analogues of the five parser rejects in the faithful 438-chunk research pass.
+    // No actual meeting speech belongs in source-controlled regression fixtures.
+    [Theory]
+    [InlineData("[00:00] Me: Первое замечание без завершающей точки [00:02] Далее идёт достаточно длинное продолжение без новой метки.")]
+    [InlineData("[00:00] Me: Нет [00:01] да [00:02] Сначала проверьте настройки, затем повторите действие.")]
+    [InlineData("[00:00] Я считаю что это важно: не удаляйте резервную копию.")]
+    [InlineData("[00:00] Me: Первая фраза без точки [00:03] Следующая длинная фраза тоже содержит слова: и отрицание.")]
+    [InlineData("[00:03] Me: [NO_SPEECH]")]
+    public void FaithfulFormattingFailuresCanBeRecoveredWithoutChangingSpeech(string reply)
+    {
+        var chunk = AudioChunker.PlanMono(0, 15L * 48000, 15, "processed/test")[0];
+        TranscriptAssembler.ValidateChunk(reply, chunk);
+        string normalized = TranscriptAssembler.NormalizeMonoTimestamps(reply);
+        static string[] Tokens(string s) => System.Text.RegularExpressions.Regex.Matches(s, @"[\p{L}\p{N}]+")
+            .Select(m => m.Value).ToArray();
+        Assert.Equal(Tokens(reply), Tokens(normalized));
+        Assert.Equal(System.Text.RegularExpressions.Regex.Matches(reply, @"\[\d\d:\d\d\]").Select(m => m.Value),
+            System.Text.RegularExpressions.Regex.Matches(normalized, @"\[\d\d:\d\d\]").Select(m => m.Value));
+    }
+
+    // Four historical joined responses plus two historical wrapped-silence responses.
+    [Theory]
+    [InlineData("[00:00] Me: Начало реплики без точки [00:01] Продолжение содержит прежнее отрицание и числовое значение 15.")]
+    [InlineData("[00:00] Me: Начало с повтором [00:01] Продолжение тоже включает повтор и короткий ответ нет.")]
+    [InlineData("[00:00] Me: Первое [00:01] второе [00:02] Мы оставляем текст без сокращений.")]
+    [InlineData("[00:00] Me: Не изменяйте число 15 [00:01] Теперь важно оставить число 50.")]
+    [InlineData("[00:00] [NO_SPEECH]")]
+    [InlineData("[00:00] Me: [NO_SPEECH]")]
+    public void HistoricalFormatShapesRecoverLocally(string reply)
+    {
+        var chunk = AudioChunker.PlanMono(0, 15L * 48000, 15, "processed/test")[0];
+        TranscriptAssembler.ValidateChunk(reply, chunk);
+    }
+
+    [Fact]
+    public void IncompleteHistoricalChunk318ShapeStillNeedsAudioRetry()
+    {
+        var chunk = AudioChunker.PlanMono(0, 15L * 48000, 15, "processed/test")[1];
+        Assert.Throws<InvalidDataException>(() => TranscriptAssembler.ValidateChunk(
+            "[00:00] Them: Незаконченная фраза без точки [00:07]", chunk));
+    }
+
+    [Theory]
+    [InlineData("[00:03] [NO_SPEECH]")]
+    [InlineData("[00:03] Me: [NO_SPEECH]")]
+    [InlineData("[00:03] Them: [NO_SPEECH]")]
+    public void WrappedSilenceOnlyIsCanonicalForMonoSource(string reply)
+    {
+        var chunk = AudioChunker.PlanMono(0, 5L * 48000, 5, "processed/test")[0];
+        TranscriptAssembler.ValidateChunk(reply, chunk);
+    }
+
+    [Theory]
+    [InlineData("[00:10] Me: [NO_SPEECH]")]
+    [InlineData("[00:02] Me: Текст. [00:03] Me: [NO_SPEECH]")]
+    [InlineData("[NO_SPEECH]\n[00:02] Me: Не молчание.")]
+    [InlineData("[00:01] Assistant: Неверная метка.")]
+    [InlineData("[00:01] Артём О: Модель придумала имя.")]
+    [InlineData("[00:00] Me: модель произнесла [00:02] секунды")]
+    [InlineData("[00:01] Me: Незаконченная фраза [00:03]")]
+    [InlineData("[00:03] Me: Поздняя.\n[00:01] Me: Ранняя.")]
+    public void AmbiguousMonoResponsesRemainRejected(string reply)
+    {
+        var chunk = AudioChunker.PlanMono(0, 5L * 48000, 5, "processed/test")[0];
+        Assert.Throws<InvalidDataException>(() => TranscriptAssembler.ValidateChunk(reply, chunk));
+    }
+
+    [Fact]
+    public async Task JoinedMonoSpeechKeepsWordsTimecodesAndRawCheckpoint()
+    {
+        const string raw = "[00:00] Them: Я не согласен [00:02] Верно, да, снова повторяем: HTTP 503, а не 200.";
+        string directory = Prepare(["[NO_SPEECH]", raw], seconds: 5, totalSeconds: 5, mono: true);
+        var data = SessionStore.Read(directory);
+        var them = data.Audio!.Chunks[1];
+        TranscriptAssembler.ValidateChunk(raw, them);
+        string beforeHash = Convert.ToHexString(Hash(ChunkStore.PathFor(directory, them.Index)));
+        await new TranscriptAssembler().BuildAsync(directory, data, default);
+        string result = File.ReadAllText(Path.Combine(directory, "transcription.md"));
+        Assert.Contains("[00:00] **Them:** Я не согласен", result);
+        Assert.Contains("[00:02] **Them:** Верно, да, снова повторяем: HTTP 503, а не 200.", result);
+        Assert.Equal(raw, (await ChunkStore.ReadAsync(directory, data, them, default)).Text);
+        Assert.Equal(beforeHash, Convert.ToHexString(Hash(ChunkStore.PathFor(directory, them.Index))));
+    }
+
     [Theory]
     [InlineData("[00:00] Them: А. [00:12] Them:")]
     [InlineData("[00:00] Them: модель говорит [00:12] секунд")]
@@ -355,7 +439,6 @@ public sealed class TranscriptTests : IDisposable
     [InlineData("[00:01] Unknown Person: Invented voice.")]
     [InlineData("The user wants a transcript.\n[00:01] A real utterance.")]
     [InlineData("[00:01] A real utterance.\nLet's refine it.")]
-    [InlineData("[00:01] [NO_SPEECH]")]
     [InlineData("[00:01] Me:")]
     [InlineData("[00:60] Utterance with invalid seconds.")]
     [InlineData("[20:00] Utterance outside the chunk.")]

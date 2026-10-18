@@ -2,7 +2,7 @@ MeetTape Third-Party Notices
 
 The MeetTape project itself is licensed under GPL-3.0-only (see LICENSE).
 
-NAudio.Wasapi and NAudio.Core 2.2.1 are licensed under MIT. Original license follows.
+NAudio.Wasapi and NAudio.Core 3.2.0 are licensed under MIT. Original license follows.
 
 Copyright 2020 Mark Heath
 

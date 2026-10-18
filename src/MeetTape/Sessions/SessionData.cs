@@ -20,7 +20,10 @@ public sealed record NativeAudioFormat(int SampleRate, int BitsPerSample, int Ch
         format is WaveFormatExtensible extended ? extended.SubFormat.ToString() : format.Encoding.ToString());
 }
 public sealed record CaptureParameters(AudioDevice? MeDevice, AudioDevice? ThemDevice, NativeAudioFormat MeFormat,
-    NativeAudioFormat ThemFormat, int SampleRate = 48000, int Channels = 1, int BitRateKbps = 96, string Codec = "mp3");
+    NativeAudioFormat ThemFormat, int SampleRate = 48000, int Channels = 1, int BitRateKbps = 96, string Codec = "mp3")
+{
+    public MicrophoneCaptureMode MicrophoneMode { get; init; } = MicrophoneCaptureMode.WindowsDefault;
+}
 public sealed record ProcessingParameters(int ChunkSeconds, ApiSettings Transcription, ApiSettings Summary,
     string ConfigurationDirectory, string MeDisplayName = "Me");
 public sealed record AudioChunk(int Index, string RelativePath, long StartFrame, long EndFrame,

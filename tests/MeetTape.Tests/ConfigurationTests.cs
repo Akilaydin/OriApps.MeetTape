@@ -80,9 +80,38 @@ public sealed class ConfigurationTests : IDisposable
         Assert.Equal(Path.Combine(directory, "Meetings"), config.MeetingsRoot);
         Assert.Equal(120, config.Settings.ChunkSeconds);
         Assert.Null(config.Settings.Capture.MicrophoneDeviceId);
+        Assert.Equal(MicrophoneCaptureMode.WindowsDefault, config.Settings.Capture.MicrophoneMode);
         Assert.False(config.Settings.Stages.Summary);
         File.WriteAllText(Path.Combine(directory, "prompt.md"), "Edited prompt");
         Assert.Equal("Edited prompt", config.ReadPrompt(config.Settings.Transcription));
+    }
+
+    [Fact]
+    public void ExistingConfigurationsDefaultToUnprocessedMicrophoneAndExplicitModesRoundTrip()
+    {
+        json["capture"] = new JsonObject { ["microphoneDeviceId"] = "fixture-mic" };
+        Assert.Equal(MicrophoneCaptureMode.WindowsDefault, Load().Settings.Capture.MicrophoneMode);
+        json["capture"]!["microphoneMode"] = "windowsCommunications";
+        Assert.Equal(MicrophoneCaptureMode.WindowsCommunications, Load().Settings.Capture.MicrophoneMode);
+        json["capture"]!["microphoneMode"] = "windowsDefault";
+        Assert.Equal(MicrophoneCaptureMode.WindowsDefault, Load().Settings.Capture.MicrophoneMode);
+    }
+
+    [Theory]
+    [InlineData("unknown")]
+    [InlineData("communications")]
+    [InlineData("1")]
+    public void RejectsUnsupportedMicrophoneMode(string value)
+    {
+        json["capture"] = new JsonObject { ["microphoneMode"] = value };
+        Assert.Throws<InvalidDataException>(() => Load());
+    }
+
+    [Fact]
+    public void RejectsNumericMicrophoneMode()
+    {
+        json["capture"] = new JsonObject { ["microphoneMode"] = 1 };
+        Assert.Throws<InvalidDataException>(() => Load());
     }
 
     [Theory]
@@ -125,11 +154,28 @@ public sealed class ConfigurationTests : IDisposable
         Assert.False(string.IsNullOrWhiteSpace(settings.ReadPrompt(settings.Settings.Transcription)));
         string transcription = settings.ReadPrompt(settings.Settings.Transcription);
         string summary = settings.ReadPrompt(settings.Settings.Summary);
-        Assert.StartsWith("Language: Russian (ru).", transcription);
+        Assert.Equal("""
+            Transcribe all audible speech in this mono audio chunk in its original language. The main language is Russian; preserve English technical terms.
+            Preserve spoken wording, short acknowledgements, repetitions, self-corrections, numbers, questions, and negations. Do not summarize, translate, rewrite, or complete a phrase cut off by a clip boundary.
+            Use [inaudible] only for an audible word or passage you cannot understand. Do not replace quiet or unintelligible speech with silence.
+            For each short spoken phrase, output one physical line in this exact format:
+            [MM:SS] SOURCE: spoken text
+            Replace SOURCE with the recording source specified below. Use the approximate start time of that phrase relative to this audio chunk. Times must stay within the supplied audio and increase chronologically. Put every timestamp at the start of a new line; never place a timestamp inside the spoken text.
+            If the entire audio chunk has no audible speech, output exactly [NO_SPEECH] on its own, with no timestamp or source label.
+            Return only the transcription.
+            """.ReplaceLineEndings("\n"), transcription.ReplaceLineEndings("\n").TrimEnd());
         Assert.Contains("summary in Russian", summary);
         Assert.Contains("[inaudible]", transcription);
         Assert.Contains("[MM:SS] Me/Them/Unknown: text", ChatApiClient.SourceInstruction);
         Assert.Contains(ChatApiClient.NoSpeechMarker, ChatApiClient.SourceInstruction);
+        foreach (string source in new[] { "Me", "Them" })
+        {
+            string instruction = transcription + ChatApiClient.InstructionFor(source);
+            Assert.Contains("[MM:SS] SOURCE: spoken text", instruction);
+            Assert.Contains($"This is MONO audio from the {source} recording source.", instruction);
+            Assert.Contains($"Label every utterance as [MM:SS] {source}: text", instruction);
+            Assert.Contains("Do not use this marker for unintelligible speech.", instruction);
+        }
         Assert.DoesNotMatch(@"[\p{IsCyrillic}\p{IsCJKUnifiedIdeographs}]", transcription + summary + ChatApiClient.SourceInstruction);
         string summaryPath = Path.Combine(directory, "user", "prompts", "summary.md");
         Assert.True(File.Exists(summaryPath));

@@ -3,11 +3,45 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
+using OriApps.MeetTape.Settings;
 
 namespace MeetTape.Tests;
 
 public sealed class CaptureTests
 {
+    [Fact]
+    public void WindowsCommunicationsIsRequestedOnlyForMicrophoneAndNeverForLoopback()
+    {
+        var categories = new List<AudioStreamCategory>();
+        void Record(AudioStreamCategory category) => categories.Add(category);
+
+        WasapiPacketCapture.ApplyMicrophoneMode(false, MicrophoneCaptureMode.WindowsDefault, Record);
+        WasapiPacketCapture.ApplyMicrophoneMode(true, MicrophoneCaptureMode.WindowsDefault, Record);
+        Assert.Empty(categories); // The legacy mode does not request any Windows stream processing.
+
+        WasapiPacketCapture.ApplyMicrophoneMode(false, MicrophoneCaptureMode.WindowsCommunications, Record);
+        Assert.Equal([AudioStreamCategory.Communications], categories);
+        Assert.Throws<InvalidDataException>(() => WasapiPacketCapture.ApplyMicrophoneMode(
+            true, MicrophoneCaptureMode.WindowsCommunications, Record));
+        Assert.Single(categories); // Never apply a microphone processing category to Them.
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void UnsupportedWindowsCommunicationsFailsWithoutSilentlyUsingDefault(bool comError)
+    {
+        var failure = Assert.Throws<RecordingException>(() => WasapiPacketCapture.ApplyMicrophoneMode(
+            false, MicrophoneCaptureMode.WindowsCommunications, _ =>
+            {
+                if (comError) throw new COMException("private-driver-data");
+                throw new InvalidOperationException("private-driver-data");
+            }));
+        Assert.Contains("Windows Communications", failure.Message);
+        Assert.Contains("Windows Default", failure.Message);
+        Assert.DoesNotContain("private-driver-data", failure.Message);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
