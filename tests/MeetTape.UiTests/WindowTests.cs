@@ -24,6 +24,94 @@ public static class TestApp
 
 public sealed class WindowTests
 {
+    [AvaloniaTheory]
+    [InlineData(RecordingState.Failed)]
+    [InlineData(RecordingState.Interrupted)]
+    public async Task FailedOrInterruptedRowOffersExplicitRecoveryAndRefreshesActions(RecordingState state)
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var session = fake.Snapshot.Sessions[0];
+        fake.Snapshot = fake.Snapshot with { Sessions = [session with { Data = session.Data! with
+        {
+            RecordingState = state, JobState = JobState.Paused,
+            Stages = new(session.Data.Stages) { ["trim"] = new(true, StageState.AwaitingUser) }
+        } }] };
+        var model = new MainViewModel(fake);
+        var window = new MainWindow { DataContext = model };
+        window.Show(); await model.RefreshAsync(); Dispatcher.UIThread.RunJobs();
+        var row = window.FindControl<ListBox>("SessionList")!.ContainerFromIndex(0)!;
+        var actions = row.GetVisualDescendants().OfType<Button>().Single(button => button.Name == "SessionActions");
+        actions.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Assert.Equal(session.Data.Id, model.SelectedSession!.Id);
+        Assert.True(window.FindControl<MenuItem>("RecoverSession")!.IsEnabled);
+        Assert.False(window.FindControl<MenuItem>("ResumeSession")!.IsEnabled);
+        Click(window, "RecoverSession");
+        await WaitFor(() => fake.Recovers == 1 && !model.IsBusy);
+        Assert.Equal(session.Directory, fake.RecoveredDirectory);
+        Assert.Equal(session.Data.Id, fake.RecoveredId);
+        Assert.Equal("Awaiting trim choice", model.SelectedSession!.Status);
+        Assert.True(model.CanPrepare);
+        Assert.False(model.CanRecover);
+        Assert.False(model.CanResume);
+        Assert.Contains("recovered", model.InfoText);
+        Close(window, model);
+    }
+
+    [AvaloniaFact]
+    public async Task RecoveryDisablesDuringCaptureBusyAndWhenSelectionChanges()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var session = fake.Snapshot.Sessions[0];
+        fake.Snapshot = fake.Snapshot with { Sessions = [session with { Data = session.Data! with
+        {
+            RecordingState = RecordingState.Failed, JobState = JobState.Paused
+        } }] };
+        var model = new MainViewModel(fake);
+        var window = new MainWindow { DataContext = model };
+        window.Show(); await model.RefreshAsync();
+        model.SelectedSession = model.Sessions[0];
+        fake.Snapshot = fake.Snapshot with { Capture = new(true, TimeSpan.FromSeconds(10), 0, 0, null) };
+        await model.RefreshAsync();
+        Assert.False(window.FindControl<MenuItem>("RecoverSession")!.IsEnabled);
+        await model.RecoverAsync(); Assert.Equal(0, fake.Recovers);
+        fake.Snapshot = fake.Snapshot with { Capture = new(false, TimeSpan.Zero, 0, 0, null) };
+        await model.RefreshAsync();
+        Assert.True(model.CanRecover);
+        fake.RecoverCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task recovering = model.RecoverAsync();
+        await WaitFor(() => fake.Recovers == 1);
+        Assert.True(model.IsBusy);
+        Assert.False(window.FindControl<MenuItem>("RecoverSession")!.IsEnabled);
+        model.SelectedSession = null;
+        fake.RecoverCompletion.SetResult();
+        await recovering;
+        Assert.Equal(RecordingState.Recorded, fake.Snapshot.Sessions[0].Data!.RecordingState);
+        Assert.False(model.CanRecover);
+        Close(window, model);
+    }
+
+    [AvaloniaFact]
+    public async Task RecoveryFailureKeepsActionableAudioErrorEvenAfterOldCaptureErrorRefresh()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture) { RecoverFailure = "them.mp3 MP3 length differs from finalized header; file may be truncated." };
+        var session = fake.Snapshot.Sessions[0];
+        fake.Snapshot = fake.Snapshot with { Capture = new(false, TimeSpan.Zero, 0, 0, "Device disconnected."),
+            Sessions = [session with { Data = session.Data! with { RecordingState = RecordingState.Failed } }] };
+        var model = new MainViewModel(fake);
+        var window = new MainWindow { DataContext = model };
+        window.Show(); await model.RefreshAsync();
+        model.SelectedSession = model.Sessions[0];
+        await model.RecoverAsync();
+        Assert.Contains("them.mp3", model.ErrorText);
+        Assert.Contains("truncated", model.ErrorText);
+        Assert.Equal(RecordingState.Failed, fake.Snapshot.Sessions[0].Data!.RecordingState);
+        Assert.True(model.CanRecover);
+        Close(window, model);
+    }
+
     [AvaloniaFact]
     public async Task OverflowAndRightClickShareTheCorrectRowMenuAndDoubleClickOpensThatFolder()
     {
@@ -265,6 +353,72 @@ public sealed class WindowTests
         Assert.All(notices, n => { Assert.Null(n.SessionId); Assert.DoesNotContain("PRIVATE", n.Message); });
         model.Detach(); fake.ReportCapture(fake.Snapshot.Capture);
         Dispatcher.UIThread.RunJobs(); Assert.Equal(2, notices.Count);
+    }
+
+    [AvaloniaFact]
+    public async Task DisconnectedTrackIsVisiblyUnavailableWhileRecordingAndNotifiesOnRecovery()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var notices = new List<OperationNotice>();
+        var model = new MainViewModel(fake, notices.Add);
+        var window = new MainWindow { DataContext = model };
+        window.Show(); await model.RefreshAsync();
+
+        var started = fake.Snapshot.Capture with { IsActive = true };
+        fake.Snapshot = fake.Snapshot with { Capture = started };
+        fake.ReportCapture(started);
+        Dispatcher.UIThread.RunJobs();
+        var unavailable = started with { ThemUnavailable = "Them audio device unavailable. Missing audio is recorded as silence." };
+        fake.Snapshot = fake.Snapshot with { Capture = unavailable };
+        fake.ReportCapture(unavailable);
+        fake.ReportCapture(unavailable);
+        Dispatcher.UIThread.RunJobs();
+        await model.RefreshAsync();
+        Assert.Equal("Them: playback unavailable", model.ThemCaptureLabel);
+        Assert.True(window.FindControl<TextBlock>("CaptureDeviceWarning")!.IsVisible);
+        Assert.Contains("silence", model.CaptureWarning);
+        Assert.True(model.IsRecording);
+        Assert.Equal(2, notices.Count);
+        Assert.Equal(NoticeKind.Warning, notices[1].Kind);
+        Assert.Contains("Them playback unavailable", notices[1].Message);
+
+        fake.Snapshot = fake.Snapshot with { Capture = started };
+        fake.ReportCapture(started);
+        Dispatcher.UIThread.RunJobs();
+        await model.RefreshAsync();
+        Assert.False(model.HasCaptureWarning);
+        Assert.Equal("Them: system playback", model.ThemCaptureLabel);
+        Assert.Equal("Them playback reconnected.", notices[2].Message);
+        Close(window, model);
+    }
+
+    [AvaloniaFact]
+    public async Task SavedSessionDetailsShowDeviceInterruptionAfterRestart()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var old = fake.Snapshot.Sessions[0];
+        var completed = old.Data! with
+        {
+            JobState = JobState.Completed,
+            ThemTiming = new(Discontinuities: 1,
+                LastIssue: "Audio endpoint interrupted: Them changed or disconnected; part of this track may contain silence."),
+            Stages = new()
+            {
+                ["trim"] = new(true, StageState.Completed),
+                ["transcribe"] = new(true, StageState.Completed),
+                ["summary"] = new(true, StageState.AwaitingRequest)
+            }
+        };
+        fake.Snapshot = fake.Snapshot with { Sessions = [old with { Data = completed }] };
+        var model = new MainViewModel(fake);
+        await model.RefreshAsync();
+        var row = Assert.Single(model.Sessions);
+        Assert.True(row.HasAudioInterruption);
+        Assert.Equal("Audio interrupted", row.DisplayStatus);
+        Assert.Contains("Them changed or disconnected", row.Details);
+        model.Detach();
     }
 
     [AvaloniaFact]
@@ -1361,7 +1515,9 @@ public sealed class WindowTests
     private sealed class FakeController : IDesktopController
     {
         public DesktopSnapshot Snapshot { get; set; }
-        public int Starts, Stops, Summaries, Resumes, Shutdowns, Prepares, Cancels, Deletes;
+        public int Starts, Stops, Summaries, Resumes, Recovers, Shutdowns, Prepares, Cancels, Deletes;
+        public string? RecoveredDirectory;
+        public Guid? RecoveredId;
         public bool FailDelete;
         public bool FailStart;
         public string? Title;
@@ -1371,6 +1527,8 @@ public sealed class WindowTests
         public TaskCompletionSource? PrepareCompletion;
         public TaskCompletionSource? StartCompletion;
         public TaskCompletionSource? StopCompletion;
+        public TaskCompletionSource? RecoverCompletion;
+        public string? RecoverFailure;
         public event Action<OperationNotice>? Notice;
         public event Action<CaptureStatus>? RecordingChanged;
         public void Report(OperationNotice notice) => Notice?.Invoke(notice);
@@ -1422,6 +1580,15 @@ public sealed class WindowTests
             return Task.CompletedTask;
         }
         public Task ResumeAsync(string directory) { Resumes++; return Task.CompletedTask; }
+        public async Task RecoverAsync(string directory, Guid id)
+        {
+            Recovers++; RecoveredDirectory = directory; RecoveredId = id;
+            if (RecoverCompletion is not null) await RecoverCompletion.Task;
+            if (RecoverFailure is not null) throw new InvalidDataException(RecoverFailure);
+            Snapshot = Snapshot with { Sessions = Snapshot.Sessions.Select(session => session.Directory == directory && session.Data?.Id == id
+                ? session with { Data = session.Data with { RecordingState = RecordingState.Recorded, JobState = JobState.Paused,
+                    Error = null } } : session).ToArray() };
+        }
         public Task CancelProcessingAsync(string directory)
         {
             Cancels++;

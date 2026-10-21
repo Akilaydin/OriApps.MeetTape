@@ -24,6 +24,7 @@ public interface IDesktopController
     Task<string?> StopAsync();
     Task PrepareAsync(string directory, string? title);
     Task ChooseTrimAsync(TrimDecision decision, double? start = null, double? end = null);
+    Task RecoverAsync(string directory, Guid id);
     Task ResumeAsync(string directory);
     Task CancelProcessingAsync(string directory);
     Task DeleteRecordingAsync(string directory, Guid id);
@@ -146,6 +147,21 @@ public sealed class DesktopController : IDesktopController
 
     public Task ResumeAsync(string directory) => JobActionAsync(() => jobs.Resume(directory));
     public Task SummaryAsync(string directory) => JobActionAsync(() => jobs.RequestSummary(directory));
+
+    public Task RecoverAsync(string directory, Guid id) => RunAsync(() =>
+    {
+        RequireIdle();
+        if (awaitingTitle is not null) throw new InvalidOperationException("Finish naming the stopped recording first.");
+        jobs.PauseAndWait();
+        preparation.CancelAndWait();
+        try
+        {
+            SessionRecovery.RecoverAsync(directory, id, jobs.MeetingsRoots, config.Settings.Capture.FfmpegPath)
+                .GetAwaiter().GetResult();
+            Publish(new(NoticeKind.Information, "Recording recovered. Continue with Name / Trim or Resume processing.", id));
+        }
+        finally { jobs.Start(); }
+    });
 
     public Task CancelProcessingAsync(string directory) => RunAsync(() =>
     {

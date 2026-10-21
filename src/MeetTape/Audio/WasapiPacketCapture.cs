@@ -11,6 +11,7 @@ public sealed class WasapiPacketEventArgs(byte[] buffer, int count, long deviceP
     public long DevicePosition { get; } = devicePosition;
     public long QpcPosition100ns { get; } = qpcPosition;
     public AudioClientBufferFlags Flags { get; } = flags;
+    internal int SourceEpoch { get; set; }
 }
 
 // Keep native packet positions: high-level DataAvailable aggregation discards them.
@@ -19,6 +20,7 @@ public sealed class WasapiPacketCapture : IWaveIn
     private readonly AudioClient client;
     private readonly bool loopback;
     private readonly ManualResetEventSlim stop = new();
+    private readonly TaskCompletionSource started = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private Thread? worker;
     private bool disposed;
 
@@ -68,6 +70,9 @@ public sealed class WasapiPacketCapture : IWaveIn
         var buffer = new byte[checked(client.BufferSize * WaveFormat.BlockAlign)];
         worker = new Thread(() => Run(capture, buffer)) { IsBackground = true, Name = loopback ? "MeetTape-Them" : "MeetTape-Me" };
         worker.Start();
+        // Initialization is synchronous, but AudioClient.Start runs on the capture thread.
+        // A hot endpoint switch must know this client started before retiring a working source.
+        started.Task.WaitAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();
     }
 
     private void Run(AudioCaptureClient capture, byte[] buffer)
@@ -76,6 +81,7 @@ public sealed class WasapiPacketCapture : IWaveIn
         try
         {
             client.Start();
+            started.TrySetResult();
             while (!stop.Wait(10))
             {
                 while (!stop.IsSet && capture.GetNextPacketSize() > 0)
@@ -96,7 +102,7 @@ public sealed class WasapiPacketCapture : IWaveIn
                 }
             }
         }
-        catch (Exception ex) { failure = ex; }
+        catch (Exception ex) { failure = ex; started.TrySetException(ex); }
         finally
         {
             // Device invalidation may also make Stop fail. Never let it escape the worker thread.

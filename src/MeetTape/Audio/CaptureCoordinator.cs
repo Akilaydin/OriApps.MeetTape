@@ -1,5 +1,6 @@
 using OriApps.MeetTape.Diagnostics;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 
@@ -21,6 +22,8 @@ public sealed record CaptureStatus(bool IsActive, TimeSpan Duration, long MeByte
     public AudioTimingStats ThemTiming { get; init; } = new();
     public double MeLevel { get; init; }
     public double ThemLevel { get; init; }
+    public string? MeUnavailable { get; init; }
+    public string? ThemUnavailable { get; init; }
 }
 
 public sealed class CaptureCoordinator(
@@ -43,6 +46,13 @@ public sealed class CaptureCoordinator(
     private long meBytes;
     private long themBytes;
     private string? lastError;
+    private string? meUnavailable, themUnavailable;
+    private string? meEndpointId, themEndpointId;
+    private int meEpoch, themEpoch;
+    private bool meSwitchPending, themSwitchPending;
+    private IDisposable? endpointObserver;
+    private Timer? reconnectTimer;
+    private bool reconnectScheduled;
     private volatile bool stopping;
     private bool disposed;
 
@@ -69,7 +79,8 @@ public sealed class CaptureCoordinator(
                         RecordingDirectory = RecordingDirectory, AudioFrames = AudioFrames, Discontinuities = Discontinuities,
                         ClockAdjustments = ClockAdjustments, MeTiming = meTiming, ThemTiming = themTiming,
                         MeLevel = active is null ? 0 : Decay(mePeak, meLevelAt, levelNow),
-                        ThemLevel = active is null ? 0 : Decay(themPeak, themLevelAt, levelNow)
+                        ThemLevel = active is null ? 0 : Decay(themPeak, themLevelAt, levelNow),
+                        MeUnavailable = meUnavailable, ThemUnavailable = themUnavailable
                     };
             }
         }
@@ -108,6 +119,11 @@ public sealed class CaptureCoordinator(
                 Interlocked.Exchange(ref themBytes, 0);
                 Volatile.Write(ref lastError, null);
                 stopping = false;
+                meUnavailable = themUnavailable = null;
+                meEndpointId = sources.MeDevice?.Id;
+                themEndpointId = sources.ThemDevice?.Id;
+                meEpoch = themEpoch = 0;
+                meSwitchPending = themSwitchPending = false;
                 AudioFrames = 0;
                 lock (timingGate)
                 {
@@ -117,11 +133,24 @@ public sealed class CaptureCoordinator(
                     Discontinuities = 0; ClockAdjustments = 0;
                 }
                 started?.Invoke(sources, startedAt);
-                Subscribe(sources, sources.Me, CaptureChannel.Me);
-                Subscribe(sources, sources.Them, CaptureChannel.Them);
+                var initialMe = sources.Current(CaptureChannel.Me)!;
+                var initialThem = sources.Current(CaptureChannel.Them)!;
+                Subscribe(sources, initialMe, CaptureChannel.Me, meEpoch);
+                Subscribe(sources, initialThem, CaptureChannel.Them, themEpoch);
+                initialMe.Activate();
+                initialThem.Activate();
                 Volatile.Write(ref active, sources);
                 sources.Me.StartRecording();
                 sources.Them.StartRecording();
+                if (sources.Observe is not null)
+                {
+                    try { endpointObserver = sources.Observe(change => OnEndpointChanged(sources, change)); }
+                    catch (Exception ex)
+                    {
+                        AppDiagnostics.Error("capture", "Observe endpoints", ex);
+                        AppDiagnostics.Info("capture", "Device change notifications unavailable; recording continues on selected endpoints");
+                    }
+                }
                 AppDiagnostics.Info("capture", "Me/Them capture started");
                 NotifyStateChanged();
             }
@@ -132,6 +161,12 @@ public sealed class CaptureCoordinator(
                     AppDiagnostics.UserMessage(ex, "Cannot start capture. Check microphone permissions and selected active devices.");
                 Volatile.Write(ref lastError, diagnostic);
                 stopping = true;
+                try { endpointObserver?.Dispose(); }
+                catch (Exception disposeError) { AppDiagnostics.Error("capture", "Dispose device observer", disposeError); }
+                finally { endpointObserver = null; }
+                reconnectTimer?.Dispose();
+                reconnectTimer = null;
+                reconnectScheduled = false;
                 try { sources?.Dispose(); }
                 catch { /* Preserve the original startup failure if cleanup also fails. */ }
                 try { stopped?.Invoke(Stopwatch.GetTimestamp()); }
@@ -171,48 +206,291 @@ public sealed class CaptureCoordinator(
         }
     }
 
-    private void Subscribe(CaptureSources sources, IWaveIn source, CaptureChannel channel)
+    private void Subscribe(CaptureSources sources, CaptureSource captureSource, CaptureChannel channel, int epoch)
     {
+        var source = captureSource.Audio;
         var format = source.WaveFormat;
         source.DataAvailable += (_, args) =>
         {
-            if (args.BytesRecorded == 0)
+            if (args.BytesRecorded == 0 || stopping || !ReferenceEquals(Volatile.Read(ref active), sources)
+                || !ReferenceEquals(sources.Current(channel)?.Audio, source))
                 return;
             try
             {
                 // NAudio reuses its buffer: consumers must finish before returning or copy into a bounded queue.
+                if (args is WasapiPacketEventArgs packet) packet.SourceEpoch = epoch;
                 consume?.Invoke(channel, args, format, Stopwatch.GetTimestamp());
                 if (channel == CaptureChannel.Me)
                     Interlocked.Add(ref meBytes, args.BytesRecorded);
                 else
                     Interlocked.Add(ref themBytes, args.BytesRecorded);
             }
-            catch (Exception ex) { QueueFailure(sources, channel, ex); }
+            catch (Exception ex)
+            {
+                // The callback already passed the active-source check. A failed enqueue may have lost audio,
+                // even if this endpoint is replaced before the queued failure handler can run.
+                QueueFailure(sources, channel, ex);
+            }
         };
         source.RecordingStopped += (_, args) =>
         {
-            if (!stopping)
-                QueueFailure(sources, channel, args.Exception);
+            bool activated = captureSource.ObserveStop();
+            if (!activated || stopping) return;
+            if (args.Exception is null || IsDeviceInvalidated(args.Exception))
+                QueueDeviceLoss(sources, source, channel, args.Exception);
+            else
+                QueueFailure(sources, channel, args.Exception, source);
         };
     }
 
-    private void QueueFailure(CaptureSources sources, CaptureChannel channel, Exception? error)
+    private static bool IsDeviceInvalidated(Exception error) => error is COMException
+        && error.HResult is unchecked((int)0x88890004) or unchecked((int)0x88890026);
+
+    private void QueueDeviceLoss(CaptureSources sources, IWaveIn source, CaptureChannel channel, Exception? error)
+    {
+        if (error is not null) AppDiagnostics.Error("capture", channel + " disconnected", error);
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            lock (control)
+            {
+                if (stopping || !ReferenceEquals(active, sources) ||
+                    !ReferenceEquals(sources.Current(channel)?.Audio, source)) return;
+                ReplaceChannel(sources, channel, lost: true, reopenNow: false);
+            }
+        });
+    }
+
+    private void OnEndpointChanged(CaptureSources sources, EndpointChange change)
+    {
+        // Endpoint notifications arrive on a Core Audio callback thread; all joins/opening run elsewhere.
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            lock (control)
+            {
+                if (stopping || !ReferenceEquals(active, sources)) return;
+                if (change.Kind == EndpointChangeKind.DefaultChanged)
+                {
+                    if (change.Channel is { } channel && IsDefaultSelection(sources, channel))
+                    {
+                        bool changed = !string.Equals(EndpointId(channel), change.Id, StringComparison.OrdinalIgnoreCase);
+                        SetSwitchPending(channel, changed);
+                        if (changed || sources.Current(channel) is null)
+                            ReplaceChannel(sources, channel, lost: sources.Current(channel) is null);
+                        else
+                        {
+                            SetUnavailable(channel, null);
+                            NotifyStateChanged();
+                            StopReconnectIfReady(sources);
+                        }
+                    }
+                    return;
+                }
+                foreach (CaptureChannel channel in new[] { CaptureChannel.Me, CaptureChannel.Them })
+                {
+                    var current = sources.Current(channel);
+                    bool selected = string.Equals(EndpointId(channel), change.Id, StringComparison.OrdinalIgnoreCase);
+                    if (current is not null)
+                    {
+                        if (selected && change.Kind == EndpointChangeKind.Removed ||
+                            selected && change.Kind == EndpointChangeKind.StateChanged && !change.Active)
+                            ReplaceChannel(sources, channel, lost: true, reopenNow: false);
+                    }
+                    else if ((change.Kind == EndpointChangeKind.Added
+                                 || change.Kind == EndpointChangeKind.StateChanged && change.Active)
+                             && (IsDefaultSelection(sources, channel) || selected))
+                        ReplaceChannel(sources, channel, lost: true);
+                }
+            }
+        });
+    }
+
+    private static bool IsDefaultSelection(CaptureSources sources, CaptureChannel channel) =>
+        (channel == CaptureChannel.Me ? sources.MeDevice : sources.ThemDevice)?.IsDefault == true;
+
+    private string? EndpointId(CaptureChannel channel) => channel == CaptureChannel.Me ? meEndpointId : themEndpointId;
+
+    private void ReplaceChannel(CaptureSources sources, CaptureChannel channel, bool lost, bool reopenNow = true)
+    {
+        var old = sources.Current(channel);
+        CaptureSource? replacement = null;
+        if (reopenNow)
+        {
+            try { replacement = sources.Reopen?.Invoke(channel); }
+            catch (Exception error) { AppDiagnostics.Error("capture", channel + " endpoint unavailable", error); }
+        }
+        if (!lost && replacement is null)
+        {
+            if (old is not null) WarnPendingSwitch(channel);
+            ScheduleReconnect(sources); // Keep a healthy source while the new default is not ready.
+            return;
+        }
+        if (!lost && old?.Info?.Id is { } currentId
+            && string.Equals(replacement?.Info?.Id, currentId, StringComparison.OrdinalIgnoreCase))
+        {
+            DisposeCandidate(replacement, channel);
+            SetSwitchPending(channel, false);
+            SetUnavailable(channel, null);
+            NotifyStateChanged();
+            StopReconnectIfReady(sources);
+            return;
+        }
+
+        int epoch = channel == CaptureChannel.Me ? meEpoch + 1 : themEpoch + 1;
+        if (replacement is not null)
+        {
+            try
+            {
+                // Pre-start in quarantine. Its callbacks are ignored until the old source has joined.
+                Subscribe(sources, replacement, channel, epoch);
+                replacement.Audio.StartRecording();
+            }
+            catch (Exception error)
+            {
+                AppDiagnostics.Error("capture", channel + " endpoint restart", error);
+                try { replacement.Dispose(); }
+                catch (Exception disposeError) { AppDiagnostics.Error("capture", "Dispose failed endpoint", disposeError); }
+                replacement = null;
+                if (!lost)
+                {
+                    WarnPendingSwitch(channel);
+                    ScheduleReconnect(sources);
+                    return;
+                }
+            }
+        }
+        if (replacement is not null && !replacement.Activate())
+        {
+            AppDiagnostics.Info("capture", channel + " candidate disconnected before endpoint switch");
+            DisposeCandidate(replacement, channel);
+            replacement = null;
+            if (!lost)
+            {
+                WarnPendingSwitch(channel);
+                ScheduleReconnect(sources);
+                return;
+            }
+        }
+
+        if (old is not null)
+        {
+            sources.Replace(channel, null); // Obsolete callbacks are ignored before joining this worker.
+            if (lost) SetUnavailable(channel, $"{channel} audio device unavailable. Missing audio is recorded as silence.");
+            ReportTiming(channel, new(AudioTimingIssueKind.Discontinuity, 0, 0,
+                $"Audio endpoint interrupted: {channel} changed or disconnected; part of this track may contain silence."));
+            AppDiagnostics.Info("capture", channel + " endpoint unavailable; continuing other track");
+            if (lost) NotifyStateChanged();
+            try
+            {
+                try { old.Audio.StopRecording(); }
+                finally { old.Dispose(); }
+            }
+            catch (Exception error)
+            {
+                AppDiagnostics.Error("capture", channel + " endpoint cleanup", error);
+                try { replacement?.Dispose(); }
+                catch (Exception disposeError) { AppDiagnostics.Error("capture", "Dispose replacement", disposeError); }
+                StopOnFailure($"{channel} capture device could not stop safely; original audio retained.");
+                return;
+            }
+        }
+        if (replacement is null)
+        {
+            ScheduleReconnect(sources);
+            return;
+        }
+        sources.Replace(channel, replacement);
+        if (channel == CaptureChannel.Me) { meEndpointId = replacement.Info?.Id; meEpoch = epoch; }
+        else { themEndpointId = replacement.Info?.Id; themEpoch = epoch; }
+        SetSwitchPending(channel, false);
+        SetUnavailable(channel, null);
+        AppDiagnostics.Info("capture", channel + " endpoint connected");
+        NotifyStateChanged();
+        StopReconnectIfReady(sources);
+    }
+
+    private void ScheduleReconnect(CaptureSources sources)
+    {
+        if (stopping || sources.Reopen is null) return;
+        reconnectTimer ??= new Timer(_ => RetryDisconnected(), null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+        if (reconnectScheduled) return;
+        reconnectTimer.Change(TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(5));
+        reconnectScheduled = true;
+    }
+
+    private bool SwitchPending(CaptureChannel channel) => channel == CaptureChannel.Me ? meSwitchPending : themSwitchPending;
+    private void SetSwitchPending(CaptureChannel channel, bool value)
+    {
+        if (channel == CaptureChannel.Me) meSwitchPending = value;
+        else themSwitchPending = value;
+    }
+
+    private void StopReconnectIfReady(CaptureSources sources)
+    {
+        if (sources.Current(CaptureChannel.Me) is null || sources.Current(CaptureChannel.Them) is null
+            || meSwitchPending || themSwitchPending) return;
+        reconnectTimer?.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+        reconnectScheduled = false;
+    }
+
+    internal void RetryDisconnected()
+    {
+        lock (control)
+        {
+            var sources = active;
+            if (stopping || sources?.Reopen is null) return;
+            foreach (var channel in new[] { CaptureChannel.Me, CaptureChannel.Them })
+                if (sources.Current(channel) is null || SwitchPending(channel))
+                    ReplaceChannel(sources, channel, lost: sources.Current(channel) is null);
+        }
+    }
+
+    private void SetUnavailable(CaptureChannel channel, string? message)
+    {
+        if (channel == CaptureChannel.Me) meUnavailable = message;
+        else themUnavailable = message;
+    }
+
+    private void WarnPendingSwitch(CaptureChannel channel)
+    {
+        bool firstWarning = channel == CaptureChannel.Me ? meUnavailable is null : themUnavailable is null;
+        if (firstWarning)
+            ReportTiming(channel, new(AudioTimingIssueKind.Discontinuity, 0, 0,
+                $"Audio endpoint interrupted: {channel} could not switch to the new Windows default; some audio may be missing."));
+        SetUnavailable(channel, $"{channel} could not switch to the new Windows default. Previous device remains active; audio from the new default may be missing.");
+        NotifyStateChanged();
+    }
+
+    private static void DisposeCandidate(CaptureSource? source, CaptureChannel channel)
+    {
+        try { source?.Dispose(); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            AppDiagnostics.Error("capture", channel + " replacement cleanup", error);
+        }
+    }
+
+    private void StopOnFailure(string diagnostic)
+    {
+        if (lastError is not null) return;
+        lastError = diagnostic;
+        StopCore();
+        Failed?.Invoke(diagnostic);
+    }
+
+    private void QueueFailure(CaptureSources sources, CaptureChannel channel, Exception? error, IWaveIn? source = null)
     {
         if (error is not null) AppDiagnostics.Error("capture", channel + " stopped", error);
         string diagnostic = error is RecordingException ? $"{channel}: {error.Message}" :
             error is null ? $"{channel} capture stopped unexpectedly. Check the device connection and permissions." :
             AppDiagnostics.UserMessage(error, $"{channel} capture stopped unexpectedly. Check the device connection and permissions.");
-        if (Interlocked.CompareExchange(ref lastError, diagnostic, null) is not null)
-            return;
         // Never dispose/join a WASAPI thread from its own data/stopped callback.
         ThreadPool.QueueUserWorkItem(_ =>
         {
             lock (control)
             {
-                if (!ReferenceEquals(active, sources))
-                    return;
-                StopCore();
-                Failed?.Invoke(diagnostic);
+                if (stopping || !ReferenceEquals(active, sources) || lastError is not null
+                    || source is not null && !ReferenceEquals(sources.Current(channel)?.Audio, source)) return;
+                StopOnFailure(diagnostic);
             }
         });
     }
@@ -236,7 +514,9 @@ public sealed class CaptureCoordinator(
                 InvalidTimestamps = previous.InvalidTimestamps + (issue.Kind == AudioTimingIssueKind.InvalidTimestamp ? 1 : 0),
                 Discontinuities = previous.Discontinuities + (discontinuity ? 1 : 0),
                 LargestShiftFrames = Math.Max(previous.LargestShiftFrames, issue.ShiftFrames),
-                LastIssue = issue.Detail
+                // Preserve the more important device-loss warning if later packets have clock anomalies.
+                LastIssue = previous.LastIssue?.StartsWith("Audio endpoint interrupted:", StringComparison.Ordinal) == true
+                    ? previous.LastIssue : issue.Detail
             };
             if (channel == CaptureChannel.Me)
                 meTiming = updated;
@@ -252,10 +532,16 @@ public sealed class CaptureCoordinator(
         var sources = active!;
         long endedAt = Stopwatch.GetTimestamp();
         stopping = true;
+        try { endpointObserver?.Dispose(); }
+        catch (Exception ex) { AppDiagnostics.Error("capture", "Stop device monitor", ex); }
+        finally { endpointObserver = null; }
+        reconnectTimer?.Dispose();
+        reconnectTimer = null;
+        reconnectScheduled = false;
         try
         {
-            try { sources.Me.StopRecording(); }
-            finally { sources.Them.StopRecording(); }
+            try { sources.Current(CaptureChannel.Me)?.Audio.StopRecording(); }
+            finally { sources.Current(CaptureChannel.Them)?.Audio.StopRecording(); }
         }
         catch (Exception ex)
         {
