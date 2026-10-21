@@ -27,7 +27,7 @@ internal sealed class WasapiMicrophoneSessionScanner : IMicrophoneSessionScanner
                 var sessions = device.AudioSessionManager.Sessions;
                 for (int i = 0; i < sessions.Count; i++)
                 {
-                    var session = sessions[i];
+                    using var session = sessions[i];
                     if (session.State != AudioSessionState.AudioSessionStateActive) continue;
                     uint pid = session.GetProcessID;
                     // A zero/nonrepresentable PID cannot safely be classified as another app.
@@ -55,13 +55,19 @@ internal sealed class WasapiMicrophoneSessionScanner : IMicrophoneSessionScanner
 // baseline untouched instead of fabricating an app exit/reentry.
 internal sealed class MicrophoneActivityPoller(IMicrophoneSessionScanner scanner, MicrophoneOfferTracker tracker)
 {
+    private bool reportedFailure;
+
     public async Task<MicrophoneOffer?> PollAsync(Func<bool> canOffer)
     {
         IReadOnlyList<MicrophoneSession> sessions;
-        try { sessions = await Task.Run(scanner.Scan); }
+        try { sessions = await Task.Run(scanner.Scan); reportedFailure = false; }
         catch (Exception error)
         {
-            AppDiagnostics.Error("microphone-monitor", "Enumerate capture sessions", error);
+            if (!reportedFailure)
+            {
+                reportedFailure = true;
+                AppDiagnostics.Error("microphone-monitor", "Enumerate capture sessions", error);
+            }
             return null;
         }
         return tracker.Observe(sessions, canOffer());
