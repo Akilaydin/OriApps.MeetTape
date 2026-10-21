@@ -142,6 +142,61 @@ public sealed class EncodingTests : IDisposable
     }
 
     [Fact]
+    public async Task ThemDisconnectAndRebindFinalizeSynchronizedMp3WithoutLosingContinuedMeAudio()
+    {
+        string example = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../config.example.json"));
+        var loaded = ConfigurationLoader.Load(example);
+        var config = loaded with { Settings = loaded.Settings with { MeetingsRoot = directory } };
+        var me = new SyntheticSource();
+        var oldThem = new SyntheticSource();
+        var newThem = new SyntheticSource { WaveFormat = WaveFormat.CreateIeeeFloatWaveFormat(44100, 1) };
+        Action<EndpointChange>? changed = null;
+        bool newDefaultReady = false;
+        var initialMe = new AudioDevice("me", "Microphone", CaptureChannel.Me, true);
+        var initialThem = new AudioDevice("them-old", "Bluetooth", CaptureChannel.Them, true);
+        using var capture = new Mp3Recorder(config, () => new CaptureSources(
+            new CaptureSource(me, info: initialMe), new CaptureSource(oldThem, info: initialThem))
+        {
+            MeDevice = initialMe, ThemDevice = initialThem,
+            Reopen = channel =>
+            {
+                Assert.Equal(CaptureChannel.Them, channel);
+                if (!newDefaultReady) throw new IOException("No current default playback endpoint.");
+                return new(newThem, info: new("them-new", "Speakers", channel, true));
+            },
+            Observe = callback => { changed = callback; return new MemoryStream(); }
+        }).Capture;
+
+        capture.Start();
+        me.Emit(amplitude: 0.5f, frames: 960, toneHz: 440);
+        oldThem.Emit(amplitude: 0.4f, frames: 960, toneHz: 440);
+        oldThem.Fail(new System.Runtime.InteropServices.COMException("private device error", unchecked((int)0x88890004)));
+        Assert.True(SpinWait.SpinUntil(() => capture.Status.ThemUnavailable is not null, TimeSpan.FromSeconds(5)));
+        await Task.Delay(160);
+        Assert.True(capture.Status.IsActive);
+        me.Emit(amplitude: 0.5f, frames: 960, toneHz: 440);
+        newDefaultReady = true;
+        changed!(new(EndpointChangeKind.DefaultChanged, "them-new", CaptureChannel.Them));
+        Assert.True(SpinWait.SpinUntil(() => capture.Status.ThemUnavailable is null, TimeSpan.FromSeconds(5)));
+        newThem.Emit(amplitude: 0.4f, frames: 882, toneHz: 440);
+        await Task.Delay(60);
+        me.Emit(amplitude: 0.5f, frames: 960, toneHz: 440);
+        capture.Stop();
+
+        var saved = SessionStore.Read(capture.RecordingDirectory!);
+        Assert.Equal(RecordingState.Recorded, saved.RecordingState);
+        Assert.Null(saved.Error);
+        Assert.True(saved.ThemTiming.Discontinuities >= 1);
+        Assert.Equal(saved.MeTiming.Discontinuities + saved.ThemTiming.Discontinuities, saved.Discontinuities);
+        float[] meAudio = await DecodeAsync(Path.Combine(capture.RecordingDirectory!, "me.mp3"));
+        float[] themAudio = await DecodeAsync(Path.Combine(capture.RecordingDirectory!, "them.mp3"));
+        Assert.Equal(meAudio.Length, themAudio.Length);
+        Assert.True(meAudio.Length > 4800);
+        Assert.Contains(meAudio.Skip(4800), sample => Math.Abs(sample) > 0.01f);
+        Assert.Contains(themAudio.Skip(4800), sample => Math.Abs(sample) > 0.01f);
+    }
+
+    [Fact]
     public async Task BackloggedPacketsExtendBothTracksAndPersistFullTranscribableDuration()
     {
         string example = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../config.example.json"));
@@ -331,15 +386,17 @@ public sealed class EncodingTests : IDisposable
         public void StartRecording() { }
         public void StopRecording() => RecordingStopped?.Invoke(this, new StoppedEventArgs());
         public void Emit(long? qpc = null, long devicePosition = 0,
-            NAudio.CoreAudioApi.AudioClientBufferFlags flags = 0, float amplitude = 0, int frames = 480)
+            NAudio.CoreAudioApi.AudioClientBufferFlags flags = 0, float amplitude = 0, int frames = 480, int toneHz = 0)
         {
             var bytes = new byte[frames * sizeof(float)];
             if (amplitude != 0)
                 for (int i = 0; i < bytes.Length; i += sizeof(float))
-                    BinaryPrimitives.WriteSingleLittleEndian(bytes.AsSpan(i), amplitude);
+                    BinaryPrimitives.WriteSingleLittleEndian(bytes.AsSpan(i),
+                        toneHz == 0 ? amplitude : amplitude * (float)Math.Sin(2 * Math.PI * toneHz * (i / sizeof(float)) / WaveFormat.SampleRate));
             DataAvailable?.Invoke(this, new WasapiPacketEventArgs(bytes, bytes.Length, devicePosition,
                 qpc ?? Mp3Track.To100ns(Stopwatch.GetTimestamp()), flags));
         }
+        public void Fail(Exception error) => RecordingStopped?.Invoke(this, new StoppedEventArgs(error));
         public void Dispose() { }
     }
 

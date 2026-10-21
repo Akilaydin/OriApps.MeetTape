@@ -10,6 +10,25 @@ public sealed class TimelineTests
     private const long Origin = 1_000_000_000;
 
     [Fact]
+    public async Task ReboundDeviceDoesNotCalibrateOldPacketsAgainstNewSampleRateOrDevicePosition()
+    {
+        using var stream = new MemoryStream();
+        var timeline = new PcmTimeline(stream, Origin);
+        using var old = Packet(48000, 480, Origin, 0);
+        using var replacement = Packet(44100, 441, Origin + 3_000_000, 13230, epoch: 1);
+        Array.Fill(replacement.Samples, 0.5f, 0, replacement.Frames);
+        await timeline.AppendAsync(old, replacement, long.MaxValue);
+        await timeline.AppendAsync(replacement, null, long.MaxValue);
+        await timeline.SilenceUntilAsync(48000);
+        float[] samples = Samples(stream);
+        Assert.Equal(48000, samples.Length);
+        Assert.All(samples[..480], sample => Assert.Equal(1f, sample));
+        Assert.All(samples[480..14400], sample => Assert.Equal(0f, sample));
+        Assert.All(samples[14400..14880], sample => Assert.Equal(0.5f, sample));
+        Assert.All(samples[14880..], sample => Assert.Equal(0f, sample));
+    }
+
+    [Fact]
     public async Task EmptyLoopbackStillProducesWholeMeetingSilence()
     {
         using var stream = new MemoryStream();
@@ -320,11 +339,11 @@ public sealed class TimelineTests
     }
 
     private static AudioPacket Packet(int rate, int count, long position, long devicePosition,
-        AudioClientBufferFlags flags = 0, long received = 0)
+        AudioClientBufferFlags flags = 0, long received = 0, int epoch = 0)
     {
         float[] samples = ArrayPool<float>.Shared.Rent(count);
         Array.Fill(samples, 1f, 0, count);
-        return new(samples, count, rate, position, devicePosition, flags) { Received100ns = received };
+        return new(samples, count, rate, position, devicePosition, flags) { Received100ns = received, SourceEpoch = epoch };
     }
 
     private static float[] Samples(MemoryStream stream)

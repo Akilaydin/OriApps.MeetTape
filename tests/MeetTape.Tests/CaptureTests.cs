@@ -164,23 +164,337 @@ public sealed class CaptureTests
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task DeviceFailureStopsBothSourcesOutsideCallbackAndKeepsSafeDiagnostic(bool microphone)
+    public async Task DeviceDisconnectionKeepsOtherSourceAndContinuesCapture(bool microphone)
     {
         var me = new FakeSource();
         var them = new FakeSource();
-        var failed = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var notices = new List<CaptureStatus>();
         using var capture = new CaptureCoordinator(() => new(me, them));
-        capture.Failed += message => failed.TrySetResult(message);
+        int failures = 0;
+        capture.Failed += _ => Interlocked.Increment(ref failures);
+        capture.StateChanged += notices.Add;
         capture.Start();
         (microphone ? me : them).Fail(new COMException("private meeting content", unchecked((int)0x88890004)));
-        string diagnostic = await failed.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.Contains(microphone ? "Me" : "Them", diagnostic);
-        Assert.Contains("disconnected", diagnostic);
-        Assert.DoesNotContain("88890004", diagnostic);
-        Assert.DoesNotContain("private meeting content", diagnostic);
-        Assert.False(capture.Status.IsActive);
+        await WaitFor(() => (microphone ? capture.Status.MeUnavailable : capture.Status.ThemUnavailable) is not null);
+        Assert.True(capture.Status.IsActive);
+        Assert.Null(capture.Status.Error);
+        Assert.True((microphone ? them : me).Running);
+        Assert.Equal(0, failures);
+        Assert.DoesNotContain(notices, n => (n.MeUnavailable ?? "") .Contains("private") || (n.ThemUnavailable ?? "").Contains("private"));
+        capture.Stop();
         Assert.True(me.Disposed && them.Disposed);
         Assert.False(me.DisposedInsideCallback || them.DisposedInsideCallback);
+    }
+
+    [Fact]
+    public async Task SwitchingDefaultReplacesOnlyThemIgnoresUnrelatedDevicesAndRetiredCallbacks()
+    {
+        var me = new FakeSource();
+        var originalThem = new FakeSource();
+        var replacementThem = new FakeSource();
+        var fixedMe = new AudioDevice("me-id", "Me", CaptureChannel.Me, false);
+        var initialThem = new AudioDevice("them-a", "Them", CaptureChannel.Them, true);
+        Action<EndpointChange>? notify = null;
+        var observer = new FakeObserver();
+        int replaced = 0;
+        using var capture = new CaptureCoordinator(() => new CaptureSources(
+            new CaptureSource(me, info: fixedMe), new CaptureSource(originalThem, info: initialThem))
+        {
+            MeDevice = fixedMe, ThemDevice = initialThem,
+            Reopen = channel =>
+            {
+                Assert.Equal(CaptureChannel.Them, channel);
+                Interlocked.Increment(ref replaced);
+                return new(replacementThem, info: new("them-b", "New playback", channel, true));
+            },
+            Observe = callback => { notify = callback; return observer; }
+        });
+        capture.Start();
+        Assert.NotNull(notify);
+        notify!(new(EndpointChangeKind.Removed, "unrelated"));
+        notify(new(EndpointChangeKind.DefaultChanged, "unrelated", CaptureChannel.Me));
+        await Task.Delay(50);
+        Assert.Equal(0, replaced);
+        Assert.True(me.Running && originalThem.Running);
+        notify(new(EndpointChangeKind.DefaultChanged, "them-b", CaptureChannel.Them));
+        await WaitFor(() => replacementThem.Running && originalThem.Disposed);
+        Assert.Equal(1, replaced);
+        Assert.True(me.Running);
+        Assert.Null(capture.Status.Error);
+        originalThem.Fail(new IOException("Old callback after replacement."));
+        await Task.Delay(50);
+        Assert.True(capture.Status.IsActive);
+        Assert.Null(capture.Status.Error);
+        capture.Stop();
+        Assert.True(replacementThem.Disposed);
+        Assert.True(observer.Disposed);
+    }
+
+    [Fact]
+    public async Task PinnedEndpointLossWaitsForSameIdAndNeverFallsBackToNewDefault()
+    {
+        var me = new FakeSource();
+        var originalThem = new FakeSource();
+        var replacementThem = new FakeSource();
+        Action<EndpointChange>? notify = null;
+        int openings = 0;
+        var pinned = new AudioDevice("fixed", "Playback", CaptureChannel.Them, false);
+        using var capture = new CaptureCoordinator(() => new CaptureSources(
+            new CaptureSource(me, info: new("me", "Microphone", CaptureChannel.Me, false)),
+            new CaptureSource(originalThem, info: pinned))
+        {
+            MeDevice = new("me", "Microphone", CaptureChannel.Me, false),
+            ThemDevice = pinned,
+            Reopen = channel =>
+            {
+                Assert.Equal(CaptureChannel.Them, channel);
+                Interlocked.Increment(ref openings);
+                if (openings == 1) throw new IOException("Fixed endpoint is still offline");
+                return new(replacementThem, info: pinned);
+            },
+            Observe = callback => { notify = callback; return new FakeObserver(); }
+        });
+        capture.Start();
+        originalThem.Fail(new COMException("device gone", unchecked((int)0x88890004)));
+        await WaitFor(() => capture.Status.ThemUnavailable is not null);
+        Assert.True(me.Running && capture.Status.IsActive);
+        notify!(new(EndpointChangeKind.DefaultChanged, "new-default", CaptureChannel.Them));
+        notify(new(EndpointChangeKind.Added, "unrelated"));
+        await Task.Delay(50);
+        Assert.Equal(0, openings);
+        notify(new(EndpointChangeKind.Added, "fixed"));
+        await WaitFor(() => Volatile.Read(ref openings) == 1);
+        Assert.NotNull(capture.Status.ThemUnavailable);
+        capture.RetryDisconnected();
+        await WaitFor(() => replacementThem.Running);
+        Assert.Null(capture.Status.ThemUnavailable);
+        Assert.Null(capture.Status.Error);
+        capture.Stop();
+    }
+
+    [Fact]
+    public async Task NewDefaultStartFailureKeepsExistingHealthyCaptureUntilRetrySucceeds()
+    {
+        var me = new FakeSource();
+        var healthyThem = new FakeSource();
+        var failedCandidate = new FakeSource { FailStart = true };
+        var recoveredThem = new FakeSource();
+        Action<EndpointChange>? notify = null;
+        int attempts = 0;
+        var defaultMe = new AudioDevice("me", "Mic", CaptureChannel.Me, true);
+        var defaultThem = new AudioDevice("original", "Headphones", CaptureChannel.Them, true);
+        using var capture = new CaptureCoordinator(() => new CaptureSources(
+            new CaptureSource(me, info: defaultMe), new CaptureSource(healthyThem, info: defaultThem))
+        {
+            MeDevice = defaultMe, ThemDevice = defaultThem,
+            Reopen = channel =>
+            {
+                Assert.Equal(CaptureChannel.Them, channel);
+                return new(Interlocked.Increment(ref attempts) == 1 ? failedCandidate : recoveredThem,
+                    info: new("new", "Speakers", channel, true));
+            },
+            Observe = callback => { notify = callback; return new FakeObserver(); }
+        });
+        capture.Start();
+        notify!(new(EndpointChangeKind.DefaultChanged, "new", CaptureChannel.Them));
+        await WaitFor(() => Volatile.Read(ref attempts) == 1);
+        Assert.True(healthyThem.Running);
+        Assert.False(healthyThem.Disposed);
+        Assert.True(me.Running);
+        Assert.True(capture.Status.IsActive);
+        Assert.Null(capture.Status.Error);
+        Assert.Contains("could not switch", capture.Status.ThemUnavailable!);
+        Assert.True(failedCandidate.Disposed);
+
+        capture.RetryDisconnected();
+        await WaitFor(() => recoveredThem.Running && healthyThem.Disposed);
+        Assert.Equal(2, attempts);
+        Assert.Null(capture.Status.ThemUnavailable);
+        Assert.Null(capture.Status.Error);
+        capture.Stop();
+        Assert.True(recoveredThem.Disposed);
+    }
+
+    [Fact]
+    public async Task CandidateThatStopsBeforeActivationCannotReplaceHealthyDefault()
+    {
+        var me = new FakeSource();
+        var old = new FakeSource();
+        var candidate = new FakeSource { DisconnectOnStart = true };
+        Action<EndpointChange>? notify = null;
+        int reopenings = 0;
+        var initial = new AudioDevice("old", "Working", CaptureChannel.Them, true);
+        using var capture = new CaptureCoordinator(() => new CaptureSources(
+            new CaptureSource(me), new CaptureSource(old, info: initial))
+        {
+            ThemDevice = initial,
+            Reopen = channel =>
+            {
+                Interlocked.Increment(ref reopenings);
+                return new(candidate, info: new("new", "Disappeared", channel, true));
+            },
+            Observe = callback => { notify = callback; return new FakeObserver(); }
+        });
+        capture.Start();
+        notify!(new(EndpointChangeKind.DefaultChanged, "new", CaptureChannel.Them));
+        await WaitFor(() => candidate.Disposed);
+        Assert.Equal(1, reopenings);
+        Assert.True(old.Running);
+        Assert.False(old.Disposed);
+        Assert.True(me.Running);
+        Assert.True(capture.Status.IsActive);
+        Assert.Null(capture.Status.Error);
+        capture.Stop();
+    }
+
+    [Fact]
+    public async Task RepeatedInvalidationDoesNotSpinOnEndpointReopenAndStopRemainsResponsive()
+    {
+        var me = new FakeSource();
+        var them = new FakeSource();
+        int attempts = 0;
+        var playback = new AudioDevice("playback", "Headphones", CaptureChannel.Them, true);
+        using var capture = new CaptureCoordinator(() => new CaptureSources(
+            new CaptureSource(me), new CaptureSource(them, info: playback))
+        {
+            ThemDevice = playback,
+            Reopen = channel =>
+            {
+                Interlocked.Increment(ref attempts);
+                return new(new FakeSource { FailStart = true }, info: playback);
+            }
+        });
+        capture.Start();
+        them.Fail(new COMException("device lost", unchecked((int)0x88890004)));
+        await WaitFor(() => capture.Status.ThemUnavailable is not null);
+        await Task.Delay(100);
+        Assert.Equal(0, attempts); // No immediate callback-driven reopen loop.
+        capture.RetryDisconnected();
+        Assert.Equal(1, attempts);
+        await Task.Delay(100);
+        Assert.Equal(1, attempts);
+        Assert.True(capture.Status.IsActive);
+        Assert.Null(capture.Status.Error);
+        var stopwatch = Stopwatch.StartNew();
+        capture.Stop();
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(1));
+        Assert.True(me.Disposed && them.Disposed);
+    }
+
+    [Fact]
+    public async Task DefaultThemDisconnectKeepsMeAndReconnectsToNewDefault()
+    {
+        var me = new FakeSource();
+        var oldThem = new FakeSource();
+        var newThem = new FakeSource();
+        Action<EndpointChange>? notify = null;
+        bool newDefaultAvailable = false;
+        using var capture = new CaptureCoordinator(() => new CaptureSources(
+            new CaptureSource(me, info: new("me", "Microphone", CaptureChannel.Me, true)),
+            new CaptureSource(oldThem, info: new("a", "Bluetooth", CaptureChannel.Them, true)))
+        {
+            MeDevice = new("me", "Microphone", CaptureChannel.Me, true),
+            ThemDevice = new("a", "Bluetooth", CaptureChannel.Them, true),
+            Reopen = channel =>
+            {
+                Assert.Equal(CaptureChannel.Them, channel);
+                if (!newDefaultAvailable) throw new IOException("No playback default yet");
+                return new(newThem, info: new("b", "Speakers", CaptureChannel.Them, true));
+            },
+            Observe = callback => { notify = callback; return new FakeObserver(); }
+        });
+        capture.Start();
+        oldThem.Fail(new COMException("private device error", unchecked((int)0x88890004)));
+        await WaitFor(() => capture.Status.ThemUnavailable is not null);
+        Assert.True(me.Running && capture.Status.IsActive);
+        Assert.True(oldThem.Disposed);
+        Assert.Null(capture.Status.Error);
+        newDefaultAvailable = true;
+        notify!(new(EndpointChangeKind.DefaultChanged, "b", CaptureChannel.Them));
+        await WaitFor(() => newThem.Running && capture.Status.ThemUnavailable is null);
+        Assert.True(me.Running);
+        capture.Stop();
+        Assert.True(newThem.Disposed);
+    }
+
+    [Fact]
+    public async Task StaleEndpointNotificationAfterStopNeverRestartsCapture()
+    {
+        var me = new FakeSource();
+        var them = new FakeSource();
+        Action<EndpointChange>? notify = null;
+        int reopenings = 0;
+        var observer = new FakeObserver();
+        using var capture = new CaptureCoordinator(() => new CaptureSources(
+            new CaptureSource(me, info: new("me", "Microphone", CaptureChannel.Me, true)),
+            new CaptureSource(them, info: new("old", "Speakers", CaptureChannel.Them, true)))
+        {
+            MeDevice = new("me", "Microphone", CaptureChannel.Me, true),
+            ThemDevice = new("old", "Speakers", CaptureChannel.Them, true),
+            Reopen = channel =>
+            {
+                Interlocked.Increment(ref reopenings);
+                return new(new FakeSource(), info: new("new", "Other", channel, true));
+            },
+            Observe = callback => { notify = callback; return observer; }
+        });
+        capture.Start();
+        capture.Stop();
+        Assert.True(observer.Disposed);
+        notify!(new(EndpointChangeKind.DefaultChanged, "new", CaptureChannel.Them));
+        await Task.Delay(50);
+        Assert.Equal(0, reopenings);
+        Assert.True(me.Disposed && them.Disposed);
+        Assert.False(capture.Status.IsActive);
+        Assert.Null(capture.Status.Error);
+    }
+
+    [Fact]
+    public async Task EncoderAbortIsFatalEvenWhenTheOtherDeviceIsDisconnected()
+    {
+        var me = new FakeSource();
+        var them = new FakeSource();
+        using var capture = new CaptureCoordinator(() => new(me, them));
+        var failed = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        capture.Failed += diagnostic => failed.TrySetResult(diagnostic);
+        capture.Start();
+        them.Fail(new COMException("private error", unchecked((int)0x88890026)));
+        await WaitFor(() => capture.Status.ThemUnavailable is not null);
+        capture.Abort(CaptureChannel.Me, new RecordingException("Encoder failed; original audio retained."));
+        string diagnostic = await failed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Contains("Encoder failed", diagnostic);
+        Assert.False(capture.Status.IsActive);
+        Assert.True(me.Disposed && them.Disposed);
+        Assert.NotNull(capture.Status.Error);
+    }
+
+    [Fact]
+    public async Task FatalConsumerIOExceptionStillStopsBothTracksAndFailsSession()
+    {
+        var me = new FakeSource();
+        var them = new FakeSource();
+        using var capture = new CaptureCoordinator(() => new(me, them), (_, _, _, _) => throw new IOException("private IO path"));
+        var failed = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        capture.Failed += message => failed.TrySetResult(message);
+        capture.Start();
+        me.Emit();
+        string message = await failed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(capture.Status.IsActive);
+        Assert.True(me.Disposed && them.Disposed);
+        Assert.NotNull(capture.Status.Error);
+        Assert.DoesNotContain("private IO path", message);
+    }
+
+    private sealed class FakeObserver : IDisposable
+    {
+        public bool Disposed { get; private set; }
+        public void Dispose() => Disposed = true;
+    }
+
+    private static async Task WaitFor(Func<bool> condition)
+    {
+        for (int i = 0; i < 300 && !condition(); i++) await Task.Delay(10);
+        Assert.True(condition());
     }
 
     [Fact]
@@ -344,6 +658,7 @@ public sealed class CaptureTests
         public bool Disposed { get; private set; }
         public bool DisposedInsideCallback { get; private set; }
         public bool FailStart { get; init; }
+        public bool DisconnectOnStart { get; init; }
         public bool FailStop { get; init; }
         public bool FailDispose { get; init; }
         private bool inCallback;
@@ -354,6 +669,9 @@ public sealed class CaptureTests
         {
             if (FailStart) throw new COMException("private startup text");
             Running = true;
+            if (DisconnectOnStart)
+                RecordingStopped?.Invoke(this, new StoppedEventArgs(
+                    new COMException("private disappeared endpoint", unchecked((int)0x88890004))));
         }
         public void StopRecording()
         {

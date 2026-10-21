@@ -113,8 +113,6 @@ public sealed class Mp3Recorder
         try { FinishTracksAsync(Mp3Track.To100ns(ended)).GetAwaiter().GetResult(); }
         finally
         {
-            Capture.Discontinuities = (me?.Discontinuities ?? 0) + (them?.Discontinuities ?? 0);
-            Capture.ClockAdjustments = (me?.ClockAdjustments ?? 0) + (them?.ClockAdjustments ?? 0);
             me = null; them = null;
         }
     }
