@@ -61,11 +61,11 @@
                 <Grid Name="AudioLevels" ColumnDefinitions="200,*,*" ColumnSpacing="18" IsVisible="{Binding IsRecording}">
                   <TextBlock Name="RecordingTimer" Text="{Binding RecordingDuration}" FontSize="46" FontWeight="Bold" />
                   <StackPanel Grid.Column="1" Spacing="10" VerticalAlignment="Center">
-                    <TextBlock Text="Me: microphone" TextTrimming="CharacterEllipsis" ToolTip.Tip="Me: microphone" />
+                    <TextBlock Text="{Binding MeCaptureLabel}" TextTrimming="CharacterEllipsis" />
                     <ProgressBar Name="MeLevel" Value="{Binding MeLevel}" Height="8" MinWidth="0" Foreground="#32BF56" />
                   </StackPanel>
                   <StackPanel Grid.Column="2" Spacing="10" VerticalAlignment="Center">
-                    <TextBlock Text="Them: system playback" TextTrimming="CharacterEllipsis" ToolTip.Tip="Them: system playback" />
+                    <TextBlock Text="{Binding ThemCaptureLabel}" TextTrimming="CharacterEllipsis" />
                     <ProgressBar Name="ThemLevel" Value="{Binding ThemLevel}" Height="8" MinWidth="0" Foreground="#1674E8" />
                   </StackPanel>
                 </Grid>
@@ -80,6 +80,8 @@
               </StackPanel>
             </Grid>
             <TextBlock Text="{Binding PreparationText}" IsVisible="{Binding IsPreparing}" TextWrapping="Wrap" />
+            <TextBlock Name="CaptureDeviceWarning" Text="{Binding CaptureWarning}" IsVisible="{Binding HasCaptureWarning}"
+                       TextWrapping="Wrap" Foreground="#A65009" />
             <TextBlock Name="ErrorMessage" Text="{Binding ErrorText}" IsVisible="{Binding HasError}"
                        TextWrapping="Wrap" Foreground="#B91C38" />
             <Border IsVisible="{Binding IsNaming}" Padding="14" Background="#F3F6FB" CornerRadius="8">

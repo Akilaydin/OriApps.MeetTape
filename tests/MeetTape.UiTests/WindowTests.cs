@@ -356,6 +356,72 @@ public sealed class WindowTests
     }
 
     [AvaloniaFact]
+    public async Task DisconnectedTrackIsVisiblyUnavailableWhileRecordingAndNotifiesOnRecovery()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var notices = new List<OperationNotice>();
+        var model = new MainViewModel(fake, notices.Add);
+        var window = new MainWindow { DataContext = model };
+        window.Show(); await model.RefreshAsync();
+
+        var started = fake.Snapshot.Capture with { IsActive = true };
+        fake.Snapshot = fake.Snapshot with { Capture = started };
+        fake.ReportCapture(started);
+        Dispatcher.UIThread.RunJobs();
+        var unavailable = started with { ThemUnavailable = "Them audio device unavailable. Missing audio is recorded as silence." };
+        fake.Snapshot = fake.Snapshot with { Capture = unavailable };
+        fake.ReportCapture(unavailable);
+        fake.ReportCapture(unavailable);
+        Dispatcher.UIThread.RunJobs();
+        await model.RefreshAsync();
+        Assert.Equal("Them: playback unavailable", model.ThemCaptureLabel);
+        Assert.True(window.FindControl<TextBlock>("CaptureDeviceWarning")!.IsVisible);
+        Assert.Contains("silence", model.CaptureWarning);
+        Assert.True(model.IsRecording);
+        Assert.Equal(2, notices.Count);
+        Assert.Equal(NoticeKind.Warning, notices[1].Kind);
+        Assert.Contains("Them playback unavailable", notices[1].Message);
+
+        fake.Snapshot = fake.Snapshot with { Capture = started };
+        fake.ReportCapture(started);
+        Dispatcher.UIThread.RunJobs();
+        await model.RefreshAsync();
+        Assert.False(model.HasCaptureWarning);
+        Assert.Equal("Them: system playback", model.ThemCaptureLabel);
+        Assert.Equal("Them playback reconnected.", notices[2].Message);
+        Close(window, model);
+    }
+
+    [AvaloniaFact]
+    public async Task SavedSessionDetailsShowDeviceInterruptionAfterRestart()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var old = fake.Snapshot.Sessions[0];
+        var completed = old.Data! with
+        {
+            JobState = JobState.Completed,
+            ThemTiming = new(Discontinuities: 1,
+                LastIssue: "Audio endpoint interrupted: Them changed or disconnected; part of this track may contain silence."),
+            Stages = new()
+            {
+                ["trim"] = new(true, StageState.Completed),
+                ["transcribe"] = new(true, StageState.Completed),
+                ["summary"] = new(true, StageState.AwaitingRequest)
+            }
+        };
+        fake.Snapshot = fake.Snapshot with { Sessions = [old with { Data = completed }] };
+        var model = new MainViewModel(fake);
+        await model.RefreshAsync();
+        var row = Assert.Single(model.Sessions);
+        Assert.True(row.HasAudioInterruption);
+        Assert.Equal("Audio interrupted", row.DisplayStatus);
+        Assert.Contains("Them changed or disconnected", row.Details);
+        model.Detach();
+    }
+
+    [AvaloniaFact]
     public async Task ReminderStartOnlyReportsRealSuccessAndNeverStopsActiveRecording()
     {
         using var fixture = new Fixture();
