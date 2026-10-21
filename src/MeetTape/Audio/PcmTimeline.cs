@@ -9,6 +9,7 @@ public sealed class PcmTimeline(Stream destination, long origin100ns)
     private const double MinAnchorIntervalRatio = 0.75;
     private readonly byte[] output = new byte[4096 * sizeof(float)];
     private double lastRate;
+    private int lastEpoch;
     internal Action<AudioTimingIssue>? TimingIssue { get; set; }
     public long FramesWritten { get; private set; }
     public int Discontinuities { get; private set; }
@@ -37,6 +38,12 @@ public sealed class PcmTimeline(Stream destination, long origin100ns)
 
     public async ValueTask AppendAsync(AudioPacket packet, AudioPacket? next, long limit, CancellationToken cancellation = default)
     {
+        if (packet.SourceEpoch != lastEpoch)
+        {
+            lastRate = 0;
+            lastEpoch = packet.SourceEpoch;
+        }
+        if (next?.SourceEpoch != packet.SourceEpoch) next = null;
         if ((packet.Flags & AudioClientBufferFlags.DataDiscontinuity) != 0)
         {
             Discontinuities++;

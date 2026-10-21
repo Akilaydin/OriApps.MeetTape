@@ -25,6 +25,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         recordingShortcut = text; Changed();
     }
     private bool notificationActive;
+    private bool meNotificationUnavailable, themNotificationUnavailable;
     private readonly Queue<OperationNotice> processingIssues = new();
     private DesktopSnapshot snapshot = new(new(false, TimeSpan.Zero, 0, 0, null), [], null, null, false, null);
     private bool refreshing;
@@ -55,6 +56,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string CaptureHeading => IsRecording ? "Recording" : IsNaming ? "Recording saved" : IsPreparing ? "Preparing audio" :
         snapshot.Capture.Error is not null ? "Recording stopped with errors" : controller is null ? "Setup required" : "Ready";
     public string RecordingDuration => snapshot.Capture.Duration.ToString(@"hh\:mm\:ss");
+    public string MeCaptureLabel => snapshot.Capture.MeUnavailable is null ? "Me: microphone" : "Me: microphone unavailable";
+    public string ThemCaptureLabel => snapshot.Capture.ThemUnavailable is null ? "Them: system playback" : "Them: playback unavailable";
+    public bool HasCaptureWarning => snapshot.Capture.IsActive
+        && (snapshot.Capture.MeUnavailable is not null || snapshot.Capture.ThemUnavailable is not null);
+    public string CaptureWarning => string.Join(" ", new[] { snapshot.Capture.MeUnavailable, snapshot.Capture.ThemUnavailable }
+        .OfType<string>());
     public string ProcessingText
     {
         get
@@ -189,10 +196,34 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     private void OnRecordingChanged(CaptureStatus status) => Dispatcher.UIThread.Post(() =>
     {
-        if (status.IsActive == notificationActive) return;
-        notificationActive = status.IsActive;
-        SendRecordingNotification(new(status.Error is null ? NoticeKind.Information : NoticeKind.Error,
-            status.IsActive ? "Recording started" : status.Error is null ? "Recording stopped" : "Recording interrupted"));
+        if (status.IsActive != notificationActive)
+        {
+            notificationActive = status.IsActive;
+            SendRecordingNotification(new(status.Error is null ? NoticeKind.Information : NoticeKind.Error,
+                status.IsActive ? "Recording started" : status.Error is null ? "Recording stopped" : "Recording interrupted"));
+        }
+        if (!status.IsActive)
+        {
+            meNotificationUnavailable = themNotificationUnavailable = false;
+            if (status.Error is null && (HadEndpointInterruption(status.MeTiming) || HadEndpointInterruption(status.ThemTiming)))
+                SendRecordingNotification(new(NoticeKind.Warning,
+                    "Recording saved with an audio interruption. Check the meeting's Details before processing."));
+            return;
+        }
+        bool meLost = status.MeUnavailable is not null;
+        bool themLost = status.ThemUnavailable is not null;
+        if (meLost != meNotificationUnavailable)
+            SendRecordingNotification(new(meLost ? NoticeKind.Warning : NoticeKind.Information,
+                meLost ? status.MeUnavailable!.Contains("could not switch", StringComparison.Ordinal)
+                    ? "Me default microphone switch failed; previous microphone remains active."
+                    : "Me microphone unavailable; recording silence until restored." : "Me microphone reconnected."));
+        if (themLost != themNotificationUnavailable)
+            SendRecordingNotification(new(themLost ? NoticeKind.Warning : NoticeKind.Information,
+                themLost ? status.ThemUnavailable!.Contains("could not switch", StringComparison.Ordinal)
+                    ? "Them default playback switch failed; previous playback source remains active."
+                    : "Them playback unavailable; recording silence until restored." : "Them playback reconnected."));
+        meNotificationUnavailable = meLost;
+        themNotificationUnavailable = themLost;
     });
 
     private void SendRecordingNotification(OperationNotice notice)
@@ -200,6 +231,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
         try { notifyRecording?.Invoke(notice); }
         catch (Exception) { SetInfo("Windows notification unavailable. Use the window or tray for recording status."); }
     }
+
+    internal static bool HadEndpointInterruption(AudioTimingStats timing) =>
+        timing.LastIssue?.StartsWith("Audio endpoint interrupted:", StringComparison.Ordinal) == true;
 
     private void OnNotice(OperationNotice notice) => Dispatcher.UIThread.Post(() =>
     {
@@ -533,18 +567,20 @@ public sealed record SessionRow(string Directory, Guid? Id, string Title, string
 {
     public string Duration { get; init; } = "--:--";
     public string Details { get; init; } = "";
+    public bool HasAudioInterruption { get; init; }
     internal bool PausedJob { get; init; }
-    public string DisplayStatus => PausedJob ? "Paused" : Status is "Running" or "NotStarted" ? "Processing" :
+    public string DisplayStatus => HasAudioInterruption && Status == "Completed" ? "Audio interrupted" :
+        PausedJob ? "Paused" : Status is "Running" or "NotStarted" ? "Processing" :
         Status.StartsWith("Retry ", StringComparison.Ordinal) ? "Retry" : Status == "Awaiting trim choice" ? "Needs trim" : Status;
     public string StatusForeground => DisplayStatus switch
     {
         "Recording" or "Failed" or "Interrupted" or "Invalid metadata" => "#DB2644",
-        "Completed" => "#078A3C", "Paused" or "Needs trim" => "#A65009", "Canceled" => "#69778E", _ => "#1674E8"
+        "Completed" => "#078A3C", "Paused" or "Needs trim" or "Audio interrupted" => "#A65009", "Canceled" => "#69778E", _ => "#1674E8"
     };
     public string StatusBackground => DisplayStatus switch
     {
         "Recording" or "Failed" or "Interrupted" or "Invalid metadata" => "#FFEBEF",
-        "Completed" => "#E7F8ED", "Paused" or "Needs trim" => "#FFF0E3", "Canceled" => "#EEF1F5", _ => "#E8F2FF"
+        "Completed" => "#E7F8ED", "Paused" or "Needs trim" or "Audio interrupted" => "#FFF0E3", "Canceled" => "#EEF1F5", _ => "#E8F2FF"
     };
     public bool CanResume { get; init; }
     public bool CanRecover { get; init; }
@@ -571,6 +607,9 @@ public sealed record SessionRow(string Directory, Guid? Id, string Title, string
         StageProgress? summary = null;
         data?.Stages.TryGetValue("summary", out summary);
         bool canRestoreSummary = summary?.Status == StageState.Completed && !hasSummary && File.Exists(Path.Combine(session.Directory, "summary.json"));
+        string[] deviceWarnings = data is null ? [] : new[] { ("Me", data.MeTiming), ("Them", data.ThemTiming) }
+            .Where(track => MainViewModel.HadEndpointInterruption(track.Item2))
+            .Select(track => $"{track.Item1}: {track.Item2.LastIssue}").ToArray();
         return new(session.Directory, data?.Id, data?.Title ?? "Unnamed meeting", data?.StartedAtUtc.ToLocalTime().ToString("g") ?? "",
             status, progress, transcription?.TotalChunks is > 0 ? 100d * transcription.CompletedChunks / transcription.TotalChunks.Value : 0,
             session.Diagnostic, needsPreparation, hasTranscript, hasSummary)
@@ -579,7 +618,9 @@ public sealed record SessionRow(string Directory, Guid? Id, string Title, string
                 ? TimeSpan.FromSeconds(seconds).ToString(seconds >= 3600 ? @"hh\:mm\:ss" : @"mm\:ss") : "--:--",
             Details = data is null ? "Metadata unavailable." : string.Join(Environment.NewLine,
                 data.Stages.Select(stage => $"{stage.Key}: {stage.Value.Status}" +
-                    (stage.Value.TotalChunks is { } count ? $" ({stage.Value.CompletedChunks}/{count} chunks)" : ""))),
+                    (stage.Value.TotalChunks is { } count ? $" ({stage.Value.CompletedChunks}/{count} chunks)" : ""))
+                    .Concat(deviceWarnings)),
+            HasAudioInterruption = deviceWarnings.Length > 0,
             PausedJob = data is { RecordingState: RecordingState.Recorded, JobState: JobState.Paused },
             CanRecover = data is not null && SessionRecovery.CanRecover(data),
             CanResume = data is not null && ProcessingJobs.CanResume(data),

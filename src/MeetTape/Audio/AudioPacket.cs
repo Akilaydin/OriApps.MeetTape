@@ -17,6 +17,7 @@ public sealed class AudioPacket(float[] samples, int frames, int sampleRate, lon
     public long DevicePosition { get; } = devicePosition;
     public AudioClientBufferFlags Flags { get; } = flags;
     public long Received100ns { get; init; }
+    internal int SourceEpoch { get; init; }
 
     public static AudioPacket Copy(WaveInEventArgs args, WaveFormat format, long received100ns = 0)
     {
@@ -59,7 +60,7 @@ public sealed class AudioPacket(float[] samples, int frames, int sampleRate, lon
                 mono[frame] = float.IsFinite(sample) ? Math.Clamp(sample, -1, 1) : 0;
             }
             return new(mono, frames, format.SampleRate, packet.QpcPosition100ns, packet.DevicePosition, packet.Flags)
-            { Received100ns = received100ns };
+            { Received100ns = received100ns, SourceEpoch = packet.SourceEpoch };
         }
         catch { ArrayPool<float>.Shared.Return(mono); throw; }
     }

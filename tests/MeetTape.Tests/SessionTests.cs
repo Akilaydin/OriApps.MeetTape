@@ -229,22 +229,24 @@ public sealed class SessionTests : IDisposable
     }
 
     [Fact]
-    public async Task DeviceFailureIsSavedAsFailedCaptureAndPausedJob()
+    public void DeviceDisconnectionKeepsCaptureAndPersistsAudioInterruptionWithoutFailingSession()
     {
         var me = new Source();
         var recorder = new Mp3Recorder(configuration, () => new(me, new Source()));
         using var capture = recorder.Capture;
-        var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        capture.Failed += _ => finished.TrySetResult();
         capture.Start();
         me.Fail(new System.Runtime.InteropServices.COMException("private content", unchecked((int)0x88890004)));
-        await finished.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(SpinWait.SpinUntil(() => capture.Status.MeUnavailable is not null, TimeSpan.FromSeconds(5)));
+        Assert.True(capture.Status.IsActive);
+        Assert.Null(capture.Status.Error);
+        capture.Stop();
         var saved = SessionStore.Read(capture.RecordingDirectory!);
-        Assert.Equal(RecordingState.Failed, saved.RecordingState);
-        Assert.Equal(JobState.Paused, saved.JobState);
-        Assert.Contains("disconnected", saved.Error!);
-        Assert.DoesNotContain("88890004", saved.Error!);
-        Assert.DoesNotContain("private content", saved.Error!);
+        Assert.Equal(RecordingState.Recorded, saved.RecordingState);
+        Assert.Equal(JobState.NotStarted, saved.JobState);
+        Assert.Null(saved.Error);
+        Assert.True(saved.MeTiming.Discontinuities >= 1);
+        Assert.Contains("Audio endpoint interrupted:", saved.MeTiming.LastIssue!);
+        Assert.DoesNotContain("private content", saved.MeTiming.LastIssue!);
     }
 
     [Fact]
