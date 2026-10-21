@@ -126,6 +126,35 @@ public sealed class SettingsTests : IDisposable
     }
 
     [AvaloniaFact]
+    public async Task MicrophoneOfferIsOffByDefaultAndSavedWithoutChangingCaptureSettings()
+    {
+        var model = Model();
+        var window = new SettingsWindow { DataContext = model }; window.Show();
+        var checkbox = window.FindControl<CheckBox>("MicrophoneOffer")!;
+        Assert.False(checkbox.IsChecked);
+        Assert.False(model.HasUnsavedChanges);
+        checkbox.IsChecked = true;
+        Assert.True(model.HasUnsavedChanges);
+        Assert.False(ConfigurationLoader.LoadForCapture(ConfigPath).Settings.OfferRecordingOnMicrophoneUse);
+
+        await model.SaveAsync();
+        Assert.True(model.Saved, model.Message);
+        Assert.False(model.HasUnsavedChanges);
+        Assert.True(ConfigurationLoader.LoadForCapture(ConfigPath).Settings.OfferRecordingOnMicrophoneUse);
+        Assert.Equal(MicrophoneCaptureMode.WindowsDefault,
+            ConfigurationLoader.LoadForCapture(ConfigPath).Settings.Capture.MicrophoneMode);
+        window.Close();
+
+        var again = Model();
+        Assert.True(again.OfferRecordingOnMicrophoneUse);
+        again.OfferRecordingOnMicrophoneUse = false;
+        Assert.True(again.HasUnsavedChanges);
+        await again.SaveAsync();
+        Assert.True(again.Saved, again.Message);
+        Assert.False(ConfigurationLoader.LoadForCapture(ConfigPath).Settings.OfferRecordingOnMicrophoneUse);
+    }
+
+    [AvaloniaFact]
     public async Task OccupiedShortcutAndFailedPersistenceKeepTheOldBindingAndReleaseTheCandidate()
     {
         using var keys = new HotkeyFixture();

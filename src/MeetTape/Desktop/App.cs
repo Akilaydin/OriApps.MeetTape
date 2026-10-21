@@ -43,6 +43,11 @@ public sealed class App : Application
     private RecordingNotifications? notifications;
     private WindowsReminderNotifications? reminderNotifications;
     private ReminderScheduler? reminderScheduler;
+    private WindowsMicrophoneNotifications? microphoneNotifications;
+    private MicrophoneOfferTracker? microphoneTracker;
+    private MicrophoneActivityPoller? microphonePoller;
+    private DispatcherTimer? microphoneTimer;
+    private bool readingMicrophone;
     private readonly List<(Guid Id, DateOnly Occurrence, string Action)> pendingReminderActions = [];
     private RecordingTaskbar? taskbar;
     private uint taskbarButtonCreated;
@@ -129,6 +134,7 @@ public sealed class App : Application
                 Win32Properties.RemoveWndProcHookCallback(window, HotkeyMessage);
                 notifications?.Dispose();
                 reminderNotifications?.Dispose();
+                ConfigureMicrophoneOffers(false);
                 timer?.Stop(); model.Detach(); tray.Dispose();
             };
         }
@@ -137,6 +143,7 @@ public sealed class App : Application
 
     private void ModelChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
+        if (model.IsRecording) microphoneTracker?.CancelPending();
         if (status is not null) status.Header = model.CaptureText;
         if (processingStatus is not null) processingStatus.Header = model.ProcessingText;
         if (record is not null) { record.Header = model.RecordLabel + " (" + model.RecordingShortcut + ")"; record.IsEnabled = model.CanRecord; }
@@ -266,6 +273,7 @@ public sealed class App : Application
             model.ReleaseText = await StartupReleaseNotice.GetAsync(updates);
             model.SetInfo("Close hides the window. Use tray Exit to stop MeetTape.");
             controllerReady = true;
+            ConfigureMicrophoneOffers(config.Settings.OfferRecordingOnMicrophoneUse);
         }
         catch (Exception error)
         {
@@ -429,6 +437,7 @@ public sealed class App : Application
             initialized = false;
             await InitializeAsync();
         }
+        ConfigureMicrophoneOffers(updated.Settings.OfferRecordingOnMicrophoneUse);
         if (!Smoke && WindowsStartup.IsEnabled() != updated.Settings.Reminders.RunAtWindowsStartup)
         {
             try { WindowsStartup.SetEnabled(updated.Settings.Reminders.RunAtWindowsStartup); }
@@ -445,6 +454,75 @@ public sealed class App : Application
         window!.ShowInTaskbar = true;
         window.Show(); window.WindowState = WindowState.Normal; window.Activate();
     }
+
+    private void ConfigureMicrophoneOffers(bool enabled)
+    {
+        if (!enabled || Smoke || StartupError is not null || !controllerReady || allowShutdown)
+        {
+            microphoneTimer?.Stop();
+            microphoneTimer = null;
+            microphoneTracker?.CancelPending();
+            microphoneTracker = null;
+            microphonePoller = null;
+            microphoneNotifications?.Dispose();
+            microphoneNotifications = null;
+            return;
+        }
+        if (microphoneTracker is not null) return;
+
+        try
+        {
+            microphoneNotifications = new WindowsMicrophoneNotifications(
+                token => _ = HandleMicrophoneStartAsync(token),
+                () => model.SetInfo("Windows microphone notifications are unavailable. Check Windows notifications settings."));
+            microphoneTracker = new MicrophoneOfferTracker(Environment.ProcessId);
+            microphonePoller = new MicrophoneActivityPoller(new WasapiMicrophoneSessionScanner(), microphoneTracker);
+            microphoneTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1500) };
+            microphoneTimer.Tick += async (_, _) =>
+            {
+                if (readingMicrophone || allowShutdown || !controllerReady) return;
+                var tracker = microphoneTracker;
+                var poller = microphonePoller;
+                if (tracker is null || poller is null) return;
+                readingMicrophone = true;
+                try
+                {
+                    var offer = await poller.PollAsync(() => ReferenceEquals(tracker, microphoneTracker)
+                        && model.CanRecord && !model.IsRecording && !allowShutdown && controllerReady);
+                    if (ReferenceEquals(tracker, microphoneTracker) && offer is not null)
+                        microphoneNotifications?.Show(offer);
+                }
+                finally { readingMicrophone = false; }
+            };
+            microphoneTimer.Start();
+        }
+        catch (Exception error)
+        {
+            AppDiagnostics.Error("microphone-monitor", "Initialize", error);
+            ConfigureMicrophoneOffers(false);
+            model.SetInfo("Cannot enable microphone activity notifications. Recording controls remain available.");
+        }
+    }
+
+    private async Task HandleMicrophoneStartAsync(Guid token)
+    {
+        if (allowShutdown || !controllerReady || microphoneTracker is null) return;
+        try
+        {
+            if (!await StartFromMicrophoneOfferAsync(token, microphoneTracker, model) && model.IsNaming) ShowWindow();
+        }
+        catch (Exception error)
+        {
+            AppDiagnostics.Error("microphone-monitor", "Start from notification", error);
+            model.SetError("Cannot start recording. Open MeetTape to check recording status.");
+        }
+    }
+
+    // Shared with headless tests: a stale/replayed toast cannot bypass the
+    // guarded start-only controller path or stop a recording already in progress.
+    internal static async Task<bool> StartFromMicrophoneOfferAsync(Guid token,
+        MicrophoneOfferTracker tracker, MainViewModel viewModel) =>
+        tracker.TryConsume(token) && await viewModel.StartOnlyAsync();
 
     private async Task HandleReminderActionAsync(Guid id, DateOnly occurrence, string action)
     {
@@ -487,6 +565,7 @@ public sealed class App : Application
         if (allowShutdown) return;
         if (!await model.ShutdownAsync()) { ShowWindow(); return; }
         allowShutdown = true;
+        ConfigureMicrophoneOffers(false);
         window!.AllowClose = true;
         desktop!.Shutdown();
     }

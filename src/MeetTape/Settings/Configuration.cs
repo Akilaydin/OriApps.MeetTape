@@ -11,6 +11,7 @@ public sealed record Configuration
     public required string MeetingsRoot { get; init; }
     public CaptureSettings Capture { get; init; } = new();
     public string RecordingHotkey { get; init; } = RecordingHotkeyBinding.DefaultShortcut;
+    public bool OfferRecordingOnMicrophoneUse { get; init; }
     public StageSettings Stages { get; init; } = new();
     public int ChunkSeconds { get; init; } = 120;
     public string MeDisplayName { get; init; } = "Me";

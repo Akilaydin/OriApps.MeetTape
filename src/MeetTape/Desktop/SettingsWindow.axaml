@@ -22,6 +22,9 @@
             <TextBlock Text="Recording hotkey (Start / Stop)" />
             <TextBox Name="RecordingHotkey" Text="{Binding RecordingHotkey}" PlaceholderText="Ctrl+Shift+F9" />
             <TextBlock Text="Enter a combination, e.g. Ctrl+Alt+F10. Save applies it immediately." TextWrapping="Wrap" Opacity="0.7" />
+            <CheckBox Name="MicrophoneOffer" Content="Offer recording when another app uses a microphone"
+                      IsChecked="{Binding OfferRecordingOnMicrophoneUse}" />
+            <TextBlock Text="When MeetTape is running, offer Start recording if another app begins using a microphone. This does not identify meetings or start recording automatically. Applies on Save." TextWrapping="Wrap" Opacity="0.7" />
           </StackPanel>
         </ScrollViewer>
       </TabItem>

@@ -45,6 +45,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     public string MeetingsRoot { get; set; }
     public string FfmpegPath { get; set; }
     public string RecordingHotkey { get; set; }
+    public bool OfferRecordingOnMicrophoneUse { get; set; }
     public bool Trim { get; set; }
     public bool Transcribe { get; set; }
     public bool Summary { get; set; }
@@ -91,6 +92,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         FfmpegPath = json["capture"]?["ffmpegPath"]?.GetValue<string>() ?? "ffmpeg";
         RecordingHotkey = RecordingHotkeyBinding.Parse(settings.RecordingHotkey).Text;
         originalRecordingHotkey = RecordingHotkey;
+        OfferRecordingOnMicrophoneUse = settings.OfferRecordingOnMicrophoneUse;
         Trim = settings.Stages.Trim; Transcribe = settings.Stages.Transcribe; Summary = settings.Stages.Summary;
         ChunkSeconds = settings.ChunkSeconds.ToString(CultureInfo.InvariantCulture);
         MeDisplayName = settings.MeDisplayName;
@@ -111,6 +113,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
 
     private string[] Fields() => [Microphone.Id ?? "", Playback.Id ?? "", MicrophoneMode.Value.ToString(), MeetingsRoot, FfmpegPath,
         Trim.ToString(), Transcribe.ToString(), Summary.ToString(), ChunkSeconds, MeDisplayName, RecordingHotkey,
+        OfferRecordingOnMicrophoneUse.ToString(),
         TranscriptionEndpoint, TranscriptionModel, TranscriptionPrompt, TranscriptionKeyVariable,
         SummaryEndpoint, SummaryModel, SummaryPrompt, SummaryKeyVariable, ReminderEditor.Signature];
 
@@ -158,6 +161,8 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             json["capture"]!["ffmpegPath"] = FfmpegPath.Trim();
             if (json.ContainsKey("recordingHotkey") || RecordingHotkey != RecordingHotkeyBinding.DefaultShortcut)
                 json["recordingHotkey"] = RecordingHotkey;
+            if (json.ContainsKey("offerRecordingOnMicrophoneUse") || OfferRecordingOnMicrophoneUse)
+                json["offerRecordingOnMicrophoneUse"] = OfferRecordingOnMicrophoneUse;
             json["stages"] = new JsonObject { ["trim"] = Trim, ["transcribe"] = Transcribe, ["summary"] = Summary };
             json["chunkSeconds"] = seconds;
             if (json.ContainsKey("meDisplayName") || MeDisplayName.Trim() != "Me")
