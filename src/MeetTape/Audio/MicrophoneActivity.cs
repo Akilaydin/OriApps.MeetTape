@@ -19,8 +19,9 @@ internal sealed class WasapiMicrophoneSessionScanner : IMicrophoneSessionScanner
     public IReadOnlyList<MicrophoneSession> Scan()
     {
         using var enumerator = new MMDeviceEnumerator();
+        using var endpoints = enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active);
         var active = new List<MicrophoneSession>();
-        foreach (var device in enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active))
+        foreach (var device in endpoints)
         {
             using (device)
             {
