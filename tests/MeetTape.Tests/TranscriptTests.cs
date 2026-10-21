@@ -386,6 +386,90 @@ public sealed class TranscriptTests : IDisposable
     }
 
     [Theory]
+    [InlineData("[[NO_SPEECH]")]
+    [InlineData("[[NO_SPEECH]]")]
+    [InlineData("[NO_SPEECH]]")]
+    [InlineData("[NO_SPEECH")]
+    [InlineData("NO_SPEECH]")]
+    [InlineData("[no_speech]")]
+    [InlineData("[NO SPEECH]")]
+    [InlineData("[00:02] Me: [[NO_SPEECH]")]
+    [InlineData("[00:02] Me: [NO_SPEECH]]")]
+    [InlineData("- [[NO_SPEECH]")]
+    [InlineData("```text\n[[NO_SPEECH]\n```")]
+    public async Task SilenceMarkerTyposAreRecoveredWithoutInventingSpeech(string reply)
+    {
+        string directory = Prepare([reply, "[NO_SPEECH]"], seconds: 5, totalSeconds: 5, mono: true);
+        var data = SessionStore.Read(directory);
+        var chunk = data.Audio!.Chunks[0];
+        TranscriptAssembler.ValidateChunk(reply, chunk);
+        await new TranscriptAssembler().BuildAsync(directory, data, default);
+        Assert.DoesNotContain("**Me:**", File.ReadAllText(Path.Combine(directory, "transcription.md")));
+        Assert.Equal(reply, (await ChunkStore.ReadAsync(directory, data, chunk, default)).Text);
+    }
+
+    [Theory]
+    [InlineData("[[00:02] Me: Сохранить число 15.")]
+    [InlineData("[[00:02]] Me: Сохранить число 15.")]
+    [InlineData("[00:02]] Me: Сохранить число 15.")]
+    [InlineData("[00:02 Me: Сохранить число 15.")]
+    [InlineData("00:02 Me: Сохранить число 15.")]
+    [InlineData("00:02] Me: Сохранить число 15.")]
+    [InlineData("(00:02) Me: Сохранить число 15.")]
+    [InlineData("- [[00:02] Me: Сохранить число 15.")]
+    [InlineData("**[[00:02] Me: Сохранить число 15.**")]
+    [InlineData("**[00:02]** Me: Сохранить число 15.")]
+    [InlineData("[00:02] **Me:** Сохранить число 15.")]
+    [InlineData("[00:02] **Me**: Сохранить число 15.")]
+    [InlineData("[00:02] Me — Сохранить число 15.")]
+    [InlineData("[00:02] Me： Сохранить число 15.")]
+    [InlineData("[ 00:02 ] Me: Сохранить число 15.")]
+    [InlineData("[[ 00:02 ]] Me: Сохранить число 15.")]
+    [InlineData("```text\n[[00:02] Me: Сохранить число 15.\n```")]
+    [InlineData("```markdown\n[00:02] Me: Сохранить число 15.\n```")]
+    public async Task UnambiguousTimedFormattingIsRecoveredAndOriginalCheckpointPreserved(string reply)
+    {
+        string directory = Prepare([reply, "[NO_SPEECH]"], seconds: 5, totalSeconds: 5, mono: true);
+        var data = SessionStore.Read(directory);
+        var chunk = data.Audio!.Chunks[0];
+        TranscriptAssembler.ValidateChunk(reply, chunk);
+        await new TranscriptAssembler().BuildAsync(directory, data, default);
+        Assert.Contains("[00:02] **Me:** Сохранить число 15.",
+            File.ReadAllText(Path.Combine(directory, "transcription.md")));
+        Assert.Equal(reply, (await ChunkStore.ReadAsync(directory, data, chunk, default)).Text);
+    }
+
+    [Fact]
+    public async Task JoinedExtraBracketTimestampsKeepAllSpeechAndLocalTimes()
+    {
+        const string reply = "[00:00] Me: Первая фраза. [[00:02] Me: Вторая фраза: 50.";
+        string directory = Prepare([reply, "[NO_SPEECH]"], seconds: 5, totalSeconds: 5, mono: true);
+        var data = SessionStore.Read(directory);
+        TranscriptAssembler.ValidateChunk(reply, data.Audio!.Chunks[0]);
+        await new TranscriptAssembler().BuildAsync(directory, data, default);
+        string text = File.ReadAllText(Path.Combine(directory, "transcription.md"));
+        Assert.Contains("[00:00] **Me:** Первая фраза.", text);
+        Assert.Contains("[00:02] **Me:** Вторая фраза: 50.", text);
+    }
+
+    [Theory]
+    [InlineData("[[NO_SPEECH]\n[00:02] Me: Реальная речь.")]
+    [InlineData("[[00:60] Me: Неверные секунды.")]
+    [InlineData("[[00:07] Me: Выход за пять секунд.")]
+    [InlineData("[[00:03] Me: Позже.\n[[00:02] Me: Раньше.")]
+    [InlineData("00:02 Speaker: Неизвестный источник.")]
+    [InlineData("[00:02] Assistant: Выдуманная роль.")]
+    [InlineData("Reasoning about audio\n[[00:02] Me: Реальная речь.")]
+    [InlineData("[[00:02] Me: Реальная речь.\n[NO_SPEECH]")]
+    [InlineData("```text\n[[00:02] Me: Реальная речь.")]
+    [InlineData("```text\n[[00:02] Me: Реальная речь.\n```\nПояснение модели.")]
+    public void StructuralRecoveryDoesNotIgnoreContradictionsOrInventRoles(string reply)
+    {
+        var chunk = AudioChunker.PlanMono(0, 5L * 48000, 5, "processed/test")[0];
+        Assert.Throws<InvalidDataException>(() => TranscriptAssembler.ValidateChunk(reply, chunk));
+    }
+
+    [Theory]
     [InlineData("[00:10] Me: [NO_SPEECH]")]
     [InlineData("[00:02] Me: Текст. [00:03] Me: [NO_SPEECH]")]
     [InlineData("[NO_SPEECH]\n[00:02] Me: Не молчание.")]
