@@ -97,6 +97,16 @@ public sealed class ConfigurationTests : IDisposable
         Assert.Equal(MicrophoneCaptureMode.WindowsDefault, Load().Settings.Capture.MicrophoneMode);
     }
 
+    [Fact]
+    public void ExistingConfigurationsDoNotEnableMicrophoneOffers()
+    {
+        Assert.False(Load().Settings.OfferRecordingOnMicrophoneUse);
+        json["offerRecordingOnMicrophoneUse"] = true;
+        Assert.True(Load().Settings.OfferRecordingOnMicrophoneUse);
+        json["offerRecordingOnMicrophoneUse"] = false;
+        Assert.False(Load().Settings.OfferRecordingOnMicrophoneUse);
+    }
+
     [Theory]
     [InlineData("unknown")]
     [InlineData("communications")]
