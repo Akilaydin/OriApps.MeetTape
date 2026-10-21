@@ -147,6 +147,7 @@ public sealed class MicrophoneOfferTests
         }
         public Task PrepareAsync(string directory, string? title) => throw new NotSupportedException();
         public Task ChooseTrimAsync(TrimDecision decision, double? start = null, double? end = null) => throw new NotSupportedException();
+        public Task RecoverAsync(string directory, Guid id) => throw new NotSupportedException();
         public Task ResumeAsync(string directory) => throw new NotSupportedException();
         public Task CancelProcessingAsync(string directory) => throw new NotSupportedException();
         public Task DeleteRecordingAsync(string directory, Guid id) => throw new NotSupportedException();

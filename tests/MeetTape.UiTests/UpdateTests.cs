@@ -279,6 +279,7 @@ public sealed class UpdateTests
         public Task<string?> StopAsync() => Task.FromResult<string?>(null);
         public Task PrepareAsync(string directory, string? title) => Task.CompletedTask;
         public Task ChooseTrimAsync(TrimDecision decision, double? start = null, double? end = null) => Task.CompletedTask;
+        public Task RecoverAsync(string directory, Guid id) => Task.CompletedTask;
         public Task ResumeAsync(string directory) => Task.CompletedTask;
         public Task CancelProcessingAsync(string directory) => Task.CompletedTask;
         public Task DeleteRecordingAsync(string directory, Guid id) => Task.CompletedTask;

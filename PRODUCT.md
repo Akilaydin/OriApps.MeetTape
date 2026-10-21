@@ -24,6 +24,8 @@ The Meetings context menu offers Delete recording for a selected finalized meeti
 
 Failed or Interrupted recordings can also be explicitly deleted after capture and related operations finish. Their partial files use the same confirmation, folder ownership checks and Recycle Bin path; running jobs/stages still block deletion.
 
+Failed or Interrupted recordings offer an explicit Recover recording action in the meeting context menu. Recovery verifies the selected session identity, finalized MP3 frame/byte counts, full FFmpeg decoding, synchronized original track durations and saved time boundaries before changing metadata to Recorded. Interrupted sessions without a saved duration can derive it from verified finalized audio; failed sessions require a saved duration. Recovery never changes original audio or checkpoints. Failed validation leaves the session unchanged and displays the reason. Recovered sessions with unfinished trimming require Name / Trim; others can use Resume processing to restart incomplete stages deliberately.
+
 ## Updates
 
 Settings / About shows versions and separate Check for updates and Update controls. Check only queries availability and leaves recording usable; it never downloads, applies or joins jobs. Update requires an available installed update, safe idle state and saved/discarded settings, then uses the existing confirmation/download/restart sequence. Settings editing/closing is blocked during that sequence; progress remains visible. Update and Exit are absent from the main header; Exit remains in the tray.
