@@ -225,7 +225,12 @@ public sealed class CaptureCoordinator(
                 else
                     Interlocked.Add(ref themBytes, args.BytesRecorded);
             }
-            catch (Exception ex) { QueueFailure(sources, channel, ex, source); }
+            catch (Exception ex)
+            {
+                // The callback already passed the active-source check. A failed enqueue may have lost audio,
+                // even if this endpoint is replaced before the queued failure handler can run.
+                QueueFailure(sources, channel, ex);
+            }
         };
         source.RecordingStopped += (_, args) =>
         {

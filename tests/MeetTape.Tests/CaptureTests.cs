@@ -485,6 +485,55 @@ public sealed class CaptureTests
         Assert.DoesNotContain("private IO path", message);
     }
 
+    [Fact]
+    public async Task FatalDataCallbackRemainsFatalAfterItsEndpointIsReplaced()
+    {
+        var me = new FakeSource();
+        var oldThem = new FakeSource();
+        var newThem = new FakeSource();
+        var initialThem = new AudioDevice("old", "Headphones", CaptureChannel.Them, true);
+        Action<EndpointChange>? notify = null;
+        using var switching = new ManualResetEventSlim();
+        using var continueSwitch = new ManualResetEventSlim();
+        using var capture = new CaptureCoordinator(() => new CaptureSources(
+            new CaptureSource(me), new CaptureSource(oldThem, info: initialThem))
+        {
+            ThemDevice = initialThem,
+            Reopen = channel =>
+            {
+                if (channel != CaptureChannel.Them) throw new InvalidOperationException("Unexpected channel.");
+                switching.Set();
+                if (!continueSwitch.Wait(TimeSpan.FromSeconds(5)))
+                    throw new TimeoutException("Switch was not released by the test.");
+                return new(newThem, info: new("new", "Speakers", channel, true));
+            },
+            Observe = callback => { notify = callback; return new FakeObserver(); }
+        }, (channel, _, _, _) =>
+        {
+            if (channel == CaptureChannel.Them)
+                throw new RecordingException("Encoder cannot keep up; bounded audio queue exhausted. Partial originals retained.");
+        });
+        var failed = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        capture.Failed += message => failed.TrySetResult(message);
+        capture.Start();
+
+        notify!(new(EndpointChangeKind.DefaultChanged, "new", CaptureChannel.Them));
+        try
+        {
+            Assert.True(switching.Wait(TimeSpan.FromSeconds(5)), "Endpoint replacement did not acquire the lifecycle lock.");
+            // The old endpoint is still current. Consume rejects its packet while the switch
+            // holds the lifecycle lock, so fatal cleanup is queued until after replacement.
+            oldThem.Emit();
+        }
+        finally { continueSwitch.Set(); }
+
+        string diagnostic = await failed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Contains("Encoder cannot keep up", diagnostic);
+        Assert.False(capture.Status.IsActive);
+        Assert.Contains("Encoder cannot keep up", capture.Status.Error);
+        Assert.True(me.Disposed && oldThem.Disposed && newThem.Disposed);
+    }
+
     private sealed class FakeObserver : IDisposable
     {
         public bool Disposed { get; private set; }
