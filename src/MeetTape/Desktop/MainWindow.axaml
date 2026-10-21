@@ -135,6 +135,7 @@
                     </MenuItem>
                     <Separator />
                     <MenuItem Name="PrepareSession" Header="Name / Trim" IsEnabled="{Binding CanPrepare}" Click="PrepareClick" />
+                    <MenuItem Name="RecoverSession" Header="Recover recording" IsEnabled="{Binding CanRecover}" Click="RecoverClick" />
                     <MenuItem Name="ResumeSession" Header="Resume processing" IsEnabled="{Binding CanResume}" Click="ResumeClick" />
                     <MenuItem Name="RequestSummary" Header="{Binding SummaryLabel}" IsEnabled="{Binding CanSummary}" Click="SummaryClick" />
                     <MenuItem Name="CancelSessionProcessing" Header="Cancel processing" IsVisible="{Binding HasCancelableSelection}" IsEnabled="{Binding CanCancelProcessing}" Click="CancelProcessingClick" />

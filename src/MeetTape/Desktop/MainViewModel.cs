@@ -106,6 +106,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public bool CanRecord => controller is not null && !busy && !updating && !shutdownStarted && NamingDirectory is null && snapshot.AwaitingTitleDirectory is null;
     public bool CanProcess => controller is not null && !busy && !updating && !shutdownStarted && !snapshot.Capture.IsActive && selected is not null && NamingDirectory is null;
     public bool CanPrepare => CanProcess && selected!.NeedsPreparation;
+    public bool CanRecover => CanProcess && selected!.CanRecover && snapshot.AwaitingTitleDirectory is null
+        && !(snapshot.Preparing && string.Equals(snapshot.PreparationDirectory, selected.Directory, StringComparison.OrdinalIgnoreCase));
     public bool CanResume => CanProcess && selected!.CanResume;
     public bool HasCancelableSelection => selected?.CanCancel == true;
     public bool CanCancelProcessing => controller is not null && !busy && !updating && !shutdownStarted && NamingDirectory is null
@@ -377,6 +379,15 @@ public sealed class MainViewModel : INotifyPropertyChanged
     });
 
     public Task ResumeAsync() => CanResume ? ExecuteAsync(() => controller!.ResumeAsync(selected!.Directory)) : Task.CompletedTask;
+    public Task RecoverAsync()
+    {
+        if (!CanRecover || selected is not { Id: { } id } session) return Task.CompletedTask;
+        return ExecuteAsync(async () =>
+        {
+            await controller!.RecoverAsync(session.Directory, id);
+            InfoText = "Recording recovered. Continue with Name / Trim or Resume processing.";
+        });
+    }
     public Task SummaryAsync() => CanSummary ? ExecuteAsync(() => controller!.SummaryAsync(selected!.Directory)) : Task.CompletedTask;
     public Task CancelSelectedProcessingAsync() => CanCancelProcessing
         ? ExecuteAsync(() => controller!.CancelProcessingAsync(selected!.Directory)) : Task.CompletedTask;
@@ -406,13 +417,20 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         if (busy || updating || shutdownStarted || controller is null) return;
         busy = true; ErrorText = ""; Changed();
+        string? operationError = null;
         try { await action(); }
         catch (Exception error)
         {
             AppDiagnostics.Error("ui", "Recording/session operation", error);
-            SetError(AppDiagnostics.UserMessage(error, "Operation failed; audio and saved checkpoints retained. Check devices, FFmpeg and storage permissions."));
+            operationError = AppDiagnostics.UserMessage(error, "Operation failed; audio and saved checkpoints retained. Check devices, FFmpeg and storage permissions.");
+            SetError(operationError);
         }
-        finally { busy = false; await RefreshAsync(); Changed(); }
+        finally
+        {
+            busy = false; await RefreshAsync();
+            if (operationError is not null) ErrorText = operationError;
+            Changed();
+        }
     }
 
     public async Task CheckUpdatesAsync(IAppUpdates updates)
@@ -529,6 +547,7 @@ public sealed record SessionRow(string Directory, Guid? Id, string Title, string
         "Completed" => "#E7F8ED", "Paused" or "Needs trim" => "#FFF0E3", "Canceled" => "#EEF1F5", _ => "#E8F2FF"
     };
     public bool CanResume { get; init; }
+    public bool CanRecover { get; init; }
     public bool CanRequestSummary { get; init; }
     public bool CanRestoreSummary { get; init; }
     public bool CanCancel { get; init; }
@@ -562,6 +581,7 @@ public sealed record SessionRow(string Directory, Guid? Id, string Title, string
                 data.Stages.Select(stage => $"{stage.Key}: {stage.Value.Status}" +
                     (stage.Value.TotalChunks is { } count ? $" ({stage.Value.CompletedChunks}/{count} chunks)" : ""))),
             PausedJob = data is { RecordingState: RecordingState.Recorded, JobState: JobState.Paused },
+            CanRecover = data is not null && SessionRecovery.CanRecover(data),
             CanResume = data is not null && ProcessingJobs.CanResume(data),
             CanCancel = data is not null && ProcessingJobs.CanCancel(data),
             CanDelete = data is not null && SessionRemoval.CanDelete(data),
