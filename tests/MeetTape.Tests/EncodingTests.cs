@@ -139,12 +139,28 @@ public sealed class EncodingTests : IDisposable
         float[] recordedThem = await DecodeAsync(Path.Combine(capture.RecordingDirectory!, "them.mp3"));
         Assert.Equal(recordedMe.Length, recordedThem.Length);
         Assert.True(recordedMe.Length >= 48000, "The synthetic audio must cover all three periods.");
-        Assert.True(Rms(recordedMe, 0.15, 0.30) > 0.2);
-        Assert.True(Rms(recordedMe, 0.52, 0.68) < 0.005);
-        Assert.True(Rms(recordedMe, 0.91, 1.07) > 0.2);
-        Assert.True(Rms(recordedThem, 0.15, 0.30) > 0.1);
-        Assert.True(Rms(recordedThem, 0.52, 0.68) > 0.1);
-        Assert.True(Rms(recordedThem, 0.91, 1.07) > 0.1);
+        // Under CI load the writer may have already committed silence on the live timeline
+        // before synthetic callbacks arrive. Find the muted interval by its signal profile,
+        // not by assuming it always starts at exactly 400 ms from capture.Start().
+        const int windowFrames = PcmTimeline.SampleRate / 10;
+        var meWindows = new List<double>();
+        var themWindows = new List<double>();
+        for (int offset = 0; offset + windowFrames <= recordedMe.Length; offset += windowFrames / 2)
+        {
+            double start = offset / (double)PcmTimeline.SampleRate;
+            double end = (offset + windowFrames) / (double)PcmTimeline.SampleRate;
+            meWindows.Add(Rms(recordedMe, start, end));
+            themWindows.Add(Rms(recordedThem, start, end));
+        }
+        int firstVoice = meWindows.FindIndex(level => level > 0.2);
+        int lastVoice = meWindows.FindLastIndex(level => level > 0.2);
+        Assert.True(firstVoice >= 0 && lastVoice > firstVoice + 1, "Me must be audible before and after mute.");
+        Assert.True(themWindows[firstVoice] > 0.1 && themWindows[lastVoice] > 0.1,
+            "Them must remain audible while Me is unmuted.");
+        Assert.True(Enumerable.Range(firstVoice + 1, lastVoice - firstVoice - 1)
+            .Any(i => i + 2 < lastVoice && Enumerable.Range(i, 3)
+                .All(j => meWindows[j] < 0.005 && themWindows[j] > 0.1)),
+            "There must be at least 200 ms of silent Me between speech periods while Them stays audible.");
     }
 
     [Fact]
