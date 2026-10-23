@@ -125,6 +125,27 @@ public sealed class CaptureTests
     }
 
     [Fact]
+    public void MeMuteRequiresActiveCaptureAndResetsOnStopAndNextStart()
+    {
+        using var capture = new CaptureCoordinator(() => new(new FakeSource(), new FakeSource()));
+        Assert.Throws<InvalidOperationException>(() => capture.SetMeMuted(true));
+        capture.Start();
+        Assert.False(capture.Status.MeMuted);
+        capture.SetMeMuted(true);
+        Assert.True(capture.Status.MeMuted);
+        capture.SetMeMuted(true);
+        capture.SetMeMuted(false);
+        Assert.False(capture.Status.MeMuted);
+        capture.SetMeMuted(true);
+        capture.Stop();
+        Assert.False(capture.Status.MeMuted);
+        Assert.Throws<InvalidOperationException>(() => capture.SetMeMuted(false));
+        capture.Start();
+        Assert.False(capture.Status.MeMuted);
+        capture.Stop();
+    }
+
+    [Fact]
     public void BothSourcesStartAndStopAndSecondCaptureIsRejected()
     {
         var me = new FakeSource();

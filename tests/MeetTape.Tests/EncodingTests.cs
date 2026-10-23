@@ -108,6 +108,62 @@ public sealed class EncodingTests : IDisposable
     }
 
     [Fact]
+    public async Task MuteMeWritesSilenceOnlyToMicrophoneAndKeepsBothMp3TracksAligned()
+    {
+        string example = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../config.example.json"));
+        var loaded = ConfigurationLoader.Load(example);
+        var config = loaded with { Settings = loaded.Settings with { MeetingsRoot = directory } };
+        var me = new SyntheticSource();
+        var them = new SyntheticSource();
+        using var capture = new Mp3Recorder(config, () => new(me, them)).Capture;
+        capture.Start();
+        long qpc = Mp3Track.To100ns(Stopwatch.GetTimestamp());
+        void EmitBoth()
+        {
+            for (int i = 0; i < 20; i++)
+            {
+                me.Emit(qpc: qpc, amplitude: 0.6f, frames: 960);
+                them.Emit(qpc: qpc, amplitude: 0.4f, frames: 960);
+            }
+        }
+        EmitBoth();
+        capture.SetMeMuted(true);
+        Assert.Equal(0, capture.Status.MeLevel);
+        EmitBoth();
+        capture.SetMeMuted(false);
+        EmitBoth();
+        capture.Stop();
+
+        Assert.Null(capture.Status.Error);
+        float[] recordedMe = await DecodeAsync(Path.Combine(capture.RecordingDirectory!, "me.mp3"));
+        float[] recordedThem = await DecodeAsync(Path.Combine(capture.RecordingDirectory!, "them.mp3"));
+        Assert.Equal(recordedMe.Length, recordedThem.Length);
+        Assert.True(recordedMe.Length >= 48000, "The synthetic audio must cover all three periods.");
+        // Under CI load the writer may have already committed silence on the live timeline
+        // before synthetic callbacks arrive. Find the muted interval by its signal profile,
+        // not by assuming it always starts at exactly 400 ms from capture.Start().
+        const int windowFrames = PcmTimeline.SampleRate / 10;
+        var meWindows = new List<double>();
+        var themWindows = new List<double>();
+        for (int offset = 0; offset + windowFrames <= recordedMe.Length; offset += windowFrames / 2)
+        {
+            double start = offset / (double)PcmTimeline.SampleRate;
+            double end = (offset + windowFrames) / (double)PcmTimeline.SampleRate;
+            meWindows.Add(Rms(recordedMe, start, end));
+            themWindows.Add(Rms(recordedThem, start, end));
+        }
+        int firstVoice = meWindows.FindIndex(level => level > 0.2);
+        int lastVoice = meWindows.FindLastIndex(level => level > 0.2);
+        Assert.True(firstVoice >= 0 && lastVoice > firstVoice + 1, "Me must be audible before and after mute.");
+        Assert.True(themWindows[firstVoice] > 0.1 && themWindows[lastVoice] > 0.1,
+            "Them must remain audible while Me is unmuted.");
+        Assert.True(Enumerable.Range(firstVoice + 1, lastVoice - firstVoice - 1)
+            .Any(i => i + 2 < lastVoice && Enumerable.Range(i, 3)
+                .All(j => meWindows[j] < 0.005 && themWindows[j] > 0.1)),
+            "There must be at least 200 ms of silent Me between speech periods while Them stays audible.");
+    }
+
+    [Fact]
     public async Task TimestampErrorAndDiscontinuityRemainRecordedWithoutUserWarnings()
     {
         string example = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../config.example.json"));

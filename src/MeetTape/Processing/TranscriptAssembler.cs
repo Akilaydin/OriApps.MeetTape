@@ -22,6 +22,31 @@ public sealed class TranscriptAssembler
     private static readonly Regex SilenceWrapper = new(@"^\s*(?:\[(?<time>\d+(?::\d+){1,2}(?:\.\d+)?)\]\s*)?(?:(?:Me|Them):\s*)?\[NO_SPEECH\]\s*$",
         RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
     private static readonly Regex Words = new(@"[\p{L}\p{N}]+", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+    private const string LocalTimePattern = @"\d+(?::\d+){1,2}(?:\.\d+)?";
+    private static readonly Regex LeadingTime = new(
+        @"^(?<open>\[{0,2}|\()\s*(?<time>" + LocalTimePattern + @")\s*(?<close>\]{1,2}|\)|)(?<rest>.*)$",
+        RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+    private static readonly Regex KnownRolePrefix = new(
+        @"^\s*(?:\*\*)?(?:Me|Them|Unknown)\b\s*(?:[:：\-–—]|\*\*\s*:)",
+        RegexOptions.CultureInvariant | RegexOptions.IgnoreCase, TimeSpan.FromSeconds(1));
+    private static readonly Regex MarkdownListPrefix = new(
+        @"^(?:[-*•]\s+|\d{1,2}[.)]\s+)(?=\*{0,2}\[{1,2}(?:\s*\d|NO[_ -]SPEECH))",
+        RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+    private static readonly Regex JoinedDecoratedTime = new(
+        @"(?<=\s)\[\[(?<time>" + LocalTimePattern + @")\]\]?(?=\s*(?:Me|Them|Unknown)\s*:)",
+        RegexOptions.CultureInvariant | RegexOptions.IgnoreCase, TimeSpan.FromSeconds(1));
+    private static readonly Regex MarkdownTime = new(
+        @"^\*\*(?<time>\[{1,2}" + LocalTimePattern + @"\]{1,2})\*\*",
+        RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+    private static readonly Regex DecoratedRole = new(
+        @"^(?<time>\[" + LocalTimePattern + @"\])\s*\*\*(?<role>Me|Them|Unknown)(?<colon>:?)\*\*\s*:?\s*(?<speech>\S.*)$",
+        RegexOptions.CultureInvariant | RegexOptions.IgnoreCase, TimeSpan.FromSeconds(1));
+    private static readonly Regex AlternativeRoleSeparator = new(
+        @"^(?<time>\[" + LocalTimePattern + @"\])\s*(?<role>Me|Them|Unknown)\s*[-–—：]\s*(?<speech>\S.*)$",
+        RegexOptions.CultureInvariant | RegexOptions.IgnoreCase, TimeSpan.FromSeconds(1));
+    private static readonly Regex WrappedSilenceTypo = new(
+        @"^(?:\[(?<time>" + LocalTimePattern + @")\]\s*)?(?:(?<role>Me|Them):\s*)?(?<marker>\[{1,2}\s*NO[_ -]SPEECH\s*\]{0,2}|NO_SPEECH\]{0,2})$",
+        RegexOptions.CultureInvariant | RegexOptions.IgnoreCase, TimeSpan.FromSeconds(1));
 
     public async Task<string> BuildAsync(string directory, SessionData data, CancellationToken token)
     {
@@ -101,6 +126,7 @@ public sealed class TranscriptAssembler
 
     private static List<Utterance> Parse(string text, AudioChunk chunk, CancellationToken token)
     {
+        text = NormalizeStructuralFormatting(text);
         if (text.Trim() == ChatApiClient.NoSpeechMarker) return [];
         bool mono = chunk.Source is "Me" or "Them";
         if (mono && SilenceWrapper.Match(text) is { Success: true } silence)
@@ -184,6 +210,75 @@ public sealed class TranscriptAssembler
             nextBySpeaker[row.Speaker] = row.Frame;
         }
         return rows;
+    }
+
+    // Only repair recognizable delimiters. Never invent or discard speech, timestamps or sources.
+    // The raw ChunkResult.Text remains authoritative; validation and final assembly use this same parser.
+    internal static string NormalizeStructuralFormatting(string text)
+    {
+        text = text.Trim().TrimStart('\uFEFF').TrimStart();
+        int firstBreak = text.IndexOf('\n'), lastBreak = text.LastIndexOf('\n');
+        if (firstBreak >= 0 && lastBreak > firstBreak)
+        {
+            string opening = text[..firstBreak].Trim();
+            string closing = text[(lastBreak + 1)..].Trim();
+            if (opening is "```" or "```markdown" or "```text" or "```plaintext" && closing == "```")
+            {
+                string inner = text[(firstBreak + 1)..lastBreak].Trim();
+                if (!inner.Contains("```", StringComparison.Ordinal)) text = inner;
+            }
+        }
+        var output = new StringBuilder(text.Length + 16);
+        using var input = new StringReader(text);
+        string? line;
+        while ((line = input.ReadLine()) is not null)
+        {
+            if (line.Length > 32768)
+                throw new InvalidDataException("Transcription utterance exceeds its bounded line limit.");
+            line = line.Trim();
+            line = MarkdownListPrefix.Replace(line, "");
+            line = JoinedDecoratedTime.Replace(line, match => "[" + match.Groups["time"].Value + "]");
+            // Bold decoration is unambiguous only when it encloses a leading timestamp.
+            if (line.StartsWith("**[", StringComparison.Ordinal) && line.EndsWith("**", StringComparison.Ordinal)
+                && LeadingTime.IsMatch(line[2..^2]))
+                line = line[2..^2];
+            line = MarkdownTime.Replace(line, match => match.Groups["time"].Value);
+            var timestamp = LeadingTime.Match(line);
+            if (timestamp.Success)
+            {
+                string opening = timestamp.Groups["open"].Value;
+                string closing = timestamp.Groups["close"].Value;
+                bool paired = opening == "[" && closing == "]";
+                bool redundantBracket = opening is "[[" && closing is "]" or "]]"
+                    || opening == "[" && closing == "]]";
+                bool explicitSource = KnownRolePrefix.IsMatch(timestamp.Groups["rest"].Value);
+                bool recoverMissingBracket = explicitSource && (
+                    opening == "[" && closing.Length == 0
+                    || opening.Length == 0 && closing is "" or "]"
+                    || opening == "(" && closing == ")");
+                if (paired && !line.StartsWith("[" + timestamp.Groups["time"].Value + "]", StringComparison.Ordinal)
+                    || !paired && (redundantBracket || recoverMissingBracket))
+                    line = "[" + timestamp.Groups["time"].Value + "]" + timestamp.Groups["rest"].Value;
+            }
+            var decorated = DecoratedRole.Match(line);
+            if (decorated.Success)
+                line = decorated.Groups["time"].Value + " " + decorated.Groups["role"].Value
+                    + ": " + decorated.Groups["speech"].Value;
+            var alternative = AlternativeRoleSeparator.Match(line);
+            if (alternative.Success)
+                line = alternative.Groups["time"].Value + " " + alternative.Groups["role"].Value
+                    + ": " + alternative.Groups["speech"].Value;
+            output.AppendLine(line);
+        }
+        text = output.ToString().Trim();
+        if (text.Length <= 256 && WrappedSilenceTypo.Match(text) is { Success: true } silence)
+        {
+            string time = silence.Groups["time"].Value;
+            string role = silence.Groups["role"].Value;
+            return (time.Length == 0 ? "" : "[" + time + "] ")
+                + (role.Length == 0 ? "" : role + ": ") + ChatApiClient.NoSpeechMarker;
+        }
+        return text;
     }
 
     // Normalize only unambiguous record boundaries. The raw model reply remains in ChunkResult.Text;

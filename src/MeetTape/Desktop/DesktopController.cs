@@ -22,6 +22,7 @@ public interface IDesktopController
     Task<DesktopSnapshot> ReadAsync();
     Task StartAsync();
     Task<string?> StopAsync();
+    Task SetMeMutedAsync(bool muted);
     Task PrepareAsync(string directory, string? title);
     Task ChooseTrimAsync(TrimDecision decision, double? start = null, double? end = null);
     Task RecoverAsync(string directory, Guid id);
@@ -95,6 +96,8 @@ public sealed class DesktopController : IDesktopController
         }
         finally { if (!capture.Status.IsActive) jobs.Start(); }
     });
+
+    public Task SetMeMutedAsync(bool muted) => RunAsync(() => capture.SetMeMuted(muted));
 
     public async Task<string?> StopAsync()
     {

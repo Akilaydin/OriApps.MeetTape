@@ -27,6 +27,7 @@ public sealed partial class MainWindow : Window
         Closing += (_, e) => { if (!AllowClose) { e.Cancel = true; Hide(); } };
     }
     private async void RecordClick(object? sender, RoutedEventArgs e) => await Model.ToggleAsync();
+    private async void MuteMeClick(object? sender, RoutedEventArgs e) => await Model.ToggleMeMuteAsync();
     private async void ContinueClick(object? sender, RoutedEventArgs e) => await Model.ContinuePreparationAsync();
     private async void StartNextClick(object? sender, RoutedEventArgs e) => await Model.StartNextRecordingAsync();
     private void PrepareClick(object? sender, RoutedEventArgs e) => Model.PrepareSelected();
