@@ -889,6 +889,8 @@ public sealed class JobTests : IDisposable
     [InlineData("wrong-prompt", false)]
     [InlineData("wrong-audio", false)]
     [InlineData("reasoning", false)]
+    [InlineData("extra-timestamp-bracket", true)]
+    [InlineData("extra-silence-bracket", true)]
     public async Task ResumeReusesOnlyCompatibleLocallyRepairableRejectedMonoReplies(string variant, bool expectedReuse)
     {
         using var tones = new ChunkingTests();
@@ -921,8 +923,13 @@ public sealed class JobTests : IDisposable
             variant == "wrong-audio" ? "NOT_THE_SELECTED_AUDIO" : AudioHash(Path.Combine(directory, rejectedChunk.RelativePath)),
             variant == "wrong-model" ? "different-model" : data.Processing.Transcription.Model,
             variant == "wrong-prompt" ? "different-prompt" : secondHash,
-            variant == "reasoning" ? "Let me analyze the audio.\n[00:00] Them: Some speech."
-                : "[00:00] Them: Начало не завершено [00:01] Продолжение содержит несколько слов без метки.");
+            variant switch
+            {
+                "reasoning" => "Let me analyze the audio.\n[00:00] Them: Some speech.",
+                "extra-timestamp-bracket" => "[[00:00] Them: Сохранить исходный текст.",
+                "extra-silence-bracket" => "[[NO_SPEECH]",
+                _ => "[00:00] Them: Начало не завершено [00:01] Продолжение содержит несколько слов без метки."
+            });
         string rejectedPath = Path.Combine(directory, "chunks", $"0002.rejected-{Guid.NewGuid():N}.json");
         ChunkStore.SaveFile(rejectedPath, rejected);
         byte[] rejectedBytes = File.ReadAllBytes(rejectedPath);
