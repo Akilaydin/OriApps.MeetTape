@@ -22,6 +22,7 @@ public sealed record CaptureStatus(bool IsActive, TimeSpan Duration, long MeByte
     public AudioTimingStats ThemTiming { get; init; } = new();
     public double MeLevel { get; init; }
     public double ThemLevel { get; init; }
+    public bool MeMuted { get; init; }
     public string? MeUnavailable { get; init; }
     public string? ThemUnavailable { get; init; }
 }
@@ -35,6 +36,7 @@ public sealed class CaptureCoordinator(
 {
     private readonly object control = new();
     private readonly object timingGate = new();
+    private readonly object meMuteGate = new();
     private readonly Func<long> levelClock = levelTimestamp ?? Stopwatch.GetTimestamp;
     private float mePeak, themPeak;
     private long meLevelAt, themLevelAt;
@@ -54,6 +56,7 @@ public sealed class CaptureCoordinator(
     private Timer? reconnectTimer;
     private bool reconnectScheduled;
     private volatile bool stopping;
+    private bool meMuted;
     private bool disposed;
 
     public event Action<string>? Failed;
@@ -63,6 +66,7 @@ public sealed class CaptureCoordinator(
     public long AudioFrames { get; internal set; }
     public int Discontinuities { get; internal set; }
     public int ClockAdjustments { get; internal set; }
+    internal bool IsMeMuted => Volatile.Read(ref meMuted);
 
     public CaptureStatus Status
     {
@@ -80,6 +84,7 @@ public sealed class CaptureCoordinator(
                         ClockAdjustments = ClockAdjustments, MeTiming = meTiming, ThemTiming = themTiming,
                         MeLevel = active is null ? 0 : Decay(mePeak, meLevelAt, levelNow),
                         ThemLevel = active is null ? 0 : Decay(themPeak, themLevelAt, levelNow),
+                        MeMuted = active is not null && IsMeMuted,
                         MeUnavailable = meUnavailable, ThemUnavailable = themUnavailable
                     };
             }
@@ -99,6 +104,23 @@ public sealed class CaptureCoordinator(
             if (stopping) return;
             if (channel == CaptureChannel.Me) { mePeak = peak; meLevelAt = levelClock(); }
             else { themPeak = peak; themLevelAt = levelClock(); }
+        }
+    }
+
+    public void SetMeMuted(bool muted)
+    {
+        lock (control)
+        {
+            if (active is null || stopping) throw new InvalidOperationException("No capture is active.");
+            // Serialize the switch with Me packet delivery so no unmuted packet can pass
+            // the recorder after Mute has completed. Them is never held by this gate.
+            lock (meMuteGate)
+            {
+                if (meMuted == muted) return;
+                Volatile.Write(ref meMuted, muted);
+                lock (timingGate) { mePeak = 0; meLevelAt = levelClock(); }
+            }
+            NotifyStateChanged();
         }
     }
 
@@ -124,6 +146,7 @@ public sealed class CaptureCoordinator(
                 themEndpointId = sources.ThemDevice?.Id;
                 meEpoch = themEpoch = 0;
                 meSwitchPending = themSwitchPending = false;
+                lock (meMuteGate) Volatile.Write(ref meMuted, false);
                 AudioFrames = 0;
                 lock (timingGate)
                 {
@@ -212,24 +235,30 @@ public sealed class CaptureCoordinator(
         var format = source.WaveFormat;
         source.DataAvailable += (_, args) =>
         {
-            if (args.BytesRecorded == 0 || stopping || !ReferenceEquals(Volatile.Read(ref active), sources)
-                || !ReferenceEquals(sources.Current(channel)?.Audio, source))
-                return;
-            try
+            if (channel == CaptureChannel.Me)
             {
-                // NAudio reuses its buffer: consumers must finish before returning or copy into a bounded queue.
-                if (args is WasapiPacketEventArgs packet) packet.SourceEpoch = epoch;
-                consume?.Invoke(channel, args, format, Stopwatch.GetTimestamp());
-                if (channel == CaptureChannel.Me)
-                    Interlocked.Add(ref meBytes, args.BytesRecorded);
-                else
-                    Interlocked.Add(ref themBytes, args.BytesRecorded);
+                lock (meMuteGate) Receive();
             }
-            catch (Exception ex)
+            else Receive();
+
+            void Receive()
             {
-                // The callback already passed the active-source check. A failed enqueue may have lost audio,
-                // even if this endpoint is replaced before the queued failure handler can run.
-                QueueFailure(sources, channel, ex);
+                if (args.BytesRecorded == 0 || stopping || !ReferenceEquals(Volatile.Read(ref active), sources)
+                    || !ReferenceEquals(sources.Current(channel)?.Audio, source)) return;
+                try
+                {
+                    // NAudio reuses its buffer: consumers must finish before returning or copy into a bounded queue.
+                    if (args is WasapiPacketEventArgs packet) packet.SourceEpoch = epoch;
+                    consume?.Invoke(channel, args, format, Stopwatch.GetTimestamp());
+                    if (channel == CaptureChannel.Me) Interlocked.Add(ref meBytes, args.BytesRecorded);
+                    else Interlocked.Add(ref themBytes, args.BytesRecorded);
+                }
+                catch (Exception ex)
+                {
+                    // The callback already passed the active-source check. A failed enqueue may have lost audio,
+                    // even if this endpoint is replaced before the queued failure handler can run.
+                    QueueFailure(sources, channel, ex);
+                }
             }
         };
         source.RecordingStopped += (_, args) =>

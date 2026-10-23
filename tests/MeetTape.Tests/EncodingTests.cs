@@ -108,6 +108,46 @@ public sealed class EncodingTests : IDisposable
     }
 
     [Fact]
+    public async Task MuteMeWritesSilenceOnlyToMicrophoneAndKeepsBothMp3TracksAligned()
+    {
+        string example = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../config.example.json"));
+        var loaded = ConfigurationLoader.Load(example);
+        var config = loaded with { Settings = loaded.Settings with { MeetingsRoot = directory } };
+        var me = new SyntheticSource();
+        var them = new SyntheticSource();
+        using var capture = new Mp3Recorder(config, () => new(me, them)).Capture;
+        capture.Start();
+        long qpc = Mp3Track.To100ns(Stopwatch.GetTimestamp());
+        void EmitBoth()
+        {
+            for (int i = 0; i < 20; i++)
+            {
+                me.Emit(qpc: qpc, amplitude: 0.6f, frames: 960);
+                them.Emit(qpc: qpc, amplitude: 0.4f, frames: 960);
+            }
+        }
+        EmitBoth();
+        capture.SetMeMuted(true);
+        Assert.Equal(0, capture.Status.MeLevel);
+        EmitBoth();
+        capture.SetMeMuted(false);
+        EmitBoth();
+        capture.Stop();
+
+        Assert.Null(capture.Status.Error);
+        float[] recordedMe = await DecodeAsync(Path.Combine(capture.RecordingDirectory!, "me.mp3"));
+        float[] recordedThem = await DecodeAsync(Path.Combine(capture.RecordingDirectory!, "them.mp3"));
+        Assert.Equal(recordedMe.Length, recordedThem.Length);
+        Assert.True(recordedMe.Length >= 48000, "The synthetic audio must cover all three periods.");
+        Assert.True(Rms(recordedMe, 0.15, 0.30) > 0.2);
+        Assert.True(Rms(recordedMe, 0.52, 0.68) < 0.005);
+        Assert.True(Rms(recordedMe, 0.91, 1.07) > 0.2);
+        Assert.True(Rms(recordedThem, 0.15, 0.30) > 0.1);
+        Assert.True(Rms(recordedThem, 0.52, 0.68) > 0.1);
+        Assert.True(Rms(recordedThem, 0.91, 1.07) > 0.1);
+    }
+
+    [Fact]
     public async Task TimestampErrorAndDiscontinuityRemainRecordedWithoutUserWarnings()
     {
         string example = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../config.example.json"));
