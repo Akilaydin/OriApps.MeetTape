@@ -16,6 +16,7 @@ public sealed class ChatApiException(ApiFailureKind kind, string message, HttpSt
     public HttpStatusCode? Status { get; } = status;
     public TimeSpan? RetryAfter { get; } = retryAfter;
     internal bool EmptyChoices { get; init; }
+    internal bool RetryableInvalidArgument { get; init; }
 }
 public sealed record TranscriptionReply(string Text, string AudioSha256);
 
@@ -147,7 +148,13 @@ public sealed class ChatApiClient(HttpClient client, Func<bool> captureActive,
             token.ThrowIfCancellationRequested();
             if (failure is not null)
             {
-                LogResponse(response, raw, requestContext, timer.ElapsedMilliseconds, failure.Kind == ApiFailureKind.Transient ? "retry" : "pause");
+                bool retryable = stage == "transcription" && IsRetryableInvalidArgument(response.StatusCode, raw);
+                LogResponse(response, raw, requestContext, timer.ElapsedMilliseconds,
+                    retryable ? "bounded-retry-eligible" : failure.Kind == ApiFailureKind.Transient ? "retry" : "pause");
+                if (retryable)
+                    failure = new ChatApiException(ApiFailureKind.Permanent,
+                        "API HTTP 400 INVALID_ARGUMENT; transcription not accepted.", response.StatusCode, failure.RetryAfter)
+                    { RetryableInvalidArgument = true };
                 throw failure;
             }
             try
@@ -293,7 +300,32 @@ public sealed class ChatApiClient(HttpClient client, Func<bool> captureActive,
         if (hint.Contains("audio") && (hint.Contains("unsupported") || hint.Contains("not support") || hint.Contains("invalid"))) return "audio-input-unsupported";
         if (hint.Contains("blocked") || hint.Contains("content_filter") || hint.Contains("safety")) return "blocked";
         if (hint.Contains("rate_limit") || hint.Contains("quota") || hint.Contains("rate limit")) return "rate-limit";
+        if (hint.Contains("api key") || hint.Contains("authentication") || hint.Contains("permission denied")) return "authentication";
+        if (hint.Contains("missing required") || hint.Contains("required field") || hint.Contains("required parameter")
+            || hint.Contains("unknown field") || hint.Contains("unknown parameter") || hint.Contains("unrecognized field")
+            || hint.Contains("invalid field") || hint.Contains("invalid parameter") || hint.Contains("invalid schema")
+            || hint.Contains("unsupported format") || hint.Contains("malformed") || hint.Contains("invalid json")
+            || hint.Contains("invalid base64")) return "invalid-request";
+        if (error.TryGetProperty("status", out var status) && status.ValueKind == JsonValueKind.String
+            && status.GetString() == "INVALID_ARGUMENT") return "provider-invalid-argument";
         return "provider-error; message=[redacted]";
+    }
+
+    private static bool IsRetryableInvalidArgument(HttpStatusCode status, byte[] raw)
+    {
+        if (status != HttpStatusCode.BadRequest) return false;
+        try
+        {
+            using var document = JsonDocument.Parse(raw);
+            if (document.RootElement.ValueKind != JsonValueKind.Object
+                || !document.RootElement.TryGetProperty("error", out var error) || error.ValueKind != JsonValueKind.Object
+                || !error.TryGetProperty("code", out var code) || code.ValueKind != JsonValueKind.Number
+                || !code.TryGetInt32(out int number) || number != 400
+                || !error.TryGetProperty("status", out var reason) || reason.ValueKind != JsonValueKind.String
+                || reason.GetString() != "INVALID_ARGUMENT") return false;
+            return ErrorReason(error) == "provider-invalid-argument";
+        }
+        catch (JsonException) { return false; }
     }
 
     private void EnsureIdle(CancellationToken token)
