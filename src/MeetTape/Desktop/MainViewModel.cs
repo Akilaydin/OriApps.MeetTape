@@ -56,7 +56,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string CaptureHeading => IsRecording ? "Recording" : IsNaming ? "Recording saved" : IsPreparing ? "Preparing audio" :
         snapshot.Capture.Error is not null ? "Recording stopped with errors" : controller is null ? "Setup required" : "Ready";
     public string RecordingDuration => snapshot.Capture.Duration.ToString(@"hh\:mm\:ss");
-    public string MeCaptureLabel => snapshot.Capture.MeUnavailable is null ? "Me: microphone" : "Me: microphone unavailable";
+    public string MeCaptureLabel => IsMeMuted ? "Me: microphone muted" :
+        snapshot.Capture.MeUnavailable is null ? "Me: microphone" : "Me: microphone unavailable";
     public string ThemCaptureLabel => snapshot.Capture.ThemUnavailable is null ? "Them: system playback" : "Them: playback unavailable";
     public bool HasCaptureWarning => snapshot.Capture.IsActive
         && (snapshot.Capture.MeUnavailable is not null || snapshot.Capture.ThemUnavailable is not null);
@@ -111,6 +112,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string TrayText => $"MeetTape — {CaptureText} · {ProcessingText}" +
         (HasError || HasProcessingErrors ? " · Error: open MeetTape" : "");
     public bool CanRecord => controller is not null && !busy && !updating && !shutdownStarted && NamingDirectory is null && snapshot.AwaitingTitleDirectory is null;
+    public bool CanMuteMe => IsRecording && !busy && !updating && !shutdownStarted && controller is not null;
     public bool CanProcess => controller is not null && !busy && !updating && !shutdownStarted && !snapshot.Capture.IsActive && selected is not null && NamingDirectory is null;
     public bool CanPrepare => CanProcess && selected!.NeedsPreparation;
     public bool CanRecover => CanProcess && selected!.CanRecover && snapshot.AwaitingTitleDirectory is null
@@ -141,7 +143,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public int UpdateProgress { get; private set; }
     public bool IsBusy => busy;
     public bool IsRecording => snapshot.Capture.IsActive;
-    public double MeLevel => IsRecording ? snapshot.Capture.MeLevel * 100 : 0;
+    public bool IsMeMuted => IsRecording && snapshot.Capture.MeMuted;
+    public string MuteMeLabel => IsMeMuted ? "Unmute Me" : "Mute Me";
+    public double MeLevel => IsRecording && !IsMeMuted ? snapshot.Capture.MeLevel * 100 : 0;
     public double ThemLevel => IsRecording ? snapshot.Capture.ThemLevel * 100 : 0;
     public bool HasError => ErrorText.Length > 0;
     public string ErrorSummary => Brief(ErrorText);
@@ -346,6 +350,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
             await controller!.StartAsync();
         }
     });
+
+    public Task ToggleMeMuteAsync() => CanMuteMe
+        ? ExecuteAsync(() => controller!.SetMeMutedAsync(!IsMeMuted)) : Task.CompletedTask;
 
     // Notification actions must never use ToggleAsync: it stops an existing recording.
     public async Task<bool> StartOnlyAsync()

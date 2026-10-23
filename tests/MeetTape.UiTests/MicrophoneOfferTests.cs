@@ -139,6 +139,7 @@ public sealed class MicrophoneOfferTests
             Snapshot = Snapshot with { Capture = new(true, TimeSpan.Zero, 0, 0, null) };
             return Task.CompletedTask;
         }
+        public Task SetMeMutedAsync(bool muted) => throw new NotSupportedException();
         public Task<string?> StopAsync()
         {
             StopCount++;

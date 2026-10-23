@@ -28,6 +28,10 @@
     <Style Selector="Button.record.recording:pointerover">
       <Setter Property="Background" Value="#DE203A" />
     </Style>
+    <Style Selector="Button.mute.muted">
+      <Setter Property="Background" Value="#B91C38" />
+      <Setter Property="Foreground" Value="White" />
+    </Style>
     <Style Selector="TextBlock.capture-status.recording">
       <Setter Property="Foreground" Value="#F42842" />
     </Style>
@@ -75,6 +79,9 @@
                 <Button Name="RecordButton" Classes="record" Classes.recording="{Binding IsRecording}"
                         Content="{Binding RecordLabel}" IsEnabled="{Binding CanRecord}" IsVisible="{Binding !IsNaming}"
                         Click="RecordClick" Width="190" Height="42" HorizontalContentAlignment="Center" />
+                <Button Name="MuteMeButton" Classes="mute" Classes.muted="{Binding IsMeMuted}"
+                        Content="{Binding MuteMeLabel}" IsEnabled="{Binding CanMuteMe}" IsVisible="{Binding IsRecording}"
+                        Click="MuteMeClick" Width="190" Height="34" HorizontalContentAlignment="Center" />
                 <TextBlock Name="RecordingShortcut" Text="{Binding RecordingShortcutText}" Foreground="#7C8AA3"
                            FontSize="11" HorizontalAlignment="Center" />
               </StackPanel>

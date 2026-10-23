@@ -826,6 +826,41 @@ public sealed class WindowTests
     }
 
     [AvaloniaFact]
+    public async Task MuteMeButtonShowsStateAndDoesNotStopRecordingOrMuteThem()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var model = new MainViewModel(fake);
+        var window = new MainWindow { DataContext = model };
+        window.Show(); await model.RefreshAsync();
+        var mute = window.FindControl<Button>("MuteMeButton")!;
+        Assert.False(mute.IsVisible);
+        Assert.False(mute.IsEnabled);
+
+        Click(window, "RecordButton");
+        Assert.True(mute.IsVisible);
+        Assert.True(mute.IsEnabled);
+        Assert.Equal("Mute Me", mute.Content);
+        Click(window, "MuteMeButton");
+        Assert.True(model.IsMeMuted);
+        Assert.Equal("Unmute Me", mute.Content);
+        Assert.Equal("Me: microphone muted", model.MeCaptureLabel);
+        Assert.True(model.IsRecording);
+        Assert.Null(fake.Snapshot.Capture.ThemUnavailable);
+        Assert.Equal(0, fake.Stops);
+
+        Click(window, "MuteMeButton");
+        Assert.False(model.IsMeMuted);
+        Click(window, "RecordButton");
+        Assert.False(mute.IsVisible);
+        Click(window, "StartNextRecording");
+        Assert.True(mute.IsVisible);
+        Assert.Equal("Mute Me", mute.Content);
+        Assert.False(model.IsMeMuted);
+        Close(window, model);
+    }
+
+    [AvaloniaFact]
     public async Task RecordingCardHidesCaptureTimingDiagnosticsWithoutSuppressingRecordingStatus()
     {
         using var fixture = new Fixture();
@@ -1557,11 +1592,18 @@ public sealed class WindowTests
             Snapshot = Snapshot with { Capture = new(true, TimeSpan.FromSeconds(9), 100, 100, null) };
             ReportCapture(Snapshot.Capture);
         }
+        public Task SetMeMutedAsync(bool muted)
+        {
+            if (!Snapshot.Capture.IsActive) throw new InvalidOperationException("No capture is active.");
+            Snapshot = Snapshot with { Capture = Snapshot.Capture with { MeMuted = muted, MeLevel = muted ? 0 : Snapshot.Capture.MeLevel } };
+            ReportCapture(Snapshot.Capture);
+            return Task.CompletedTask;
+        }
         public async Task<string?> StopAsync()
         {
             if (StopCompletion is not null) await StopCompletion.Task;
             Stops++; string directory = Snapshot.Sessions[0].Directory;
-            Snapshot = Snapshot with { Capture = Snapshot.Capture with { IsActive = false }, AwaitingTitleDirectory = directory };
+            Snapshot = Snapshot with { Capture = Snapshot.Capture with { IsActive = false, MeMuted = false }, AwaitingTitleDirectory = directory };
             ReportCapture(Snapshot.Capture);
             return directory;
         }
