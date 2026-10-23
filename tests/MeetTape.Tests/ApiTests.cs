@@ -91,6 +91,69 @@ public sealed class ApiTests : IDisposable
     }
 
     [Theory]
+    [InlineData(400, 400, "INVALID_ARGUMENT", "Temporary provider rejection; private transcript", true, "provider-invalid-argument")]
+    [InlineData(400, 400, "INVALID_ARGUMENT", "Unknown model; private prompt", false, "unknown-model")]
+    [InlineData(400, 400, "INVALID_ARGUMENT", "Unsupported audio input; private prompt", false, "audio-input-unsupported")]
+    [InlineData(400, 400, "INVALID_ARGUMENT", "Blocked by safety filter; private prompt", false, "blocked")]
+    [InlineData(400, 400, "INVALID_ARGUMENT", "Missing required parameter; private prompt", false, "invalid-request")]
+    [InlineData(400, 400, "INVALID_ARGUMENT", "Invalid field 'messages'; private prompt", false, "invalid-request")]
+    [InlineData(400, 400, "INVALID_ARGUMENT", "Invalid API key; private prompt", false, "authentication")]
+    [InlineData(400, 400, "INVALID_REQUEST", "Temporary provider rejection; private transcript", false, "provider-error")]
+    [InlineData(400, 500, "INVALID_ARGUMENT", "Temporary provider rejection; private transcript", false, "provider-invalid-argument")]
+    [InlineData(500, 400, "INVALID_ARGUMENT", "Temporary provider rejection; private transcript", false, "provider-invalid-argument")]
+    public async Task Http400InvalidArgumentOnlyAllowsBoundedRetryForUnclassifiedTranscriptionError(
+        int httpStatus, int code, string status, string message, bool retryable, string reason)
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "MeetTapeHttp400-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            await using (var log = new FileDiagnostics(directory))
+            using (AppDiagnostics.Use(log))
+            {
+                string raw = JsonSerializer.Serialize(new { error = new { code, status, message } });
+                using var handler = new Handler((_, _) => Task.FromResult(Reply((HttpStatusCode)httpStatus, raw)));
+                using var http = new HttpClient(handler);
+                var api = new ChatApiClient(http, () => false, _ => "fixture-key");
+                var failure = await Assert.ThrowsAsync<ChatApiException>(() => api.TranscribeAsync(Settings, "private prompt", path, default));
+                Assert.Equal(httpStatus == 500 ? ApiFailureKind.Transient : ApiFailureKind.Permanent, failure.Kind);
+                Assert.Equal(retryable, failure.RetryableInvalidArgument);
+                Assert.Equal((HttpStatusCode)httpStatus, failure.Status);
+                Assert.DoesNotContain("private", failure.Message);
+
+                // The same HTTP 400 must never enter the bounded retry path for Summary.
+                if (httpStatus == 400 && retryable)
+                {
+                    var summary = await Assert.ThrowsAsync<ChatApiException>(() => api.SummarizeAsync(Settings,
+                        "private prompt", "private transcript", default));
+                    Assert.Equal(ApiFailureKind.Permanent, summary.Kind);
+                    Assert.False(summary.RetryableInvalidArgument);
+                }
+            }
+            string logged = File.ReadAllText(Path.Combine(directory, "meettape.log"));
+            Assert.Contains("error_reason=" + reason, logged);
+            Assert.Contains(retryable ? "decision=bounded-retry-eligible" : httpStatus == 500 ? "decision=retry" : "decision=pause", logged);
+            foreach (string secret in new[] { "private prompt", "private transcript", "fixture-key" })
+                Assert.DoesNotContain(secret, logged);
+        }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
+    }
+
+    [Theory]
+    [InlineData("{\"error\":{\"status\":\"INVALID_ARGUMENT\",\"message\":\"private transcript\"}}")]
+    [InlineData("{\"error\":{\"code\":400,\"message\":\"private transcript\"}}")]
+    [InlineData("{\"error\":{\"code\":400,\"status\":\"INVALID_ARGUMENT\",\"message\":\"private transcript\"}")]
+    [InlineData("not-json")]
+    public async Task Http400WithoutCompleteStructuredSignatureRemainsPermanent(string raw)
+    {
+        using var handler = new Handler((_, _) => Task.FromResult(Reply(HttpStatusCode.BadRequest, raw)));
+        using var http = new HttpClient(handler);
+        var failure = await Assert.ThrowsAsync<ChatApiException>(() => new ChatApiClient(http, () => false, _ => "fixture-key")
+            .TranscribeAsync(Settings, "private prompt", path, default));
+        Assert.Equal(ApiFailureKind.Permanent, failure.Kind);
+        Assert.False(failure.RetryableInvalidArgument);
+    }
+
+    [Theory]
     [InlineData(400, ApiFailureKind.Permanent)]
     [InlineData(503, ApiFailureKind.Transient)]
     public async Task OversizedErrorDiagnosticsRetainHttpFailureClassification(int status, ApiFailureKind expected)

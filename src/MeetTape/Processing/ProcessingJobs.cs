@@ -288,7 +288,7 @@ public sealed class ProcessingJobs : IDisposable
                                         $"session={data.Id}; chunk={chunk.Index}; attempt={Math.Min(attempts + 1, 31)}; source={chunk.Source ?? "stereo"}", chunk.Source);
                                     result = new(data.Id, chunk, reply.AudioSha256, data.Processing.Transcription.Model, promptHash, reply.Text);
                                 }
-                                catch (ChatApiException ex) when (ex.Kind == ApiFailureKind.Transient || ex.EmptyChoices)
+                                catch (ChatApiException ex) when (ex.Kind == ApiFailureKind.Transient || ex.EmptyChoices || ex.RetryableInvalidArgument)
                                 {
                                     token.ThrowIfCancellationRequested();
                                     attempts = Math.Min(attempts + 1, 30);
@@ -296,12 +296,19 @@ public sealed class ProcessingJobs : IDisposable
                                         throw new ChatApiException(ApiFailureKind.InvalidResponse,
                                             $"Chunk {chunk.Index}: API returned empty choices after {attempts} attempts; automatic retry stopped. " +
                                             "Check the provider/settings, then Resume; valid earlier chunks are retained.", ex.Status);
+                                    if (ex.RetryableInvalidArgument && attempts >= 4)
+                                    {
+                                        AppDiagnostics.Info("processing", $"Chunk {chunk.Index} HTTP 400 INVALID_ARGUMENT; attempts={attempts}; decision=pause; retry budget exhausted");
+                                        throw new ChatApiException(ApiFailureKind.Permanent,
+                                            $"Chunk {chunk.Index}: API HTTP 400 INVALID_ARGUMENT after {attempts} attempts; automatic retry stopped. " +
+                                            "Check the provider/settings, then Resume; valid earlier chunks are retained.", ex.Status);
+                                    }
                                     var backoff = Backoff(attempts, ex.RetryAfter);
                                     AppDiagnostics.Error("processing", $"Transcribe chunk {chunk.Index}; attempt {attempts}; retry in {backoff.TotalSeconds:F0}s", ex);
                                     int invalidFailures = data.Retry?.ChunkIndex == chunk.Index ? data.Retry.InvalidTimedTextFailures : 0;
                                     data = data with { Retry = new(chunk.Index, attempts, utcNow() + backoff, invalidFailures), Error = ex.Message };
                                     SessionStore.Save(directory, data);
-                                    Report($"Job {data.Id}: chunk {chunk.Index} transient failure; retry in {backoff.TotalSeconds:F0}s. {ex.Message}", NoticeKind.Warning, data.Id);
+                                    Report($"Job {data.Id}: chunk {chunk.Index} API failure; retry in {backoff.TotalSeconds:F0}s. {ex.Message}", NoticeKind.Warning, data.Id);
                                     return; // Leave this session ready for a later pass; process other meetings now.
                                 }
                             }

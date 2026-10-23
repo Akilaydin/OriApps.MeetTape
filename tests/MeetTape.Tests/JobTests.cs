@@ -120,6 +120,7 @@ public sealed class JobTests : IDisposable
     private readonly string root = Path.Combine(Path.GetTempPath(), "MeetTapeJobs-" + Guid.NewGuid().ToString("N"));
     private readonly LoadedConfiguration config;
     private const string Valid = "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"[00:01] Me: test\"}}]}";
+    private const string Retryable400 = "{\"error\":{\"code\":400,\"status\":\"INVALID_ARGUMENT\",\"message\":\"Temporary provider rejection; private transcript\"}}";
 
     public JobTests()
     {
@@ -480,6 +481,100 @@ public sealed class JobTests : IDisposable
         await resumed.ProcessSessionAsync(directory, default);
         Assert.Equal(1, success.Calls);
         Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
+    }
+
+    [Fact]
+    public async Task Http400InvalidArgumentRetriesThreeTimesAcrossRestartWithoutResendingCompletedChunks()
+    {
+        string directory = Session();
+        var now = DateTimeOffset.UtcNow;
+        byte[] original = File.ReadAllBytes(Path.Combine(directory, "me.mp3"));
+        using var handler = new Handler((call, _) => Task.FromResult(call is 2 or 3 or 4 ? InvalidArgumentResponse() : Response()));
+        using var http = new HttpClient(handler);
+        for (int attempt = 1; attempt <= 3; attempt++)
+        {
+            using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key", utcNow: () => now);
+            await jobs.ProcessSessionAsync(directory, default);
+            Assert.Equal(attempt + 1, handler.Calls);
+            var saved = SessionStore.Read(directory);
+            Assert.NotEqual(JobState.Paused, saved.JobState);
+            var retry = Assert.IsType<RetryProgress>(saved.Retry);
+            Assert.Equal(2, retry.ChunkIndex);
+            Assert.Equal(attempt, retry.Attempts);
+            Assert.Equal(Math.Pow(2, attempt - 1), (retry.NextAttemptUtc - now).TotalSeconds);
+            Assert.True(File.Exists(ChunkStore.PathFor(directory, 1)));
+            Assert.False(File.Exists(ChunkStore.PathFor(directory, 2)));
+            await jobs.ProcessSessionAsync(directory, default);
+            Assert.Equal(attempt + 1, handler.Calls);
+            now = retry.NextAttemptUtc;
+        }
+        byte[] savedFirst = File.ReadAllBytes(ChunkStore.PathFor(directory, 1));
+        using (var restarted = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key", utcNow: () => now))
+            await restarted.ProcessSessionAsync(directory, default);
+        Assert.Equal(SessionStore.Read(directory).Audio!.Chunks.Count + 3, handler.Calls);
+        Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
+        Assert.Null(SessionStore.Read(directory).Retry);
+        Assert.Equal(savedFirst, File.ReadAllBytes(ChunkStore.PathFor(directory, 1)));
+        Assert.Equal(original, File.ReadAllBytes(Path.Combine(directory, "me.mp3")));
+    }
+
+    [Fact]
+    public async Task PersistentHttp400InvalidArgumentPausesAfterFourAttemptsAndAllowsManualResume()
+    {
+        string directory = Session(120);
+        var now = DateTimeOffset.UtcNow;
+        using var handler = new Handler((_, _) => Task.FromResult(InvalidArgumentResponse()));
+        using var http = new HttpClient(handler);
+        for (int attempt = 1; attempt <= 4; attempt++)
+        {
+            using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key", utcNow: () => now);
+            await jobs.ProcessSessionAsync(directory, default);
+            Assert.Equal(attempt, handler.Calls);
+            var saved = SessionStore.Read(directory);
+            if (attempt < 4)
+            {
+                Assert.NotEqual(JobState.Paused, saved.JobState);
+                var retry = Assert.IsType<RetryProgress>(saved.Retry);
+                Assert.Equal(attempt, retry.Attempts);
+                now = retry.NextAttemptUtc;
+            }
+            else
+            {
+                Assert.Equal(JobState.Paused, saved.JobState);
+                Assert.Contains("400 INVALID_ARGUMENT", saved.Error);
+                Assert.Contains("4 attempts", saved.Error);
+                Assert.Contains("Resume", saved.Error);
+            }
+        }
+        using (var restarted = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key", utcNow: () => now))
+            await restarted.ProcessSessionAsync(directory, default);
+        Assert.Equal(4, handler.Calls);
+        Assert.False(File.Exists(ChunkStore.PathFor(directory, 1)));
+        using var success = new Handler((_, _) => Task.FromResult(Response()));
+        using var resumedHttp = new HttpClient(success);
+        using var resumed = new ProcessingJobs(config, () => false, resumedHttp, readKey: _ => "test-key", utcNow: () => now);
+        resumed.Resume(directory);
+        await resumed.ProcessSessionAsync(directory, default);
+        Assert.Equal(1, success.Calls);
+        Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
+    }
+
+    [Fact]
+    public async Task Http400InvalidArgumentPendingRetryCanBeCanceledWithoutNewRequest()
+    {
+        string directory = Session(120);
+        using var handler = new Handler((_, _) => Task.FromResult(InvalidArgumentResponse()));
+        using var http = new HttpClient(handler);
+        using (var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key"))
+        {
+            await jobs.ProcessSessionAsync(directory, default);
+            Assert.NotNull(SessionStore.Read(directory).Retry);
+            jobs.Cancel(directory);
+        }
+        using var restarted = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key");
+        await restarted.ProcessSessionAsync(directory, default);
+        Assert.Equal(1, handler.Calls);
+        Assert.Equal(JobState.Canceled, SessionStore.Read(directory).JobState);
     }
 
     [Theory]
@@ -1245,6 +1340,8 @@ public sealed class JobTests : IDisposable
 
     private static HttpResponseMessage Response(int status = 200) => new((HttpStatusCode)status)
         { Content = new StringContent(status == 200 ? Valid : "private provider error", Encoding.UTF8, "application/json") };
+    private static HttpResponseMessage InvalidArgumentResponse() => new(HttpStatusCode.BadRequest)
+        { Content = new StringContent(Retryable400, Encoding.UTF8, "application/json") };
     private static HttpResponseMessage TextResponse(string text) => new(HttpStatusCode.OK)
     { Content = new StringContent(JsonSerializer.Serialize(new
         { choices = new[] { new { finish_reason = "stop", message = new { content = text } } } }), Encoding.UTF8, "application/json") };
