@@ -26,6 +26,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     }
     private bool notificationActive;
     private bool meNotificationUnavailable, themNotificationUnavailable;
+    private string? meNotificationDeviceId, themNotificationDeviceId;
     private readonly Queue<OperationNotice> processingIssues = new();
     private DesktopSnapshot snapshot = new(new(false, TimeSpan.Zero, 0, 0, null), [], null, null, false, null);
     private bool refreshing;
@@ -203,29 +204,44 @@ public sealed class MainViewModel : INotifyPropertyChanged
         if (status.IsActive != notificationActive)
         {
             notificationActive = status.IsActive;
+            meNotificationDeviceId = status.MeDevice?.Id;
+            themNotificationDeviceId = status.ThemDevice?.Id;
             SendRecordingNotification(new(status.Error is null ? NoticeKind.Information : NoticeKind.Error,
                 status.IsActive ? "Recording started" : status.Error is null ? "Recording stopped" : "Recording interrupted"));
         }
         if (!status.IsActive)
         {
             meNotificationUnavailable = themNotificationUnavailable = false;
-            if (status.Error is null && (HadEndpointInterruption(status.MeTiming) || HadEndpointInterruption(status.ThemTiming)))
-                SendRecordingNotification(new(NoticeKind.Warning,
-                    "Recording saved with an audio interruption. Check the meeting's Details before processing."));
             return;
         }
         bool meLost = status.MeUnavailable is not null;
         bool themLost = status.ThemUnavailable is not null;
+        bool meSwitched = status.MeDevice is { } meDevice && meNotificationDeviceId is { } previousMeId
+            && !string.Equals(meDevice.Id, previousMeId, StringComparison.OrdinalIgnoreCase);
+        bool themSwitched = status.ThemDevice is { } themDevice && themNotificationDeviceId is { } previousThemId
+            && !string.Equals(themDevice.Id, previousThemId, StringComparison.OrdinalIgnoreCase);
         if (meLost != meNotificationUnavailable)
-            SendRecordingNotification(new(meLost ? NoticeKind.Warning : NoticeKind.Information,
-                meLost ? status.MeUnavailable!.Contains("could not switch", StringComparison.Ordinal)
+        {
+            if (meLost || !meSwitched)
+                SendRecordingNotification(new(meLost ? NoticeKind.Warning : NoticeKind.Information,
+                    meLost ? status.MeUnavailable!.Contains("could not switch", StringComparison.Ordinal)
                     ? "Me default microphone switch failed; previous microphone remains active."
                     : "Me microphone unavailable; recording silence until restored." : "Me microphone reconnected."));
+        }
         if (themLost != themNotificationUnavailable)
-            SendRecordingNotification(new(themLost ? NoticeKind.Warning : NoticeKind.Information,
-                themLost ? status.ThemUnavailable!.Contains("could not switch", StringComparison.Ordinal)
+        {
+            if (themLost || !themSwitched)
+                SendRecordingNotification(new(themLost ? NoticeKind.Warning : NoticeKind.Information,
+                    themLost ? status.ThemUnavailable!.Contains("could not switch", StringComparison.Ordinal)
                     ? "Them default playback switch failed; previous playback source remains active."
                     : "Them playback unavailable; recording silence until restored." : "Them playback reconnected."));
+        }
+        if (meSwitched)
+            SendRecordingNotification(new(NoticeKind.Information, $"Me microphone switched to {status.MeDevice!.Name}."));
+        if (themSwitched)
+            SendRecordingNotification(new(NoticeKind.Information, $"Them playback switched to {status.ThemDevice!.Name}."));
+        if (status.MeDevice is not null) meNotificationDeviceId = status.MeDevice.Id;
+        if (status.ThemDevice is not null) themNotificationDeviceId = status.ThemDevice.Id;
         meNotificationUnavailable = meLost;
         themNotificationUnavailable = themLost;
     });
@@ -576,18 +592,17 @@ public sealed record SessionRow(string Directory, Guid? Id, string Title, string
     public string Details { get; init; } = "";
     public bool HasAudioInterruption { get; init; }
     internal bool PausedJob { get; init; }
-    public string DisplayStatus => HasAudioInterruption && Status == "Completed" ? "Audio interrupted" :
-        PausedJob ? "Paused" : Status is "Running" or "NotStarted" ? "Processing" :
+    public string DisplayStatus => PausedJob ? "Paused" : Status is "Running" or "NotStarted" ? "Processing" :
         Status.StartsWith("Retry ", StringComparison.Ordinal) ? "Retry" : Status == "Awaiting trim choice" ? "Needs trim" : Status;
     public string StatusForeground => DisplayStatus switch
     {
         "Recording" or "Failed" or "Interrupted" or "Invalid metadata" => "#DB2644",
-        "Completed" => "#078A3C", "Paused" or "Needs trim" or "Audio interrupted" => "#A65009", "Canceled" => "#69778E", _ => "#1674E8"
+        "Completed" => "#078A3C", "Paused" or "Needs trim" => "#A65009", "Canceled" => "#69778E", _ => "#1674E8"
     };
     public string StatusBackground => DisplayStatus switch
     {
         "Recording" or "Failed" or "Interrupted" or "Invalid metadata" => "#FFEBEF",
-        "Completed" => "#E7F8ED", "Paused" or "Needs trim" or "Audio interrupted" => "#FFF0E3", "Canceled" => "#EEF1F5", _ => "#E8F2FF"
+        "Completed" => "#E7F8ED", "Paused" or "Needs trim" => "#FFF0E3", "Canceled" => "#EEF1F5", _ => "#E8F2FF"
     };
     public bool CanResume { get; init; }
     public bool CanRecover { get; init; }

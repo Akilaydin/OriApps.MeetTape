@@ -1,4 +1,5 @@
 using OriApps.MeetTape.Settings;
+using System.Runtime.InteropServices;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 
@@ -76,7 +77,7 @@ public static class AudioDevices
             {
                 MeDevice = me.Info,
                 ThemDevice = them.Info,
-                Reopen = channel => OpenChannel(settings, channel),
+                Reopen = channel => OpenChannel(settings, channel, allowFallback: true),
                 Observe = Observe
             };
         }
@@ -88,12 +89,13 @@ public static class AudioDevices
         }
     }
 
-    private static CaptureSource OpenChannel(CaptureSettings settings, CaptureChannel channel)
+    private static CaptureSource OpenChannel(CaptureSettings settings, CaptureChannel channel, bool allowFallback = false)
     {
         bool me = channel == CaptureChannel.Me;
         string? selectedId = me ? settings.MicrophoneDeviceId : settings.PlaybackDeviceId;
         using var enumerator = new MMDeviceEnumerator();
-        var endpoint = Select(enumerator, selectedId, me ? DataFlow.Capture : DataFlow.Render);
+        var flow = me ? DataFlow.Capture : DataFlow.Render;
+        var endpoint = allowFallback ? SelectForRecovery(enumerator, selectedId, flow) : Select(enumerator, selectedId, flow);
         try
         {
             var source = new WasapiPacketCapture(endpoint, loopback: !me,
@@ -149,6 +151,37 @@ public static class AudioDevices
             throw new InvalidOperationException("Selected endpoint is unavailable or has the wrong capture/render direction.");
         }
         return device;
+    }
+
+    // During a recording, a disconnected configured device can be replaced by another
+    // active endpoint of the same direction. Initial capture still honors the selection.
+    private static MMDevice SelectForRecovery(MMDeviceEnumerator enumerator, string? selectedId, DataFlow flow)
+    {
+        string? defaultId = null;
+        try
+        {
+            if (enumerator.HasDefaultAudioEndpoint(flow, Role.Multimedia))
+            {
+                using var device = enumerator.GetDefaultAudioEndpoint(flow, Role.Multimedia);
+                defaultId = device.ID;
+            }
+        }
+        catch (COMException) { /* Default may disappear while endpoints are changing. */ }
+
+        var candidates = enumerator.EnumerateAudioEndPoints(flow, DeviceState.Active).ToArray();
+        MMDevice? selected = null;
+        try
+        {
+            selected = candidates.FirstOrDefault(device => string.Equals(device.ID, selectedId, StringComparison.OrdinalIgnoreCase))
+                ?? candidates.FirstOrDefault(device => string.Equals(device.ID, defaultId, StringComparison.OrdinalIgnoreCase))
+                ?? candidates.FirstOrDefault();
+            return selected ?? throw new InvalidOperationException("No available audio endpoint for this track.");
+        }
+        finally
+        {
+            foreach (var device in candidates)
+                if (!ReferenceEquals(device, selected)) device.Dispose();
+        }
     }
 }
 

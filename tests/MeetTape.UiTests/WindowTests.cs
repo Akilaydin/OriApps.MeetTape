@@ -365,7 +365,8 @@ public sealed class WindowTests
         var window = new MainWindow { DataContext = model };
         window.Show(); await model.RefreshAsync();
 
-        var started = fake.Snapshot.Capture with { IsActive = true };
+        var started = fake.Snapshot.Capture with { IsActive = true,
+            ThemDevice = new("old", "Headphones", CaptureChannel.Them, true) };
         fake.Snapshot = fake.Snapshot with { Capture = started };
         fake.ReportCapture(started);
         Dispatcher.UIThread.RunJobs();
@@ -383,18 +384,42 @@ public sealed class WindowTests
         Assert.Equal(NoticeKind.Warning, notices[1].Kind);
         Assert.Contains("Them playback unavailable", notices[1].Message);
 
-        fake.Snapshot = fake.Snapshot with { Capture = started };
-        fake.ReportCapture(started);
+        var restored = started with { ThemDevice = new("new", "Speakers", CaptureChannel.Them, true) };
+        fake.Snapshot = fake.Snapshot with { Capture = restored };
+        fake.ReportCapture(restored);
         Dispatcher.UIThread.RunJobs();
         await model.RefreshAsync();
         Assert.False(model.HasCaptureWarning);
         Assert.Equal("Them: system playback", model.ThemCaptureLabel);
-        Assert.Equal("Them playback reconnected.", notices[2].Message);
+        Assert.Equal("Them playback switched to Speakers.", notices[2].Message);
         Close(window, model);
     }
 
     [AvaloniaFact]
-    public async Task SavedSessionDetailsShowDeviceInterruptionAfterRestart()
+    public async Task SeamlessDeviceSwitchNotifiesOnceWithoutChangingRecordingStatus()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var notices = new List<OperationNotice>();
+        var model = new MainViewModel(fake, notices.Add);
+        await model.RefreshAsync();
+        var started = fake.Snapshot.Capture with { IsActive = true,
+            MeDevice = new("mic-a", "Mic", CaptureChannel.Me, true),
+            ThemDevice = new("out-a", "Headphones", CaptureChannel.Them, true) };
+        fake.ReportCapture(started);
+        var switched = started with { ThemDevice = new("out-b", "Speakers", CaptureChannel.Them, true) };
+        fake.ReportCapture(switched);
+        fake.ReportCapture(switched);
+        fake.ReportCapture(switched with { IsActive = false });
+        Dispatcher.UIThread.RunJobs();
+        Assert.Equal(new[] { "Recording started", "Them playback switched to Speakers.", "Recording stopped" },
+            notices.Select(n => n.Message));
+        Assert.All(notices, notice => Assert.Equal(NoticeKind.Information, notice.Kind));
+        model.Detach();
+    }
+
+    [AvaloniaFact]
+    public async Task SavedSessionDetailsKeepDeviceInterruptionWithoutChangingCompletedStatusAfterRestart()
     {
         using var fixture = new Fixture();
         var fake = new FakeController(fixture);
@@ -416,7 +441,7 @@ public sealed class WindowTests
         await model.RefreshAsync();
         var row = Assert.Single(model.Sessions);
         Assert.True(row.HasAudioInterruption);
-        Assert.Equal("Audio interrupted", row.DisplayStatus);
+        Assert.Equal("Completed", row.DisplayStatus);
         Assert.Contains("Them changed or disconnected", row.Details);
         model.Detach();
     }
