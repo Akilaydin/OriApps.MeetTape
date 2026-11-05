@@ -252,7 +252,7 @@ public sealed class CaptureTests
     }
 
     [Fact]
-    public async Task PinnedEndpointLossWaitsForSameIdAndNeverFallsBackToNewDefault()
+    public async Task PinnedEndpointLossCanUseNewDefaultWithoutChangingSelection()
     {
         var me = new FakeSource();
         var originalThem = new FakeSource();
@@ -260,7 +260,8 @@ public sealed class CaptureTests
         Action<EndpointChange>? notify = null;
         int openings = 0;
         var pinned = new AudioDevice("fixed", "Playback", CaptureChannel.Them, false);
-        using var capture = new CaptureCoordinator(() => new CaptureSources(
+        CaptureSources? initialSources = null;
+        using var capture = new CaptureCoordinator(() => initialSources = new CaptureSources(
             new CaptureSource(me, info: new("me", "Microphone", CaptureChannel.Me, false)),
             new CaptureSource(originalThem, info: pinned))
         {
@@ -270,26 +271,58 @@ public sealed class CaptureTests
             {
                 Assert.Equal(CaptureChannel.Them, channel);
                 Interlocked.Increment(ref openings);
-                if (openings == 1) throw new IOException("Fixed endpoint is still offline");
-                return new(replacementThem, info: pinned);
+                return new(replacementThem, info: new("new-default", "Speakers", channel, false));
             },
             Observe = callback => { notify = callback; return new FakeObserver(); }
         });
         capture.Start();
+        notify!(new(EndpointChangeKind.DefaultChanged, "new-default", CaptureChannel.Them));
+        await Task.Delay(50);
+        Assert.Equal(0, openings); // The explicitly selected source remains active while healthy.
         originalThem.Fail(new COMException("device gone", unchecked((int)0x88890004)));
         await WaitFor(() => capture.Status.ThemUnavailable is not null);
         Assert.True(me.Running && capture.Status.IsActive);
-        notify!(new(EndpointChangeKind.DefaultChanged, "new-default", CaptureChannel.Them));
-        notify(new(EndpointChangeKind.Added, "unrelated"));
-        await Task.Delay(50);
-        Assert.Equal(0, openings);
-        notify(new(EndpointChangeKind.Added, "fixed"));
-        await WaitFor(() => Volatile.Read(ref openings) == 1);
-        Assert.NotNull(capture.Status.ThemUnavailable);
-        capture.RetryDisconnected();
+        notify(new(EndpointChangeKind.DefaultChanged, "new-default", CaptureChannel.Them));
         await WaitFor(() => replacementThem.Running);
+        Assert.Equal(1, openings);
+        Assert.Equal("fixed", initialSources!.ThemDevice!.Id);
+        Assert.Equal("new-default", capture.Status.ThemDevice?.Id);
         Assert.Null(capture.Status.ThemUnavailable);
         Assert.Null(capture.Status.Error);
+        capture.Stop();
+    }
+
+    [Fact]
+    public async Task DisconnectedPinnedMicrophoneCanRecoverWhenAnotherDeviceAppears()
+    {
+        var originalMe = new FakeSource();
+        var replacementMe = new FakeSource();
+        var them = new FakeSource();
+        Action<EndpointChange>? notify = null;
+        int openings = 0;
+        using var capture = new CaptureCoordinator(() => new CaptureSources(
+            new CaptureSource(originalMe, info: new("mic-a", "Microphone A", CaptureChannel.Me, false)),
+            new CaptureSource(them, info: new("playback", "Speakers", CaptureChannel.Them, true)))
+        {
+            MeDevice = new("mic-a", "Microphone A", CaptureChannel.Me, false),
+            ThemDevice = new("playback", "Speakers", CaptureChannel.Them, true),
+            Reopen = channel =>
+            {
+                Assert.Equal(CaptureChannel.Me, channel);
+                Interlocked.Increment(ref openings);
+                return new(replacementMe, info: new("mic-b", "Microphone B", channel, false));
+            },
+            Observe = callback => { notify = callback; return new FakeObserver(); }
+        });
+        capture.Start();
+        originalMe.Fail(new COMException("device gone", unchecked((int)0x88890004)));
+        await WaitFor(() => capture.Status.MeUnavailable is not null);
+        notify!(new(EndpointChangeKind.Added, "mic-b"));
+        await WaitFor(() => replacementMe.Running);
+        Assert.Equal(1, openings);
+        Assert.Equal("mic-b", capture.Status.MeDevice?.Id);
+        Assert.Null(capture.Status.MeUnavailable);
+        Assert.True(them.Running && capture.Status.IsActive);
         capture.Stop();
     }
 

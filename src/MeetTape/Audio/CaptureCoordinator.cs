@@ -25,6 +25,8 @@ public sealed record CaptureStatus(bool IsActive, TimeSpan Duration, long MeByte
     public bool MeMuted { get; init; }
     public string? MeUnavailable { get; init; }
     public string? ThemUnavailable { get; init; }
+    public AudioDevice? MeDevice { get; init; }
+    public AudioDevice? ThemDevice { get; init; }
 }
 
 public sealed class CaptureCoordinator(
@@ -85,7 +87,9 @@ public sealed class CaptureCoordinator(
                         MeLevel = active is null ? 0 : Decay(mePeak, meLevelAt, levelNow),
                         ThemLevel = active is null ? 0 : Decay(themPeak, themLevelAt, levelNow),
                         MeMuted = active is not null && IsMeMuted,
-                        MeUnavailable = meUnavailable, ThemUnavailable = themUnavailable
+                        MeUnavailable = meUnavailable, ThemUnavailable = themUnavailable,
+                        MeDevice = active?.Current(CaptureChannel.Me)?.Info,
+                        ThemDevice = active?.Current(CaptureChannel.Them)?.Info
                     };
             }
         }
@@ -312,6 +316,8 @@ public sealed class CaptureCoordinator(
                             StopReconnectIfReady(sources);
                         }
                     }
+                    else if (change.Channel is { } unavailableChannel && sources.Current(unavailableChannel) is null)
+                        ReplaceChannel(sources, unavailableChannel, lost: true);
                     return;
                 }
                 foreach (CaptureChannel channel in new[] { CaptureChannel.Me, CaptureChannel.Them })
@@ -324,9 +330,8 @@ public sealed class CaptureCoordinator(
                             selected && change.Kind == EndpointChangeKind.StateChanged && !change.Active)
                             ReplaceChannel(sources, channel, lost: true, reopenNow: false);
                     }
-                    else if ((change.Kind == EndpointChangeKind.Added
-                                 || change.Kind == EndpointChangeKind.StateChanged && change.Active)
-                             && (IsDefaultSelection(sources, channel) || selected))
+                    else if (change.Kind == EndpointChangeKind.Added
+                             || change.Kind == EndpointChangeKind.StateChanged && change.Active)
                         ReplaceChannel(sources, channel, lost: true);
                 }
             }
