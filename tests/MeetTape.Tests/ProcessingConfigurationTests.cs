@@ -66,7 +66,7 @@ public sealed class ProcessingConfigurationTests
     }
 
     [Fact]
-    public async Task SettingsChangeRetainsRunningContractAndResumeKeepsSuccessfulChunks()
+    public async Task SettingsChangeRetainsRunningContractAndResumeReprocessesIncompatibleChunks()
     {
         using var fixture = new JobTests();
         string directory = fixture.Session();
@@ -119,12 +119,88 @@ public sealed class ProcessingConfigurationTests
         await jobs.ProcessSessionAsync(directory, default);
         var completed = SessionStore.Read(directory);
         Assert.Equal(JobState.Completed, completed.JobState);
-        Assert.Equal(4, handler.Calls);
+        Assert.Equal(5, handler.Calls);
         Assert.All(keySettings.Skip(2), settings => Assert.Equal(updated.Settings.Transcription, settings));
         Assert.Equal(original.Processing.ChunkSeconds, completed.Processing.ChunkSeconds);
         Assert.True(completed.Stages["transcribe"].Enabled);
-        Assert.Equal(checkpoint, File.ReadAllBytes(ChunkStore.PathFor(directory, 1)));
+        Assert.Equal("new-model", completed.Processing.Transcription.Model);
+        Assert.NotEqual(checkpoint, File.ReadAllBytes(ChunkStore.PathFor(directory, 1)));
+        Assert.Equal(checkpoint, File.ReadAllBytes(Assert.Single(Directory.GetFiles(Path.Combine(directory, "chunks"), "0001.superseded-*.json"))));
         Assert.Equal(audio, File.ReadAllBytes(Path.Combine(directory, "me.mp3")));
+    }
+
+    [Fact]
+    public async Task QueuedSessionUsesCurrentModelAndArchivesOldCheckpointBeforeTranscription()
+    {
+        using var fixture = new JobTests();
+        string directory = fixture.Session();
+        var original = SessionStore.Read(directory);
+        var old = original.Processing.Transcription with { Model = "older-model" };
+        SessionStore.Save(directory, original with { Processing = original.Processing with { Transcription = old } });
+        var first = original.Audio!.Chunks[0];
+        string prompt = File.ReadAllText(Path.GetFullPath(old.PromptFile, original.Processing.ConfigurationDirectory));
+        string promptHash = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(
+            prompt + ChatApiClient.InstructionFor(first.Source))));
+        byte[] audio = File.ReadAllBytes(Path.Combine(directory, "me.mp3"));
+        ChunkStore.Save(directory, new(original.Id, first,
+            Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(Path.Combine(directory, first.RelativePath)))),
+            "older-model", promptHash, "[00:00] Me: Previous result."));
+        byte[] saved = File.ReadAllBytes(ChunkStore.PathFor(directory, first.Index));
+
+        var config = new LoadedConfiguration(new Configuration
+        {
+            MeetingsRoot = Path.GetDirectoryName(directory)!,
+            Transcription = old with { Model = "current-model" }, Summary = original.Processing.Summary
+        }, original.Processing.ConfigurationDirectory);
+        var requests = new List<string>();
+        using var handler = new PromptHandler(async (request, token) =>
+        {
+            requests.Add(await request.Content!.ReadAsStringAsync(token));
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"[00:00] Me: Current result.\"}}]}")
+            };
+        });
+        using var http = new HttpClient(handler);
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "fixture-key");
+        await jobs.ProcessSessionAsync(directory, default);
+
+        Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
+        Assert.Equal("current-model", SessionStore.Read(directory).Processing.Transcription.Model);
+        Assert.Equal(3, requests.Count);
+        Assert.All(requests, body => Assert.Contains("\"model\":\"current-model\"", body));
+        Assert.Equal(saved, File.ReadAllBytes(Assert.Single(Directory.GetFiles(Path.Combine(directory, "chunks"), "0001.superseded-*.json"))));
+        Assert.Equal("current-model", (await ChunkStore.ReadAsync(directory, SessionStore.Read(directory), first, default)).Model);
+        Assert.Equal(audio, File.ReadAllBytes(Path.Combine(directory, "me.mp3")));
+    }
+
+    [Fact]
+    public async Task ChangingModelClearsPendingRetryFromPreviousProvider()
+    {
+        using var fixture = new JobTests();
+        string directory = fixture.Session();
+        var data = SessionStore.Read(directory);
+        SessionStore.Save(directory, data with
+        {
+            Processing = data.Processing with { Transcription = data.Processing.Transcription with { Model = "previous-model" } },
+            Retry = new(1, 3, DateTimeOffset.UtcNow.AddMinutes(5))
+        });
+        var config = new LoadedConfiguration(new Configuration
+        {
+            MeetingsRoot = Path.GetDirectoryName(directory)!,
+            Transcription = data.Processing.Transcription with { Model = "current-model" },
+            Summary = data.Processing.Summary
+        }, data.Processing.ConfigurationDirectory);
+        using var handler = new Handler();
+        using var http = new HttpClient(handler);
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "fixture-key");
+
+        await jobs.ProcessSessionAsync(directory, default);
+
+        var completed = SessionStore.Read(directory);
+        Assert.Equal(JobState.Completed, completed.JobState);
+        Assert.Null(completed.Retry);
+        Assert.Equal(3, handler.Calls);
     }
 
     [Theory]
@@ -146,9 +222,11 @@ public sealed class ProcessingConfigurationTests
         data = data with { Processing = data.Processing with { Transcription = transcription } };
         SessionStore.Save(directory, data);
         var first = data.Audio!.Chunks[0];
+        string matchingHash = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(
+            "Fixture instructions" + ChatApiClient.InstructionFor(first.Source))));
         ChunkStore.Save(directory, new(data.Id, first,
             await TranscriptAssembler.HashAsync(Path.Combine(directory, first.RelativePath), default),
-            "fixture-model", "fixture-prompt-hash", "[00:00] Me: Saved words."));
+            transcription.Model, matchingHash, "[00:00] Me: Saved words."));
         byte[] checkpoint = File.ReadAllBytes(ChunkStore.PathFor(directory, 1));
         byte[] original = SHA256.HashData(File.ReadAllBytes(Path.Combine(directory, "me.mp3")));
         using var handler = new Handler();

@@ -26,6 +26,33 @@ public sealed class SummaryTests : IDisposable
         Assert.False(Directory.Exists(directory));
     }
 
+    [Fact]
+    public async Task PendingSummaryArchivesCheckpointFromPreviousModelAndUsesCurrentSettings()
+    {
+        var (directory, config) = await SessionAsync();
+        var data = SessionStore.Read(directory);
+        string checkpoint = Path.Combine(directory, "summary.json");
+        ChunkStore.SaveFile(checkpoint, new SummaryResult(data.Id, data.TranscriptSha256!,
+            "previous-model", "previous-prompt", "Previous summary."));
+        byte[] previous = File.ReadAllBytes(checkpoint);
+        using var handler = new Handler(async (request, token) =>
+        {
+            using var body = JsonDocument.Parse(await request.Content!.ReadAsByteArrayAsync(token));
+            Assert.Equal("summary-model", body.RootElement.GetProperty("model").GetString());
+            return Reply();
+        });
+        using var http = new HttpClient(handler);
+        using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "fixture-key");
+
+        jobs.RequestSummary(directory);
+        await jobs.ProcessSessionAsync(directory, default);
+
+        Assert.Equal(JobState.Completed, SessionStore.Read(directory).JobState);
+        Assert.Equal(1, handler.Calls);
+        Assert.Equal(previous, File.ReadAllBytes(Assert.Single(Directory.GetFiles(directory, "summary.superseded-*.json"))));
+        Assert.Contains("Retry after 300 seconds.", File.ReadAllText(Path.Combine(directory, "summary.md")));
+    }
+
     private readonly TranscriptTests fixture = new();
     private static HttpResponseMessage Reply(int status = 200) => new((HttpStatusCode)status)
         { Content = new StringContent(status == 200 ? "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"# Decisions\\n- Retry after 300 seconds.\"}}]}" : "private error") };
@@ -78,8 +105,16 @@ public sealed class SummaryTests : IDisposable
         string example = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../config.example.json"));
         var config = ConfigurationLoader.Load(example);
         var data = SessionStore.Read(directory);
-        SessionStore.Save(directory, data with { Stages = new(data.Stages) { ["summary"] = new(true, StageState.Pending) },
-            Processing = data.Processing with { Summary = config.Settings.Summary with { Model = "summary-model", PromptFile = prompt } } });
+        string transcriptHash = await new TranscriptAssembler().BuildAsync(directory, data, default);
+        var summarySettings = config.Settings.Summary with { Model = "summary-model", PromptFile = prompt };
+        config = config with { Settings = config.Settings with { Summary = summarySettings } };
+        SessionStore.Save(directory, data with
+        {
+            TranscriptSha256 = transcriptHash,
+            Stages = new(data.Stages) { ["assemble"] = new(true, StageState.Completed),
+                ["summary"] = new(true, StageState.Pending) },
+            Processing = data.Processing with { Summary = summarySettings }
+        });
         using var rejected = new Handler(async (request, token) =>
         {
             Assert.True(ProcessingJobs.HasPublishedTranscription(SessionStore.Read(directory)));
@@ -109,7 +144,6 @@ public sealed class SummaryTests : IDisposable
         }
         Assert.Equal(StageState.Paused, SessionStore.Read(directory).Stages["summary"].Status);
         byte[] transcript = File.ReadAllBytes(Path.Combine(directory, "transcription.md"));
-        config = config with { Settings = config.Settings with { Summary = data.Processing.Summary with { Model = "summary-model", PromptFile = prompt } } };
         using var success = new Handler((_, _) => Task.FromResult(Reply()));
         using var client = new HttpClient(success);
         using var resumed = new ProcessingJobs(config, () => false, client, readKey: _ => "fixture-key");
