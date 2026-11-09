@@ -44,7 +44,7 @@ public sealed class ChatApiClient(HttpClient client, Func<bool> captureActive,
         TranscribeAsync(settings, prompt, audioPath, token, null);
 
     internal async Task<TranscriptionReply> TranscribeAsync(ApiSettings settings, string prompt, string audioPath, CancellationToken token,
-        string? context, string? source = null)
+        string? context, string? source = null, double chunkDurationSeconds = double.PositiveInfinity, double ownStartSeconds = 0)
     {
         EnsureIdle(token);
         try
@@ -70,8 +70,24 @@ public sealed class ChatApiClient(HttpClient client, Func<bool> captureActive,
             throw new ChatApiException(ApiFailureKind.FileSystem, AppDiagnostics.UserMessage(ex, "Cannot read audio chunk; check selected files and permissions."));
         }
         string audioHash = Convert.ToHexString(SHA256.HashData(audio));
-        byte[] body = CreateBody(settings.Model, prompt + InstructionFor(source), audio);
-        return new(await SendAsync(settings, key, body, "transcription", context, token), audioHash);
+        if (settings.Model is "gpt-transcribe" or "gpt-4o-transcribe-diarize")
+        {
+            using var body = new MultipartFormDataContent();
+            var file = new ByteArrayContent(audio);
+            file.Headers.ContentType = new MediaTypeHeaderValue("audio/mpeg");
+            body.Add(file, "file", "chunk.mp3");
+            body.Add(new StringContent(settings.Model), "model");
+            bool diarize = settings.Model == "gpt-4o-transcribe-diarize";
+            body.Add(new StringContent(diarize ? "diarized_json" : "json"), "response_format");
+            if (diarize) body.Add(new StringContent("auto"), "chunking_strategy");
+            // The Chat Completions prompt requests timed text, which these ASR models cannot produce.
+            // In particular, the diarization model does not support the prompt field.
+            return new(await SendAsync(settings, key, body, body.Headers.ContentLength ?? audio.Length,
+                "transcription", context, token, (raw, _) => OpenAiTranscriptionFormatter.Parse(raw, source,
+                    diarize, chunkDurationSeconds, ownStartSeconds)), audioHash);
+        }
+        byte[] json = CreateBody(settings.Model, prompt + InstructionFor(source), audio);
+        return new(await SendAsync(settings, key, json, "transcription", context, token), audioHash);
     }
 
     public Task<string> SummarizeAsync(ApiSettings settings, string prompt, string transcript, CancellationToken token) =>
@@ -110,12 +126,19 @@ public sealed class ChatApiClient(HttpClient client, Func<bool> captureActive,
         return key;
     }
 
-    private async Task<string> SendAsync(ApiSettings settings, string key, byte[] body, string stage, string? context, CancellationToken token)
+    private Task<string> SendAsync(ApiSettings settings, string key, byte[] body, string stage, string? context, CancellationToken token)
+    {
+        var content = new ByteArrayContent(body);
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+        return SendAsync(settings, key, content, body.Length, stage, context, token, ParseText);
+    }
+
+    private async Task<string> SendAsync(ApiSettings settings, string key, HttpContent body, long requestBytes,
+        string stage, string? context, CancellationToken token, Func<byte[], HttpStatusCode, string> parse)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, settings.Endpoint);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
-        request.Content = new ByteArrayContent(body);
-        request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+        request.Content = body;
         EnsureIdle(token);
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
         deadline.CancelAfter(timeout ?? TimeSpan.FromMinutes(5));
@@ -124,7 +147,7 @@ public sealed class ChatApiClient(HttpClient client, Func<bool> captureActive,
             $"endpoint={new Uri(settings.Endpoint).GetComponents(UriComponents.SchemeAndServer, UriFormat.UriEscaped)}/";
         try
         {
-            AppDiagnostics.Info("api", $"Request started; {requestContext}; request_bytes={body.Length}");
+            AppDiagnostics.Info("api", $"Request started; {requestContext}; request_bytes={requestBytes}");
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token);
             AppDiagnostics.Info("api", $"Response HTTP {(int)response.StatusCode}");
             ChatApiException? failure = null;
@@ -159,7 +182,7 @@ public sealed class ChatApiClient(HttpClient client, Func<bool> captureActive,
             }
             try
             {
-                string text = ParseText(raw, response.StatusCode);
+                string text = parse(raw, response.StatusCode);
                 LogResponse(response, raw, requestContext, timer.ElapsedMilliseconds, "accepted");
                 return text;
             }
