@@ -307,7 +307,9 @@ public sealed class ProcessingJobs : IDisposable
                                     token.ThrowIfCancellationRequested();
                                     var reply = await api.TranscribeAsync(data.Processing.Transcription, prompt,
                                         AudioChunker.ResolveProcessed(directory, chunk.RelativePath), token,
-                                        $"session={data.Id}; chunk={chunk.Index}; attempt={Math.Min(attempts + 1, 31)}; source={chunk.Source ?? "stereo"}", chunk.Source);
+                                        $"session={data.Id}; chunk={chunk.Index}; attempt={Math.Min(attempts + 1, 31)}; source={chunk.Source ?? "stereo"}",
+                                        chunk.Source, (chunk.EndFrame - chunk.StartFrame) / (double)AudioChunker.SampleRate,
+                                        (chunk.OwnStartFrame - chunk.StartFrame) / (double)AudioChunker.SampleRate);
                                     result = new(data.Id, chunk, reply.AudioSha256, data.Processing.Transcription.Model, promptHash, reply.Text);
                                 }
                                 catch (ChatApiException ex) when (ex.Kind == ApiFailureKind.Transient || ex.EmptyChoices || ex.RetryableInvalidArgument)
