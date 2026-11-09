@@ -77,9 +77,44 @@ public sealed class OpenAiTranscriptionTests : IDisposable
         Assert.Equal("[00:02] Me: Первая строка. Вторая строка.", reply.Text);
     }
 
+    [Fact]
+    public async Task WhisperUsesVerboseJsonSegmentTimestampsAndRecordedSourceWithoutSpeakerField()
+    {
+        using var handler = new Handler(async (request, token) =>
+        {
+            Assert.Equal("https://api.openai.com/v1/audio/transcriptions", request.RequestUri!.AbsoluteUri);
+            Assert.Equal("test-key", request.Headers.Authorization?.Parameter);
+            Assert.Equal("multipart/form-data", request.Content?.Headers.ContentType?.MediaType);
+            string body = await request.Content!.ReadAsStringAsync(token);
+            Assert.Contains("name=model", body);
+            Assert.Contains("whisper-1", body);
+            Assert.Contains("name=response_format", body);
+            Assert.Contains("verbose_json", body);
+            Assert.Contains("timestamp_granularities[]", body);
+            Assert.Contains("segment", body);
+            Assert.Contains("filename=chunk.mp3", body);
+            Assert.Contains("Content-Type: audio/mpeg", body);
+            Assert.DoesNotContain("chunking_strategy", body);
+            Assert.DoesNotContain("name=prompt", body);
+            return Response("""
+                {"task":"transcribe","language":"russian","duration":12.5,"text":"Первая фраза. Вторая фраза.","segments":[
+                    {"id":0,"seek":0,"start":1.25,"end":3.5,"text":" Первая фраза.","tokens":[1,2]},
+                    {"id":1,"seek":0,"start":5.5,"end":7.75,"text":" Вторая фраза."}]}
+                """);
+        });
+        using var http = new HttpClient(handler);
+        var reply = await new ChatApiClient(http, () => false, _ => "test-key")
+            .TranscribeAsync(Settings("whisper-1"), "timed-text instruction not sent", AudioPath, default,
+                context: null, source: "Them", chunkDurationSeconds: 12.5);
+        Assert.Equal("[00:01.25] Them: Первая фраза.\n[00:05.50] Them: Вторая фраза.", reply.Text);
+        Assert.Equal(Convert.ToHexString(SHA256.HashData([1, 2, 3])), reply.AudioSha256);
+        Assert.Equal(1, handler.Calls);
+    }
+
     [Theory]
     [InlineData("gpt-transcribe", "{\"text\":\"\"}")]
     [InlineData("gpt-4o-transcribe-diarize", "{\"duration\":8,\"text\":\"\",\"segments\":[]}")]
+    [InlineData("whisper-1", "{\"duration\":8,\"text\":\"\",\"segments\":[]}")]
     public async Task ValidModelReportedSilenceBecomesNoSpeech(string model, string json)
     {
         using var handler = new Handler((_, _) => Task.FromResult(Response(json)));
@@ -105,6 +140,27 @@ public sealed class OpenAiTranscriptionTests : IDisposable
                 Encoding.UTF8.GetBytes(json), "Them", true, 3, 0));
             Assert.Equal(ApiFailureKind.InvalidResponse, ex.Kind);
             Assert.DoesNotContain("first", ex.Message);
+        }
+    }
+
+    [Fact]
+    public void MalformedOrOutOfRangeWhisperSegmentsCannotBeSaved()
+    {
+        foreach (string json in new[]
+        {
+            "{}", "{\"duration\":10,\"text\":\"speech\",\"segments\":[]}",
+            "{\"duration\":10,\"segments\":[{\"start\":0,\"end\":2}]}",
+            "{\"duration\":10,\"segments\":[{\"start\":-0.5,\"end\":2,\"text\":\"speech\"}]}",
+            "{\"duration\":10,\"segments\":[{\"start\":1,\"end\":12.5,\"text\":\"speech\"}]}",
+            "{\"duration\":10,\"segments\":[{\"start\":3,\"end\":4,\"text\":\"first\"},{\"start\":1,\"end\":2,\"text\":\"second\"}]}",
+            "{\"duration\":10,\"segments\":[{\"start\":3,\"end\":4,\"text\":\"   \"}]}"
+        })
+        {
+            var error = Assert.Throws<ChatApiException>(() => OpenAiTranscriptionFormatter.Parse(
+                Encoding.UTF8.GetBytes(json), "Me", diarize: false, chunkDurationSeconds: 10,
+                ownStartSeconds: 0, whisper: true));
+            Assert.Equal(ApiFailureKind.InvalidResponse, error.Kind);
+            Assert.DoesNotContain("first", error.Message);
         }
     }
 
@@ -145,6 +201,7 @@ public sealed class OpenAiTranscriptionTests : IDisposable
     [Theory]
     [InlineData("gpt-transcribe")]
     [InlineData("gpt-4o-transcribe-diarize")]
+    [InlineData("whisper-1")]
     public async Task NativeAsrPipelinePublishesTwoSourceTranscriptAndDurableCheckpoints(string model)
     {
         using var fixture = new JobTests();
@@ -166,9 +223,12 @@ public sealed class OpenAiTranscriptionTests : IDisposable
             MeetingsRoot = Path.GetDirectoryName(session)!, Transcription = settings, Summary = saved.Processing.Summary,
             ChunkSeconds = 120
         }, saved.Processing.ConfigurationDirectory);
-        using var handler = new Handler((_, _) => Task.FromResult(Response(model == "gpt-transcribe"
-            ? "{\"text\":\"Речь из записи.\"}"
-            : "{\"duration\":3,\"text\":\"Речь из записи.\",\"segments\":[{\"id\":\"s\",\"speaker\":\"A\",\"start\":1,\"end\":2,\"text\":\"Речь из записи.\"}]}")));
+        using var handler = new Handler((_, _) => Task.FromResult(Response(model switch
+        {
+            "gpt-transcribe" => "{\"text\":\"Речь из записи.\"}",
+            "whisper-1" => "{\"duration\":3,\"text\":\"Речь из записи.\",\"segments\":[{\"id\":0,\"start\":1,\"end\":2,\"text\":\"Речь из записи.\"}]}",
+            _ => "{\"duration\":3,\"text\":\"Речь из записи.\",\"segments\":[{\"id\":\"s\",\"speaker\":\"A\",\"start\":1,\"end\":2,\"text\":\"Речь из записи.\"}]}"
+        })));
         using var http = new HttpClient(handler);
         using var jobs = new ProcessingJobs(config, () => false, http, readKey: _ => "test-key");
         await jobs.ProcessSessionAsync(session, default);
