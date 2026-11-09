@@ -201,7 +201,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             var completeHotkey = finishHotkey; finishHotkey = null;
             completeHotkey?.Invoke(result.ConfigurationSaved);
             Saved = error is null;
-            Message = error ?? "Saved. Capture changes apply to the next recording; running jobs keep their saved parameters. Resume uses current API settings. Only edited prompts were saved.";
+            Message = error ?? "Saved. Capture changes apply to the next recording; running jobs keep their current API settings. Queued and resumed jobs use updated API settings and reuse compatible checkpoints. Only edited prompts were saved.";
             if (Saved)
             {
                 original = updated; originalFields = Fields(); ClearSecrets();

@@ -266,7 +266,10 @@ public sealed class JobTests : IDisposable
         var data = SessionStore.Read(directory);
         var chunk = data.Audio!.Chunks[0];
         string hash = await TranscriptAssembler.HashAsync(Path.Combine(directory, chunk.RelativePath), default);
-        ChunkStore.Save(directory, new(data.Id, chunk, hash, "fixture-model", "fixture-prompt", "Untimed old response"));
+        string prompt = config.ReadPrompt(config.Settings.Transcription, "transcription");
+        string promptHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+            prompt + ChatApiClient.InstructionFor(chunk.Source))));
+        ChunkStore.Save(directory, new(data.Id, chunk, hash, data.Processing.Transcription.Model, promptHash, "Untimed old response"));
         byte[] rejected = File.ReadAllBytes(ChunkStore.PathFor(directory, 1));
         using var handler = new Handler((_, _) => Task.FromResult(Response()));
         using var http = new HttpClient(handler);
@@ -680,7 +683,10 @@ public sealed class JobTests : IDisposable
         var data = SessionStore.Read(directory);
         var chunk = Assert.Single(data.Audio!.Chunks);
         string hash = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(Path.Combine(directory, chunk.RelativePath))));
-        ChunkStore.Save(directory, new(data.Id, chunk, hash, "test-model", "prompt-hash", "[00:01] Me: test"));
+        string prompt = config.ReadPrompt(config.Settings.Transcription, "transcription");
+        string promptHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+            prompt + ChatApiClient.InstructionFor(chunk.Source))));
+        ChunkStore.Save(directory, new(data.Id, chunk, hash, data.Processing.Transcription.Model, promptHash, "[00:01] Me: test"));
         SessionStore.Save(directory, data with { Retry = new(chunk.Index, 4, DateTimeOffset.UtcNow + TimeSpan.FromMinutes(5)) });
         using var handler = new Handler((_, _) => throw new Exception("Saved result must not be resent"));
         using var http = new HttpClient(handler);
@@ -1045,15 +1051,18 @@ public sealed class JobTests : IDisposable
     }
 
     [Fact]
-    public async Task PreUpgradeStereoCheckpointWithModelSpeakerNameIsReusedWithoutAnotherUpload()
+    public async Task PreUpgradeStereoCheckpointWithCompatibleModelAndPromptIsReusedWithoutAnotherUpload()
     {
         string directory = Session(120);
         var data = SessionStore.Read(directory);
         var chunk = Assert.Single(data.Audio!.Chunks);
         Assert.Null(chunk.Source);
+        string prompt = config.ReadPrompt(config.Settings.Transcription, "transcription");
+        string promptHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+            prompt + ChatApiClient.InstructionFor(chunk.Source))));
         ChunkStore.Save(directory, new(data.Id, chunk,
             Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(Path.Combine(directory, chunk.RelativePath)))),
-            "previous-model", "saved-prompt-hash", "[00:01] Alice: Previously transcribed sentence."));
+            data.Processing.Transcription.Model, promptHash, "[00:01] Alice: Previously transcribed sentence."));
 
         using var handler = new Handler((_, _) => throw new InvalidOperationException("No paid retranscription expected"));
         using var http = new HttpClient(handler);
