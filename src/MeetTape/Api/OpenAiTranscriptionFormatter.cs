@@ -6,7 +6,8 @@ namespace OriApps.MeetTape.Api;
 
 internal static class OpenAiTranscriptionFormatter
 {
-    internal static string Parse(byte[] raw, string? source, bool diarize, double chunkDurationSeconds, double ownStartSeconds)
+    internal static string Parse(byte[] raw, string? source, bool diarize, double chunkDurationSeconds, double ownStartSeconds,
+        bool whisper = false)
     {
         try
         {
@@ -14,7 +15,7 @@ internal static class OpenAiTranscriptionFormatter
             var root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object) return Invalid();
             string label = source is "Me" or "Them" ? source : "Unknown";
-            if (!diarize)
+            if (!diarize && !whisper)
             {
                 if (!root.TryGetProperty("text", out var result) || result.ValueKind != JsonValueKind.String)
                     return Invalid();
@@ -45,14 +46,15 @@ internal static class OpenAiTranscriptionFormatter
                     || !segment.TryGetProperty("start", out var startValue) || !TryTime(startValue, out double start)
                     || !segment.TryGetProperty("end", out var endValue) || !TryTime(endValue, out double end)
                     || start < previous || end < start || end > duration + 1
-                    || !segment.TryGetProperty("speaker", out var speaker) || speaker.ValueKind != JsonValueKind.String
-                    || string.IsNullOrWhiteSpace(speaker.GetString())
                     || !segment.TryGetProperty("text", out var words) || words.ValueKind != JsonValueKind.String)
+                    return Invalid();
+                if (diarize && (!segment.TryGetProperty("speaker", out var speaker)
+                    || speaker.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(speaker.GetString())))
                     return Invalid();
                 string text = Flatten(words.GetString()!);
                 if (text.Length == 0) return Invalid();
                 if (output.Length > 0) output.Append('\n');
-                // Me/Them come from the recorded mono source, not the model's guessed speaker labels.
+                // Me/Them come from the recorded mono source; Whisper has no speaker field.
                 output.Append('[').Append(Timestamp(start)).Append("] ").Append(label).Append(": ").Append(text);
                 previous = start;
             }
