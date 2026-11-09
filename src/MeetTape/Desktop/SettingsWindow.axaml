@@ -115,6 +115,7 @@
                     <TextBlock Text="HTTPS endpoint (HTTP allowed for loopback)" />
                     <TextBox Text="{Binding TranscriptionEndpoint}" />
                     <TextBlock Text="Model" /><TextBox Text="{Binding TranscriptionModel}" />
+                    <TextBlock Text="For gpt-transcribe or gpt-4o-transcribe-diarize, use https://api.openai.com/v1/audio/transcriptions. These models use their own transcription format, not the prompt's timed-text instructions; gpt-transcribe only provides chunk-level timestamps." TextWrapping="Wrap" Opacity="0.7" />
                     <TextBlock Text="API key environment variable" /><TextBox Text="{Binding TranscriptionKeyVariable}" />
                     <TextBlock Text="New key (empty keeps existing)" />
                     <TextBox Name="TranscriptionKey" Text="{Binding NewTranscriptionKey}" PasswordChar="●" />
