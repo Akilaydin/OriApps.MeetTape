@@ -63,6 +63,13 @@ public sealed class ProcessingJobs : IDisposable
         config = updated;
     }
 
+    private static ProcessingParameters WithCurrentApiSettings(ProcessingParameters saved, LoadedConfiguration current) =>
+        saved with
+        {
+            Transcription = current.Settings.Transcription, Summary = current.Settings.Summary,
+            ConfigurationDirectory = current.Directory
+        };
+
     public void Start()
     {
         if (!operation.IsCompleted || captureActive()) return;
@@ -117,17 +124,17 @@ public sealed class ProcessingJobs : IDisposable
             if (stages.TryGetValue(name, out var stage) && stage.Enabled && stage.Status == StageState.Paused)
                 stages[name] = stage with { Status = StageState.Pending };
         // A deliberate Resume starts a new bounded timed-text attempt without altering HTTP retry counts.
-        var retry = data.Retry is { InvalidTimedTextFailures: > 0 } invalid
+        var processing = WithCurrentApiSettings(data.Processing, config) with { MeDisplayName = config.Settings.MeDisplayName };
+        var retry = data.Processing.Transcription != processing.Transcription || data.Processing.Summary != processing.Summary
+            ? null : data.Retry is { InvalidTimedTextFailures: > 0 } invalid
             ? invalid with { InvalidTimedTextFailures = 0, NextAttemptUtc = utcNow() } : data.Retry;
         SessionStore.Save(directory, data with { Stages = stages, JobState = JobState.NotStarted, Error = null,
-            Retry = retry,
-            Processing = data.Processing with { Transcription = config.Settings.Transcription, Summary = config.Settings.Summary,
-                ConfigurationDirectory = config.Directory, MeDisplayName = config.Settings.MeDisplayName } });
+            Retry = retry, Processing = processing });
         lock (sessionGate) blocked.Remove(directory);
         completedSessions.Remove(directory);
         observedRetries.Remove(directory);
         lock (sessionGate) cancelingSessions.Remove(directory);
-        Report("Job resumed with current API settings; successful chunks retained.", NoticeKind.Information, data.Id);
+        Report("Job resumed with current API settings; compatible checkpoints retained.", NoticeKind.Information, data.Id);
     }
 
     public void Cancel(string directory)
@@ -169,8 +176,7 @@ public sealed class ProcessingJobs : IDisposable
         if (data.Stages.TryGetValue("summary", out var summary) && summary.Status == StageState.Completed && File.Exists(Path.Combine(directory, "summary.md")))
             throw new InvalidOperationException("Summary already saved; repeated request retains it without a new API call.");
         SessionStore.Save(directory, data with { Stages = new(data.Stages) { ["summary"] = new(true, StageState.Pending) },
-            JobState = JobState.NotStarted, Error = null, Processing = data.Processing with
-            { Summary = config.Settings.Summary with { PromptFile = config.Resolve(config.Settings.Summary.PromptFile) } } });
+            JobState = JobState.NotStarted, Error = null, Processing = WithCurrentApiSettings(data.Processing, config) });
         lock (sessionGate) blocked.Remove(directory);
         completedSessions.Remove(directory);
     }
@@ -232,6 +238,15 @@ public sealed class ProcessingJobs : IDisposable
             string stage = "prepare";
             try
             {
+                // Pending jobs adopt current API settings. A job already running retains its snapshot.
+                var processing = WithCurrentApiSettings(data.Processing, currentConfig);
+                if (processing != data.Processing)
+                {
+                    bool apiChanged = processing.Transcription != data.Processing.Transcription
+                        || processing.Summary != data.Processing.Summary;
+                    data = data with { Processing = processing, Retry = apiChanged ? null : data.Retry };
+                    SessionStore.Save(directory, data);
+                }
                 if (!HasPublishedTranscription(data))
                 {
                     if (data.Audio is null)
@@ -255,22 +270,29 @@ public sealed class ProcessingJobs : IDisposable
                     var chunks = data.Audio!.Chunks;
                     data = Update(data, stage, StageState.Running, 0, chunks.Count);
                     SessionStore.Save(directory, data);
-                    string? prompt = null;
+                    string prompt = ReadPrompt(data.Processing.Transcription, data.Processing.ConfigurationDirectory, "transcription");
                     int completed = 0;
                     foreach (var chunk in chunks)
                     {
                         token.ThrowIfCancellationRequested();
+                        string promptHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+                            prompt + ChatApiClient.InstructionFor(chunk.Source))));
                         string checkpoint = ChunkStore.PathFor(directory, chunk.Index);
-                        bool saved = File.Exists(checkpoint);
-                        ChunkResult result;
+                        ChunkResult? stored = File.Exists(checkpoint)
+                            ? await ChunkStore.ReadAsync(directory, data, chunk, token) : null;
                         bool recovered = false;
-                        if (saved)
-                            result = await ChunkStore.ReadAsync(directory, data, chunk, token);
+                        if (stored is not null && (stored.Model != data.Processing.Transcription.Model || stored.PromptSha256 != promptHash))
+                        {
+                            // Never assemble results from different models/prompts. Keep the old paid result.
+                            File.Move(checkpoint, Path.Combine(directory, "chunks",
+                                $"{chunk.Index:D4}.superseded-{Guid.NewGuid():N}.json"), overwrite: false);
+                            stored = null;
+                        }
+                        bool saved = stored is not null;
+                        ChunkResult result;
+                        if (stored is not null) result = stored;
                         else
                         {
-                            prompt ??= ReadPrompt(data.Processing.Transcription, data.Processing.ConfigurationDirectory, "transcription");
-                            string promptHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
-                                prompt + ChatApiClient.InstructionFor(chunk.Source))));
                             var rejected = await RecoverRejectedAsync(directory, data, chunk, promptHash, token);
                             if (rejected is not null)
                             {
@@ -414,6 +436,13 @@ public sealed class ProcessingJobs : IDisposable
 
     private bool RetryPending(string directory, SessionData data)
     {
+        var current = config;
+        if (data.Processing.Transcription != current.Settings.Transcription
+            || data.Processing.Summary != current.Settings.Summary)
+        {
+            observedRetries.Remove(directory);
+            return false; // A different provider/model must not inherit the old API backoff.
+        }
         // A successful checkpoint is authoritative even when the last saved retry deadline is still future.
         if (data.Retry is not { } retry || (retry.ChunkIndex == 0 ? File.Exists(Path.Combine(directory, "summary.json"))
             : File.Exists(ChunkStore.PathFor(directory, retry.ChunkIndex))) || retry.NextAttemptUtc <= utcNow())
@@ -496,19 +525,26 @@ public sealed class ProcessingJobs : IDisposable
         if (Convert.ToHexString(SHA256.HashData(bytes)) != data.TranscriptSha256)
             throw new InvalidDataException("Transcript changed; Summary paused.");
         string checkpoint = Path.Combine(directory, "summary.json");
+        string prompt = ReadPrompt(data.Processing.Summary, data.Processing.ConfigurationDirectory, "summary");
+        string promptHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(prompt)));
         SummaryResult? result;
         if (File.Exists(checkpoint)) result = await ChunkStore.ReadFileAsync<SummaryResult>(checkpoint, token);
-        else
+        else result = null;
+        if (result is not null && (result.Model != data.Processing.Summary.Model || result.PromptSha256 != promptHash))
+        {
+            File.Move(checkpoint, Path.Combine(directory, $"summary.superseded-{Guid.NewGuid():N}.json"), overwrite: false);
+            result = null;
+        }
+        if (result is null && !File.Exists(checkpoint))
         {
             string transcript = Encoding.UTF8.GetString(bytes);
-            string prompt = ReadPrompt(data.Processing.Summary, data.Processing.ConfigurationDirectory, "summary");
             int attempts = data.Retry?.ChunkIndex == 0 ? data.Retry.Attempts : 0;
             try
             {
                 string text = await api.SummarizeAsync(data.Processing.Summary, prompt, transcript, token,
                     $"session={data.Id}; attempt={Math.Min(attempts + 1, 31)}");
                 result = new(data.Id, data.TranscriptSha256!, data.Processing.Summary.Model,
-                    Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(prompt))), text);
+                    promptHash, text);
                 ChunkStore.SaveFile(checkpoint, result);
             }
             catch (ChatApiException ex) when (ex.Kind == ApiFailureKind.Transient)
