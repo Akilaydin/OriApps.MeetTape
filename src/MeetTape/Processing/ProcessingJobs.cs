@@ -20,6 +20,7 @@ public sealed class ProcessingJobs : IDisposable
     private readonly HttpClient http;
     private readonly bool ownsHttp;
     private readonly ChatApiClient api;
+    private readonly LocalTranscriptionClient localAsr;
     private readonly Func<TimeSpan, CancellationToken, Task> delay;
     private readonly Func<DateTimeOffset> utcNow;
     private readonly Func<long> timestamp;
@@ -54,6 +55,13 @@ public sealed class ProcessingJobs : IDisposable
         this.utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
         this.timestamp = timestamp ?? Stopwatch.GetTimestamp;
         api = new(this.http, captureActive, readKey);
+        localAsr = new();
+    }
+
+    internal ProcessingJobs(LoadedConfiguration config, Func<bool> captureActive, LocalTranscriptionClient local,
+        HttpClient? http = null) : this(config, captureActive, http)
+    {
+        localAsr = local;
     }
 
     internal void ApplyConfiguration(LoadedConfiguration updated)
@@ -67,7 +75,9 @@ public sealed class ProcessingJobs : IDisposable
         saved with
         {
             Transcription = current.Settings.Transcription, Summary = current.Settings.Summary,
-            ConfigurationDirectory = current.Directory
+            ConfigurationDirectory = current.Directory,
+            TranscriptionMode = current.Settings.TranscriptionMode,
+            LocalTranscription = current.Settings.LocalTranscription
         };
 
     public void Start()
@@ -126,6 +136,8 @@ public sealed class ProcessingJobs : IDisposable
         // A deliberate Resume starts a new bounded timed-text attempt without altering HTTP retry counts.
         var processing = WithCurrentApiSettings(data.Processing, config) with { MeDisplayName = config.Settings.MeDisplayName };
         var retry = data.Processing.Transcription != processing.Transcription || data.Processing.Summary != processing.Summary
+            || data.Processing.TranscriptionMode != processing.TranscriptionMode
+            || data.Processing.LocalTranscription != processing.LocalTranscription
             ? null : data.Retry is { InvalidTimedTextFailures: > 0 } invalid
             ? invalid with { InvalidTimedTextFailures = 0, NextAttemptUtc = utcNow() } : data.Retry;
         SessionStore.Save(directory, data with { Stages = stages, JobState = JobState.NotStarted, Error = null,
@@ -243,7 +255,9 @@ public sealed class ProcessingJobs : IDisposable
                 if (processing != data.Processing)
                 {
                     bool apiChanged = processing.Transcription != data.Processing.Transcription
-                        || processing.Summary != data.Processing.Summary;
+                        || processing.Summary != data.Processing.Summary
+                        || processing.TranscriptionMode != data.Processing.TranscriptionMode
+                        || processing.LocalTranscription != data.Processing.LocalTranscription;
                     data = data with { Processing = processing, Retry = apiChanged ? null : data.Retry };
                     SessionStore.Save(directory, data);
                 }
@@ -270,18 +284,24 @@ public sealed class ProcessingJobs : IDisposable
                     var chunks = data.Audio!.Chunks;
                     data = Update(data, stage, StageState.Running, 0, chunks.Count);
                     SessionStore.Save(directory, data);
-                    string prompt = ReadPrompt(data.Processing.Transcription, data.Processing.ConfigurationDirectory, "transcription");
+                    bool localMode = data.Processing.TranscriptionMode == TranscriptionMode.Local;
+                    string prompt = localMode ? "" : ReadPrompt(data.Processing.Transcription,
+                        data.Processing.ConfigurationDirectory, "transcription");
+                    string effectiveModel = localMode
+                        ? await LocalTranscriptionClient.ModelIdentityAsync(data.Processing.LocalTranscription,
+                            data.Processing.ConfigurationDirectory, token)
+                        : data.Processing.Transcription.Model;
                     int completed = 0;
                     foreach (var chunk in chunks)
                     {
                         token.ThrowIfCancellationRequested();
                         string promptHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
-                            prompt + ChatApiClient.InstructionFor(chunk.Source))));
+                            localMode ? effectiveModel + ":" + chunk.Source : prompt + ChatApiClient.InstructionFor(chunk.Source))));
                         string checkpoint = ChunkStore.PathFor(directory, chunk.Index);
                         ChunkResult? stored = File.Exists(checkpoint)
                             ? await ChunkStore.ReadAsync(directory, data, chunk, token) : null;
                         bool recovered = false;
-                        if (stored is not null && (stored.Model != data.Processing.Transcription.Model || stored.PromptSha256 != promptHash))
+                        if (stored is not null && (stored.Model != effectiveModel || stored.PromptSha256 != promptHash))
                         {
                             // Never assemble results from different models/prompts. Keep the old paid result.
                             File.Move(checkpoint, Path.Combine(directory, "chunks",
@@ -293,7 +313,7 @@ public sealed class ProcessingJobs : IDisposable
                         if (stored is not null) result = stored;
                         else
                         {
-                            var rejected = await RecoverRejectedAsync(directory, data, chunk, promptHash, token);
+                            var rejected = await RecoverRejectedAsync(directory, data, chunk, promptHash, effectiveModel, token);
                             if (rejected is not null)
                             {
                                 result = rejected;
@@ -305,12 +325,18 @@ public sealed class ProcessingJobs : IDisposable
                                 try
                                 {
                                     token.ThrowIfCancellationRequested();
-                                    var reply = await api.TranscribeAsync(data.Processing.Transcription, prompt,
-                                        AudioChunker.ResolveProcessed(directory, chunk.RelativePath), token,
-                                        $"session={data.Id}; chunk={chunk.Index}; attempt={Math.Min(attempts + 1, 31)}; source={chunk.Source ?? "stereo"}",
-                                        chunk.Source, (chunk.EndFrame - chunk.StartFrame) / (double)AudioChunker.SampleRate,
-                                        (chunk.OwnStartFrame - chunk.StartFrame) / (double)AudioChunker.SampleRate);
-                                    result = new(data.Id, chunk, reply.AudioSha256, data.Processing.Transcription.Model, promptHash, reply.Text);
+                                    string audioPath = AudioChunker.ResolveProcessed(directory, chunk.RelativePath);
+                                    double duration = (chunk.EndFrame - chunk.StartFrame) / (double)AudioChunker.SampleRate;
+                                    double ownStart = (chunk.OwnStartFrame - chunk.StartFrame) / (double)AudioChunker.SampleRate;
+                                    var reply = localMode
+                                        ? await localAsr.TranscribeAsync(data.Processing.LocalTranscription,
+                                            data.Processing.ConfigurationDirectory, currentConfig.Settings.Capture.FfmpegPath,
+                                            audioPath, chunk.Source, duration, ownStart, token)
+                                        : await api.TranscribeAsync(data.Processing.Transcription, prompt,
+                                            audioPath, token,
+                                            $"session={data.Id}; chunk={chunk.Index}; attempt={Math.Min(attempts + 1, 31)}; source={chunk.Source ?? "stereo"}",
+                                            chunk.Source, duration, ownStart);
+                                    result = new(data.Id, chunk, reply.AudioSha256, effectiveModel, promptHash, reply.Text);
                                 }
                                 catch (ChatApiException ex) when (ex.Kind == ApiFailureKind.Transient || ex.EmptyChoices || ex.RetryableInvalidArgument)
                                 {
@@ -440,7 +466,9 @@ public sealed class ProcessingJobs : IDisposable
     {
         var current = config;
         if (data.Processing.Transcription != current.Settings.Transcription
-            || data.Processing.Summary != current.Settings.Summary)
+            || data.Processing.Summary != current.Settings.Summary
+            || data.Processing.TranscriptionMode != current.Settings.TranscriptionMode
+            || data.Processing.LocalTranscription != current.Settings.LocalTranscription)
         {
             observedRetries.Remove(directory);
             return false; // A different provider/model must not inherit the old API backoff.
@@ -498,7 +526,7 @@ public sealed class ProcessingJobs : IDisposable
     }
 
     private static async Task<ChunkResult?> RecoverRejectedAsync(string directory, SessionData data,
-        AudioChunk chunk, string promptHash, CancellationToken token)
+        AudioChunk chunk, string promptHash, string effectiveModel, CancellationToken token)
     {
         string folder = Path.Combine(directory, "chunks");
         if (!Directory.Exists(folder)) return null;
@@ -509,7 +537,7 @@ public sealed class ProcessingJobs : IDisposable
             try
             {
                 var result = await ChunkStore.ReadValidatedAsync(path, directory, data, chunk, token);
-                if (result.Model != data.Processing.Transcription.Model || result.PromptSha256 != promptHash) continue;
+                if (result.Model != effectiveModel || result.PromptSha256 != promptHash) continue;
                 TranscriptAssembler.ValidateChunk(result.Text, chunk);
                 return result;
             }

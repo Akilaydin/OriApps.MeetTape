@@ -3,6 +3,7 @@ using OriApps.MeetTape.Diagnostics;
 using OriApps.MeetTape.Platform.Windows;
 using OriApps.MeetTape.Processing;
 using OriApps.MeetTape.Sessions;
+using OriApps.MeetTape.Settings;
 using OriApps.MeetTape.Updates;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
@@ -589,6 +590,7 @@ public sealed record SessionRow(string Directory, Guid? Id, string Title, string
     string Progress, double ProgressPercent, string? Diagnostic, bool NeedsPreparation, bool HasTranscript, bool HasSummary)
 {
     public string Duration { get; init; } = "--:--";
+    public string TranscriptionProfile { get; init; } = "";
     public string Details { get; init; } = "";
     public bool HasAudioInterruption { get; init; }
     internal bool PausedJob { get; init; }
@@ -638,6 +640,9 @@ public sealed record SessionRow(string Directory, Guid? Id, string Title, string
         {
             Duration = data?.DurationSeconds is { } seconds && seconds < TimeSpan.MaxValue.TotalSeconds
                 ? TimeSpan.FromSeconds(seconds).ToString(seconds >= 3600 ? @"hh\:mm\:ss" : @"mm\:ss") : "--:--",
+            TranscriptionProfile = data is null ? "" : data.Processing.TranscriptionMode == TranscriptionMode.Local
+                ? "Local · " + (Path.GetFileName(data.Processing.LocalTranscription.ModelPath) is { Length: > 0 } name ? name : "model not selected")
+                : "Cloud · " + data.Processing.Transcription.Model,
             Details = data is null ? "Metadata unavailable." : string.Join(Environment.NewLine,
                 data.Stages.Select(stage => $"{stage.Key}: {stage.Value.Status}" +
                     (stage.Value.TotalChunks is { } count ? $" ({stage.Value.CompletedChunks}/{count} chunks)" : ""))

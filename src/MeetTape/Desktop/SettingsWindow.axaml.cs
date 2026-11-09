@@ -3,6 +3,7 @@ using OriApps.MeetTape.Updates;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml;
+using Avalonia.Platform.Storage;
 using System.Diagnostics;
 
 namespace OriApps.MeetTape.Desktop;
@@ -12,6 +13,7 @@ public sealed partial class SettingsWindow : Window
     private bool confirmingClose;
     private bool discardConfirmed;
     internal Func<Task<bool>>? ConfirmDiscard { get; set; }
+    internal Func<Task<bool>>? ConfirmModeSwitch { get; set; }
     internal Func<string> LogsDirectory { get; set; } = () => AppDiagnostics.DirectoryPath;
     internal Action<string>? OpenFolder { get; set; }
     private IAppUpdates? aboutUpdates;
@@ -24,7 +26,7 @@ public sealed partial class SettingsWindow : Window
         AvaloniaXamlLoader.Load(this);
         var about = this.FindControl<StackPanel>("AboutPanel")!;
         about.DataContext = new MainViewModel(); about.IsEnabled = false;
-        Closed += (_, _) => (DataContext as SettingsViewModel)?.ClearSecrets();
+        Closed += (_, _) => { (DataContext as SettingsViewModel)?.CancelModelDownload(); (DataContext as SettingsViewModel)?.ClearSecrets(); };
         Closed += (_, _) => { if (aboutViewModel is not null) aboutViewModel.PropertyChanged -= AboutStateChanged; };
         Closing += async (_, e) =>
         {
@@ -65,8 +67,58 @@ public sealed partial class SettingsWindow : Window
         discard.Click += (_, _) => dialog.Close(true);
         return dialog.ShowDialog<bool>(this);
     }
-    private async void SaveClick(object? sender, RoutedEventArgs e) => await ((SettingsViewModel)DataContext!).SaveAsync();
+    private async void SaveClick(object? sender, RoutedEventArgs e)
+    {
+        var settings = (SettingsViewModel)DataContext!;
+        if (settings.RequiresModeSwitchConfirmation && !await (ConfirmModeSwitch?.Invoke() ?? AskModeSwitchAsync()))
+            return;
+        await settings.SaveAsync();
+    }
+    private Task<bool> AskModeSwitchAsync()
+    {
+        var cancel = new Button { Name = "CancelModeSwitch", Content = "Keep current mode" };
+        var confirm = new Button { Name = "ConfirmModeSwitch", Content = "Switch mode" };
+        var dialog = new Window
+        {
+            Title = "Change transcription mode", Icon = Icon, Width = 460, SizeToContent = SizeToContent.Height,
+            CanResize = false, WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = new StackPanel
+            {
+                Margin = new Avalonia.Thickness(24), Spacing = 16,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = "Unfinished meetings will use the new mode when processed or resumed. Incompatible saved chunks are archived and transcribed again. Cloud API calls may incur charges. Completed transcripts are retained.",
+                        TextWrapping = Avalonia.Media.TextWrapping.Wrap
+                    },
+                    new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 12,
+                        Children = { cancel, confirm } }
+                }
+            }
+        };
+        cancel.Click += (_, _) => dialog.Close(false);
+        confirm.Click += (_, _) => dialog.Close(true);
+        return dialog.ShowDialog<bool>(this);
+    }
     private void LoadTranscriptionPromptClick(object? sender, RoutedEventArgs e) => ((SettingsViewModel)DataContext!).LoadTranscriptionPrompt();
+    private async void BrowseLocalModelClick(object? sender, RoutedEventArgs e)
+    {
+        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = "Choose an on-device ASR model",
+            AllowMultiple = false,
+            FileTypeFilter = [new FilePickerFileType("GGUF models") { Patterns = ["*.gguf"] }]
+        });
+        if (files.Count > 0 && files[0].TryGetLocalPath() is { } path)
+            ((SettingsViewModel)DataContext!).SetLocalModelPath(path);
+    }
+    private async void DownloadLocalModelClick(object? sender, RoutedEventArgs e) =>
+        await ((SettingsViewModel)DataContext!).DownloadParakeetAsync();
+    private void UseMeetForgeModelClick(object? sender, RoutedEventArgs e) =>
+        ((SettingsViewModel)DataContext!).UseMeetForgeModel();
+    private void CancelModelDownloadClick(object? sender, RoutedEventArgs e) =>
+        ((SettingsViewModel)DataContext!).CancelModelDownload();
     private void LoadSummaryPromptClick(object? sender, RoutedEventArgs e) => ((SettingsViewModel)DataContext!).LoadSummaryPrompt();
     private void CloseClick(object? sender, RoutedEventArgs e) => Close();
     private ReminderEditor ReminderModel => ((SettingsViewModel)DataContext!).ReminderEditor;

@@ -40,7 +40,11 @@ public sealed class Mp3Recorder
                 Capture = new(sources.MeDevice, sources.ThemDevice, NativeAudioFormat.From(sources.Me.WaveFormat), NativeAudioFormat.From(sources.Them.WaveFormat))
                 { MicrophoneMode = configuration.Settings.Capture.MicrophoneMode },
                 Processing = new(configuration.Settings.ChunkSeconds, configuration.Settings.Transcription, configuration.Settings.Summary,
-                    configuration.Directory, configuration.Settings.MeDisplayName),
+                    configuration.Directory, configuration.Settings.MeDisplayName)
+                {
+                    TranscriptionMode = configuration.Settings.TranscriptionMode,
+                    LocalTranscription = configuration.Settings.LocalTranscription
+                },
                 Stages = new()
                 {
                     ["trim"] = new(stages.Trim, stages.Trim ? StageState.AwaitingUser : StageState.Disabled),

@@ -13,6 +13,13 @@
   },
   "chunkSeconds": 120,
   "meDisplayName": "Me",
+  "transcriptionMode": "cloudApi",
+  "localTranscription": {
+    "modelPath": "",
+    "runnerPath": "transcribe-cli.exe",
+    "language": "ru",
+    "threads": 4
+  },
   "transcription": {
     "endpoint": "https://api.example.invalid/v1/chat/completions",
     "model": "your-audio-model",
