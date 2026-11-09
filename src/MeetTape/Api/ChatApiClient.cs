@@ -70,7 +70,7 @@ public sealed class ChatApiClient(HttpClient client, Func<bool> captureActive,
             throw new ChatApiException(ApiFailureKind.FileSystem, AppDiagnostics.UserMessage(ex, "Cannot read audio chunk; check selected files and permissions."));
         }
         string audioHash = Convert.ToHexString(SHA256.HashData(audio));
-        if (settings.Model is "gpt-transcribe" or "gpt-4o-transcribe-diarize")
+        if (settings.Model is "gpt-transcribe" or "gpt-4o-transcribe-diarize" or "whisper-1")
         {
             using var body = new MultipartFormDataContent();
             var file = new ByteArrayContent(audio);
@@ -78,13 +78,15 @@ public sealed class ChatApiClient(HttpClient client, Func<bool> captureActive,
             body.Add(file, "file", "chunk.mp3");
             body.Add(new StringContent(settings.Model), "model");
             bool diarize = settings.Model == "gpt-4o-transcribe-diarize";
-            body.Add(new StringContent(diarize ? "diarized_json" : "json"), "response_format");
+            bool whisper = settings.Model == "whisper-1";
+            body.Add(new StringContent(whisper ? "verbose_json" : diarize ? "diarized_json" : "json"), "response_format");
             if (diarize) body.Add(new StringContent("auto"), "chunking_strategy");
+            if (whisper) body.Add(new StringContent("segment"), "timestamp_granularities[]");
             // The Chat Completions prompt requests timed text, which these ASR models cannot produce.
-            // In particular, the diarization model does not support the prompt field.
+            // The native ASR models must not receive that timed-text instruction as a prompt.
             return new(await SendAsync(settings, key, body, body.Headers.ContentLength ?? audio.Length,
                 "transcription", context, token, (raw, _) => OpenAiTranscriptionFormatter.Parse(raw, source,
-                    diarize, chunkDurationSeconds, ownStartSeconds)), audioHash);
+                    diarize, chunkDurationSeconds, ownStartSeconds, whisper)), audioHash);
         }
         byte[] json = CreateBody(settings.Model, prompt + InstructionFor(source), audio);
         return new(await SendAsync(settings, key, json, "transcription", context, token), audioHash);
