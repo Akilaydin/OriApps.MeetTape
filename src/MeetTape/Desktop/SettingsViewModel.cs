@@ -7,6 +7,7 @@ using System.ComponentModel;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Security.Cryptography;
 
 namespace OriApps.MeetTape.Desktop;
 
@@ -16,6 +17,11 @@ public sealed record DeviceChoice(string? Id, string Label)
 }
 
 public sealed record MicrophoneModeChoice(MicrophoneCaptureMode Value, string Label)
+{
+    public override string ToString() => Label;
+}
+
+public sealed record TranscriptionModeChoice(TranscriptionMode Value, string Label)
 {
     public override string ToString() => Label;
 }
@@ -55,6 +61,31 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     public string TranscriptionModel { get; set; }
     public string TranscriptionPrompt { get; set; }
     public string TranscriptionKeyVariable { get; set; }
+    public IReadOnlyList<TranscriptionModeChoice> TranscriptionModes { get; } =
+    [
+        new(TranscriptionMode.CloudApi, "Cloud API"),
+        new(TranscriptionMode.Local, "Local (offline)")
+    ];
+    private TranscriptionModeChoice selectedTranscriptionMode = null!;
+    private TranscriptionMode originalTranscriptionMode;
+    public TranscriptionModeChoice SelectedTranscriptionMode
+    {
+        get => selectedTranscriptionMode;
+        set { selectedTranscriptionMode = value; Changed(); }
+    }
+    public bool IsLocalTranscription => SelectedTranscriptionMode?.Value == TranscriptionMode.Local;
+    public bool IsCloudTranscription => !IsLocalTranscription;
+    public bool RequiresModeSwitchConfirmation => SelectedTranscriptionMode.Value != originalTranscriptionMode;
+    public string LocalModelPath { get; set; } = "";
+    public string LocalRunnerPath { get; set; } = "transcribe-cli.exe";
+    public string LocalLanguage { get; set; } = "ru";
+    public string LocalThreads { get; set; } = "4";
+    private CancellationTokenSource? modelDownload;
+    public bool IsDownloadingModel => modelDownload is not null;
+    public string ModelDownloadStatus { get; private set; } = "Choose an existing GGUF model or download Parakeet Ultra (525 MiB).";
+    public string MeetForgeModelPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "MeetForge", "models", "parakeet-ultra-Q5_K_M.gguf");
+    public bool HasMeetForgeModel => File.Exists(MeetForgeModelPath);
     public string SummaryEndpoint { get; set; }
     public string SummaryModel { get; set; }
     public string SummaryPrompt { get; set; }
@@ -98,6 +129,12 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         MeDisplayName = settings.MeDisplayName;
         TranscriptionEndpoint = settings.Transcription.Endpoint; TranscriptionModel = settings.Transcription.Model;
         TranscriptionPrompt = settings.Transcription.PromptFile; TranscriptionKeyVariable = settings.Transcription.ApiKeyEnvironmentVariable;
+        SelectedTranscriptionMode = TranscriptionModes.Single(choice => choice.Value == settings.TranscriptionMode);
+        originalTranscriptionMode = settings.TranscriptionMode;
+        LocalModelPath = settings.LocalTranscription.ModelPath;
+        LocalRunnerPath = settings.LocalTranscription.RunnerPath;
+        LocalLanguage = settings.LocalTranscription.Language;
+        LocalThreads = settings.LocalTranscription.Threads.ToString(CultureInfo.InvariantCulture);
         SummaryEndpoint = settings.Summary.Endpoint; SummaryModel = settings.Summary.Model;
         SummaryPrompt = settings.Summary.PromptFile; SummaryKeyVariable = settings.Summary.ApiKeyEnvironmentVariable;
         Microphones = Choices(devices, CaptureChannel.Me, settings.Capture.MicrophoneDeviceId);
@@ -115,9 +152,87 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         Trim.ToString(), Transcribe.ToString(), Summary.ToString(), ChunkSeconds, MeDisplayName, RecordingHotkey,
         OfferRecordingOnMicrophoneUse.ToString(),
         TranscriptionEndpoint, TranscriptionModel, TranscriptionPrompt, TranscriptionKeyVariable,
+        SelectedTranscriptionMode.Value.ToString(), LocalModelPath, LocalRunnerPath, LocalLanguage, LocalThreads,
         SummaryEndpoint, SummaryModel, SummaryPrompt, SummaryKeyVariable, ReminderEditor.Signature];
 
     public void LoadTranscriptionPrompt() => ReloadPrompt(ref transcriptionDocument, TranscriptionPrompt);
+    public void SetLocalModelPath(string path) { LocalModelPath = path; Changed(); }
+    public void UseMeetForgeModel()
+    {
+        if (!HasMeetForgeModel) return;
+        LocalModelPath = MeetForgeModelPath;
+        ModelDownloadStatus = "Using the existing MeetForge Parakeet model. Save settings to apply.";
+        Changed();
+    }
+    public void CancelModelDownload() => modelDownload?.Cancel();
+
+    public async Task DownloadParakeetAsync()
+    {
+        if (modelDownload is not null) return;
+        using var cancel = new CancellationTokenSource();
+        modelDownload = cancel;
+        Changed();
+        string directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MeetTape", "Models");
+        string target = Path.Combine(directory, "parakeet-ultra-Q5_K_M.gguf");
+        string temporary = target + ".part";
+        try
+        {
+            Directory.CreateDirectory(directory);
+            const long expectedSize = 549_800_864;
+            const string sha256 = "F6E3D8172547A3BB468E92FF395696E6D2E0371A9E52690A27741B4E8561C997";
+            bool validExisting = false;
+            if (File.Exists(target) && new FileInfo(target).Length == expectedSize)
+            {
+                await using var existing = File.OpenRead(target);
+                validExisting = Convert.ToHexString(await SHA256.HashDataAsync(existing, cancel.Token)) == sha256;
+            }
+            if (validExisting)
+            {
+                LocalModelPath = target;
+                ModelDownloadStatus = "Verified existing Parakeet Ultra model.";
+                return;
+            }
+            using var client = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+            using var response = await client.GetAsync(
+                "https://huggingface.co/handy-computer/parakeet-ultra-gguf/resolve/main/parakeet-ultra-Q5_K_M.gguf",
+                HttpCompletionOption.ResponseHeadersRead, cancel.Token);
+            response.EnsureSuccessStatusCode();
+            if (response.Content.Headers.ContentLength is { } length && length != expectedSize)
+                throw new InvalidDataException("Unexpected Parakeet model size. No model was installed.");
+            await using (var output = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None, 81920, true))
+            await using (var input = await response.Content.ReadAsStreamAsync(cancel.Token))
+            {
+                byte[] buffer = new byte[81920];
+                long total = 0;
+                int read;
+                while ((read = await input.ReadAsync(buffer, cancel.Token)) > 0)
+                {
+                    total += read;
+                    if (total > expectedSize) throw new InvalidDataException("Model download exceeds expected size.");
+                    await output.WriteAsync(buffer.AsMemory(0, read), cancel.Token);
+                    ModelDownloadStatus = $"Downloading Parakeet Ultra: {total * 100 / expectedSize}%";
+                    Changed();
+                }
+                await output.FlushAsync(cancel.Token);
+                if (total != expectedSize) throw new InvalidDataException("Model download is incomplete.");
+            }
+            await using (var input = File.OpenRead(temporary))
+                if (Convert.ToHexString(await SHA256.HashDataAsync(input, cancel.Token)) != sha256)
+                    throw new InvalidDataException("Model checksum verification failed.");
+            File.Move(temporary, target, overwrite: true);
+            LocalModelPath = target;
+            ModelDownloadStatus = "Parakeet Ultra downloaded and verified. Save settings to use it.";
+        }
+        catch (OperationCanceledException) { ModelDownloadStatus = "Model download canceled."; }
+        catch (Exception ex) when (ex is HttpRequestException or IOException or UnauthorizedAccessException or InvalidDataException)
+        { ModelDownloadStatus = "Model download failed: " + ex.GetType().Name + ". Retry or choose an existing model."; }
+        finally
+        {
+            try { if (File.Exists(temporary)) File.Delete(temporary); } catch (IOException) { }
+            modelDownload = null;
+            Changed();
+        }
+    }
     public void LoadSummaryPrompt() => ReloadPrompt(ref summaryDocument, SummaryPrompt);
     private void ReloadPrompt(ref PromptDocument document, string path)
     {
@@ -168,6 +283,14 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             if (json.ContainsKey("meDisplayName") || MeDisplayName.Trim() != "Me")
                 json["meDisplayName"] = MeDisplayName.Trim();
             json["transcription"] = Api(TranscriptionEndpoint, TranscriptionModel, TranscriptionPrompt, TranscriptionKeyVariable);
+            json["transcriptionMode"] = JsonNamingPolicy.CamelCase.ConvertName(SelectedTranscriptionMode.Value.ToString());
+            if (!int.TryParse(LocalThreads, NumberStyles.None, CultureInfo.InvariantCulture, out int threads))
+                throw new InvalidDataException("Local CPU threads must be a whole number from 1 to 64.");
+            json["localTranscription"] = new JsonObject
+            {
+                ["modelPath"] = LocalModelPath.Trim(), ["runnerPath"] = LocalRunnerPath.Trim(),
+                ["language"] = LocalLanguage.Trim(), ["threads"] = threads
+            };
             json["summary"] = Api(SummaryEndpoint, SummaryModel, SummaryPrompt, SummaryKeyVariable);
             if (json.ContainsKey("reminders") || ReminderEditor.Items.Count > 0 || ReminderEditor.RunAtWindowsStartup)
                 json["reminders"] = JsonSerializer.SerializeToNode(ReminderEditor.Snapshot(),
@@ -197,11 +320,16 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
                 return (Error: error, ConfigurationSaved: configurationSaved);
             });
             string? error = result.Error;
-            if (result.ConfigurationSaved) { original = updated; originalRecordingHotkey = RecordingHotkey; }
+            if (result.ConfigurationSaved)
+            {
+                original = updated;
+                originalRecordingHotkey = RecordingHotkey;
+                originalTranscriptionMode = SelectedTranscriptionMode.Value;
+            }
             var completeHotkey = finishHotkey; finishHotkey = null;
             completeHotkey?.Invoke(result.ConfigurationSaved);
             Saved = error is null;
-            Message = error ?? "Saved. Capture changes apply to the next recording; running jobs keep their current API settings. Queued and resumed jobs use updated API settings and reuse compatible checkpoints. Only edited prompts were saved.";
+            Message = error ?? "Saved. Capture changes apply to the next recording; running jobs keep their current transcription mode. Queued and resumed jobs use the selected mode; incompatible checkpoints are archived before reprocessing. Switching to Cloud API can incur charges.";
             if (Saved)
             {
                 original = updated; originalFields = Fields(); ClearSecrets();

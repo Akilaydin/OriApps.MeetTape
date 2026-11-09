@@ -1,5 +1,14 @@
 MeetTape Third-Party Notices
 
+transcribe.cpp v0.4.1 (handy-computer/transcribe.cpp), bundled as the offline
+transcribe-cli.exe engine, is licensed under MIT.
+Source: https://github.com/handy-computer/transcribe.cpp/tree/v0.4.1
+The ggml and bundled native components have their own license notices.
+Full applicable license texts are shipped next to the executable as
+transcribe-LICENSE.txt, ggml-LICENSE.txt, miniz-LICENSE.txt and
+silero-vad-LICENSE.txt. ASR model weights are NOT bundled and are obtained
+separately under their own license by explicit user action.
+
 The MeetTape project itself is licensed under GPL-3.0-only (see LICENSE).
 
 NAudio.Wasapi and NAudio.Core 3.2.0 are licensed under MIT. Original license follows.
