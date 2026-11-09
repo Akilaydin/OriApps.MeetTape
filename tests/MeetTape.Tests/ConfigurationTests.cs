@@ -107,6 +107,37 @@ public sealed class ConfigurationTests : IDisposable
         Assert.False(Load().Settings.OfferRecordingOnMicrophoneUse);
     }
 
+    [Fact]
+    public void LocalModePreservesCloudProfileAndDoesNotRequireCloudTranscriptionPrompt()
+    {
+        Assert.Equal(TranscriptionMode.CloudApi, Load().Settings.TranscriptionMode);
+        json["transcriptionMode"] = "local";
+        json["localTranscription"] = new JsonObject
+        {
+            ["modelPath"] = "models/parakeet.gguf",
+            ["runnerPath"] = "transcribe-cli.exe",
+            ["language"] = "ru"
+        };
+        File.Delete(Path.Combine(directory, "prompt.md"));
+        var config = Load();
+        Assert.Equal(TranscriptionMode.Local, config.Settings.TranscriptionMode);
+        Assert.Equal("models/parakeet.gguf", config.Settings.LocalTranscription.ModelPath);
+        Assert.Equal("audio-model", config.Settings.Transcription.Model);
+        Assert.Equal("https://example.invalid/v1/chat/completions", config.Settings.Transcription.Endpoint);
+        json["transcriptionMode"] = "cloudApi";
+        Assert.Throws<InvalidDataException>(() => Load());
+    }
+
+    [Theory]
+    [InlineData("123")]
+    [InlineData("ru;bad")]
+    [InlineData("")]
+    public void InvalidLocalLanguageIsRejected(string language)
+    {
+        json["localTranscription"] = new JsonObject { ["language"] = language };
+        Assert.Throws<InvalidDataException>(() => Load());
+    }
+
     [Theory]
     [InlineData("unknown")]
     [InlineData("communications")]

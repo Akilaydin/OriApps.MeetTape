@@ -19,9 +19,14 @@ if ($LASTEXITCODE -ne 0) { throw 'Publish failed.' }
 & (Join-Path $PSScriptRoot '../Dependencies/Get-FFmpeg.ps1')
 Copy-Item -LiteralPath (Join-Path $repository 'dist/ffmpeg/ffmpeg.exe'), (Join-Path $repository 'dist/ffmpeg/ffmpeg-LICENSE.txt') -Destination $publish
 
+& (Join-Path $PSScriptRoot '../Dependencies/Get-TranscribeCpp.ps1')
+Get-ChildItem -LiteralPath (Join-Path $repository 'dist/local-asr') -File | Copy-Item -Destination $publish
+
 Copy-Item -LiteralPath (Join-Path $repository 'LICENSE'), (Join-Path $repository 'THIRD-PARTY-NOTICES.txt') -Destination $publish
 & (Join-Path $publish 'ffmpeg.exe') -hide_banner -version | Select-Object -First 1
 if ($LASTEXITCODE -ne 0) { throw 'Bundled FFmpeg cannot start.' }
+& (Join-Path $publish 'transcribe-cli.exe') --help *> $null
+if ($LASTEXITCODE -ne 0) { throw 'Bundled local speech recognition engine cannot start.' }
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot '../Tests/Test-Desktop.ps1') -ExecutablePath (Join-Path $publish 'MeetTape.exe') -SkipNativeWindow
 if ($LASTEXITCODE -ne 0) { throw 'Published GUI startup checks failed.' }
 

@@ -110,6 +110,37 @@
           <TabItem Header="Transcription">
             <ScrollViewer>
               <StackPanel Spacing="8" Margin="4,12,8,8">
+                <TextBlock Text="Transcription engine" />
+                <ComboBox Name="TranscriptionModeChoice" ItemsSource="{Binding TranscriptionModes}"
+                          SelectedItem="{Binding SelectedTranscriptionMode}" HorizontalAlignment="Stretch" />
+                <TextBlock Text="Cloud uses the configured API and may incur charges. Local runs on this PC without uploading audio. Switching applies to new and resumed jobs; incompatible checkpoints are archived and must be processed again."
+                           TextWrapping="Wrap" Opacity="0.7" />
+                <StackPanel Name="LocalTranscriptionPanel" Spacing="8" IsVisible="{Binding IsLocalTranscription}">
+                  <TextBlock Text="On-device speech model (GGUF)" />
+                  <Grid ColumnDefinitions="*,Auto">
+                    <TextBox Name="LocalAsrModel" Text="{Binding LocalModelPath}" PlaceholderText="Path to a GGUF model (e.g. Parakeet Ultra)" />
+                    <Button Grid.Column="1" Content="Browse…" Click="BrowseLocalModelClick" Margin="8,0,0,0" />
+                  </Grid>
+                  <Button Content="Use existing MeetForge model" Click="UseMeetForgeModelClick"
+                          IsVisible="{Binding HasMeetForgeModel}" HorizontalAlignment="Left" />
+                  <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Button Content="Download Parakeet Ultra (525 MiB)" Click="DownloadLocalModelClick" IsEnabled="{Binding !IsDownloadingModel}" />
+                    <Button Content="Cancel download" Click="CancelModelDownloadClick" IsVisible="{Binding IsDownloadingModel}" />
+                  </StackPanel>
+                  <TextBlock Text="{Binding ModelDownloadStatus}" TextWrapping="Wrap" Opacity="0.7" />
+                  <TextBlock Text="Recognition language" />
+                  <TextBox Text="{Binding LocalLanguage}" PlaceholderText="ru" />
+                  <Expander Header="Advanced local engine" HorizontalAlignment="Stretch">
+                    <StackPanel Spacing="6">
+                      <TextBlock Text="Engine executable (transcribe.cpp CLI, bundled with MeetTape)" TextWrapping="Wrap" />
+                      <TextBox Text="{Binding LocalRunnerPath}" />
+                      <TextBlock Text="CPU threads (1–64)" />
+                      <TextBox Text="{Binding LocalThreads}" />
+                      <TextBlock Text="Uses CPU by default. Downloaded models are stored outside the application folder and survive updates." TextWrapping="Wrap" Opacity="0.7" />
+                    </StackPanel>
+                  </Expander>
+                </StackPanel>
+                <StackPanel Name="CloudTranscriptionPanel" Spacing="8" IsVisible="{Binding IsCloudTranscription}">
                 <Expander Header="API connection &amp; key" HorizontalAlignment="Stretch">
                   <StackPanel Spacing="8">
                     <TextBlock Text="HTTPS endpoint (HTTP allowed for loopback)" />
@@ -131,6 +162,7 @@
                 <TextBlock Text="Prompt contents — saved only when edited" />
                 <TextBox Name="TranscriptionPromptEditor" Text="{Binding TranscriptionPromptText}" AcceptsReturn="True" TextWrapping="Wrap"
                          Height="240" VerticalContentAlignment="Top" ScrollViewer.VerticalScrollBarVisibility="Auto" />
+                </StackPanel>
               </StackPanel>
             </ScrollViewer>
           </TabItem>

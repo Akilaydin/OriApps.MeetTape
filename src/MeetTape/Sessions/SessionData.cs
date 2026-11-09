@@ -25,7 +25,11 @@ public sealed record CaptureParameters(AudioDevice? MeDevice, AudioDevice? ThemD
     public MicrophoneCaptureMode MicrophoneMode { get; init; } = MicrophoneCaptureMode.WindowsDefault;
 }
 public sealed record ProcessingParameters(int ChunkSeconds, ApiSettings Transcription, ApiSettings Summary,
-    string ConfigurationDirectory, string MeDisplayName = "Me");
+    string ConfigurationDirectory, string MeDisplayName = "Me")
+{
+    public TranscriptionMode TranscriptionMode { get; init; } = TranscriptionMode.CloudApi;
+    public LocalTranscriptionSettings LocalTranscription { get; init; } = new();
+}
 public sealed record AudioChunk(int Index, string RelativePath, long StartFrame, long EndFrame,
     long OwnStartFrame, long OwnEndFrame, long SourceStartFrame, string? Source = null);
 public sealed record PreparedAudio(string RelativeDirectory, List<AudioChunk> Chunks);

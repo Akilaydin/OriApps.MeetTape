@@ -411,12 +411,56 @@ public sealed class SettingsTests : IDisposable
             object changed = field.PropertyType == typeof(bool) ? !(bool)value! :
                 field.PropertyType == typeof(DeviceChoice) ? new DeviceChoice("fixture-device", "Fixture device") :
                 field.PropertyType == typeof(MicrophoneModeChoice) ? model.MicrophoneModes.Single(mode => mode.Value != ((MicrophoneModeChoice)value!).Value) :
+                field.PropertyType == typeof(TranscriptionModeChoice) ? model.TranscriptionModes.Single(mode => mode.Value != ((TranscriptionModeChoice)value!).Value) :
                 (string)value! + "fixture-edit";
             field.SetValue(model, changed);
             Assert.True(model.HasUnsavedChanges, field.Name);
             field.SetValue(model, value);
             Assert.False(model.HasUnsavedChanges, field.Name);
         }
+    }
+
+    [AvaloniaFact]
+    public async Task CloudAndLocalSettingsPersistIndependentlyAndModeSwitchWarnsBeforeSaving()
+    {
+        var model = Model();
+        string cloudModel = model.TranscriptionModel;
+        string cloudEndpoint = model.TranscriptionEndpoint;
+        string cloudPrompt = model.TranscriptionPromptText;
+        var window = new SettingsWindow { DataContext = model };
+        window.Show();
+        window.FindControl<TabControl>("SettingsSections")!.SelectedIndex = 3;
+        var modes = window.FindControl<ComboBox>("TranscriptionModeChoice")!;
+        modes.SelectedItem = model.TranscriptionModes.Single(x => x.Value == TranscriptionMode.Local);
+        Assert.True(model.IsLocalTranscription);
+        Assert.True(window.FindControl<StackPanel>("LocalTranscriptionPanel")!.IsVisible);
+        Assert.False(window.FindControl<StackPanel>("CloudTranscriptionPanel")!.IsVisible);
+        model.LocalModelPath = "models/custom.gguf";
+        model.LocalLanguage = "ru";
+        bool confirmed = false;
+        window.ConfirmModeSwitch = () => Task.FromResult(confirmed);
+        window.FindControl<Button>("SaveSettings")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await Task.Delay(10);
+        Assert.False(model.Saved);
+        Assert.Equal(TranscriptionMode.CloudApi, ConfigurationLoader.Load(ConfigPath).Settings.TranscriptionMode);
+        confirmed = true;
+        window.FindControl<Button>("SaveSettings")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        for (int i = 0; i < 100 && !model.Saved; i++) await Task.Delay(10);
+        Assert.True(model.Saved, model.Message);
+        var saved = ConfigurationLoader.Load(ConfigPath).Settings;
+        Assert.Equal(TranscriptionMode.Local, saved.TranscriptionMode);
+        Assert.Equal("models/custom.gguf", saved.LocalTranscription.ModelPath);
+        Assert.Equal(cloudModel, saved.Transcription.Model);
+        Assert.Equal(cloudEndpoint, saved.Transcription.Endpoint);
+        Assert.Equal(cloudPrompt, model.TranscriptionPromptText);
+        modes.SelectedItem = model.TranscriptionModes.Single(x => x.Value == TranscriptionMode.CloudApi);
+        Assert.False(model.IsLocalTranscription);
+        Assert.True(window.FindControl<StackPanel>("CloudTranscriptionPanel")!.IsVisible);
+        await model.SaveAsync();
+        Assert.True(model.Saved);
+        Assert.Equal(TranscriptionMode.CloudApi, ConfigurationLoader.Load(ConfigPath).Settings.TranscriptionMode);
+        Assert.Equal("models/custom.gguf", ConfigurationLoader.Load(ConfigPath).Settings.LocalTranscription.ModelPath);
+        window.Close();
     }
 
     [AvaloniaFact]

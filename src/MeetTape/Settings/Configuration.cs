@@ -18,6 +18,18 @@ public sealed record Configuration
     public ReminderSettings Reminders { get; init; } = new();
     public required ApiSettings Transcription { get; init; }
     public required ApiSettings Summary { get; init; }
+    public TranscriptionMode TranscriptionMode { get; init; } = TranscriptionMode.CloudApi;
+    public LocalTranscriptionSettings LocalTranscription { get; init; } = new();
+}
+
+public enum TranscriptionMode { CloudApi, Local }
+
+public sealed record LocalTranscriptionSettings
+{
+    public string ModelPath { get; init; } = "";
+    public string RunnerPath { get; init; } = "transcribe-cli.exe";
+    public string Language { get; init; } = "ru";
+    public int Threads { get; init; } = 4;
 }
 
 public sealed record CaptureSettings
@@ -149,6 +161,13 @@ public static class ConfigurationLoader
         _ = RecordingHotkey.Parse(settings.RecordingHotkey);
         ValidateApi(settings.Transcription, "transcription");
         ValidateApi(settings.Summary, "summary");
+        if (!Enum.IsDefined(settings.TranscriptionMode) || settings.LocalTranscription is null
+            || string.IsNullOrWhiteSpace(settings.LocalTranscription.RunnerPath)
+            || settings.LocalTranscription.ModelPath is null
+            || settings.LocalTranscription.Threads is < 1 or > 64
+            || settings.LocalTranscription.Language is null || settings.LocalTranscription.Language.Length is < 2 or > 16
+            || settings.LocalTranscription.Language.Any(c => !(char.IsAsciiLetter(c) || c == '-')))
+            throw new InvalidDataException("Invalid local transcription settings. Check model, engine and language in Settings.");
 
         settings = settings with { Capture = settings.Capture with
         {
@@ -158,7 +177,7 @@ public static class ConfigurationLoader
         _ = loaded.MeetingsRoot;
         if (validatePrompts)
         {
-            if (settings.Stages.Transcribe)
+            if (settings.Stages.Transcribe && settings.TranscriptionMode == TranscriptionMode.CloudApi)
                 _ = loaded.ReadPrompt(settings.Transcription, "transcription", promptEdits);
             if (settings.Stages.Summary)
                 _ = loaded.ReadPrompt(settings.Summary, "summary", promptEdits);
