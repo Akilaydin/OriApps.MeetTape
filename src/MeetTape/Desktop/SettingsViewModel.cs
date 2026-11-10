@@ -83,9 +83,6 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     private CancellationTokenSource? modelDownload;
     public bool IsDownloadingModel => modelDownload is not null;
     public string ModelDownloadStatus { get; private set; } = "Choose an existing GGUF model or download Parakeet Ultra (525 MiB).";
-    public string MeetForgeModelPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "MeetForge", "models", "parakeet-ultra-Q5_K_M.gguf");
-    public bool HasMeetForgeModel => File.Exists(MeetForgeModelPath);
     public string SummaryEndpoint { get; set; }
     public string SummaryModel { get; set; }
     public string SummaryPrompt { get; set; }
@@ -157,13 +154,6 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
 
     public void LoadTranscriptionPrompt() => ReloadPrompt(ref transcriptionDocument, TranscriptionPrompt);
     public void SetLocalModelPath(string path) { LocalModelPath = path; Changed(); }
-    public void UseMeetForgeModel()
-    {
-        if (!HasMeetForgeModel) return;
-        LocalModelPath = MeetForgeModelPath;
-        ModelDownloadStatus = "Using the existing MeetForge Parakeet model. Save settings to apply.";
-        Changed();
-    }
     public void CancelModelDownload() => modelDownload?.Cancel();
 
     public async Task DownloadParakeetAsync()
