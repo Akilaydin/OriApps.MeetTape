@@ -6,6 +6,8 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Runtime.InteropServices;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
 
@@ -98,12 +100,10 @@ internal sealed class LocalTranscriptionClient
         if (inputs.Count == 0) return;
         string model = ModelPath(settings, configurationDirectory);
         string runner = RunnerPath(settings, configurationDirectory);
-        string folder = Path.Combine(Path.GetTempPath(), "MeetTape-Batch-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(folder);
+        string folder = CreateBatchDirectory(Path.GetTempPath(),
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData));
         try
         {
-            if (folder.Any(c => c > 127))
-                throw new InvalidDataException("The temporary directory for local ASR must use ASCII characters. Set TEMP to a user-writable ASCII path.");
             foreach (var input in inputs)
                 if (input.Chunk.Source is not ("Me" or "Them") || !input.AudioPath.EndsWith(".wav", StringComparison.OrdinalIgnoreCase)
                     || !File.Exists(input.AudioPath))
@@ -192,6 +192,65 @@ internal sealed class LocalTranscriptionClient
             if (Directory.Exists(folder)) Directory.Delete(folder, recursive: true);
         }
     }
+
+    internal static string CreateBatchDirectory(string temporaryRoot, string commonDataRoot,
+        Func<string, string?>? shortPath = null)
+    {
+        string suffix = "MeetTape-Batch-" + Guid.NewGuid().ToString("N");
+        if (IsAscii(temporaryRoot))
+        {
+            string folder = Path.Combine(temporaryRoot, suffix);
+            Directory.CreateDirectory(folder);
+            return folder;
+        }
+
+        string? shortRoot = (shortPath ?? GetShortPath)(temporaryRoot);
+        if (shortRoot is { Length: > 0 } && IsAscii(shortRoot) && Directory.Exists(shortRoot))
+        {
+            string folder = Path.Combine(shortRoot, suffix);
+            Directory.CreateDirectory(folder);
+            return folder;
+        }
+
+        if (!IsAscii(commonDataRoot))
+            throw new InvalidDataException("No ASCII temporary directory is available for local ASR.");
+        string fallback = Path.Combine(commonDataRoot, suffix);
+        try
+        {
+            var owner = WindowsIdentity.GetCurrent().User
+                ?? throw new InvalidDataException("Cannot determine the Windows user for local ASR.");
+            var security = new DirectorySecurity();
+            security.SetAccessRuleProtection(true, false);
+            foreach (SecurityIdentifier identity in new[]
+                     {
+                         owner, new(WellKnownSidType.LocalSystemSid, null),
+                         new(WellKnownSidType.BuiltinAdministratorsSid, null)
+                     })
+                security.AddAccessRule(new FileSystemAccessRule(identity, FileSystemRights.FullControl,
+                    InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+                    PropagationFlags.None, AccessControlType.Allow));
+            new DirectoryInfo(fallback).Create(security);
+            return fallback;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
+                                   System.Security.SecurityException or PlatformNotSupportedException)
+        {
+            throw new InvalidDataException("Cannot create a private ASCII directory for local ASR. "
+                + "Configure a writable ASCII TEMP path or check ProgramData permissions.", ex);
+        }
+    }
+
+    private static bool IsAscii(string path) => path.All(c => c <= 127);
+
+    private static string? GetShortPath(string longPath)
+    {
+        var buffer = new StringBuilder(32768);
+        uint count = GetShortPathName(longPath, buffer, (uint)buffer.Capacity);
+        return count > 0 && count < buffer.Capacity ? buffer.ToString() : null;
+    }
+
+    [DllImport("kernel32.dll", EntryPoint = "GetShortPathNameW", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern uint GetShortPathName(string longPath, StringBuilder shortPath, uint length);
 
     internal static string RunnerPath(LocalTranscriptionSettings settings, string configurationDirectory)
     {
@@ -333,10 +392,15 @@ internal sealed class LocalTranscriptionClient
         { throw new InvalidDataException("Local batch exceeded its two-hour processing deadline."); }
         finally
         {
-            if (!process.HasExited) process.Kill(entireProcessTree: true);
-            await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            try
+            {
+                if (!process.HasExited) process.Kill(entireProcessTree: true);
+                await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            catch (Exception ex) when (ex is TimeoutException or IOException or InvalidOperationException
+                                       or System.ComponentModel.Win32Exception) { }
             try { await stderr.WaitAsync(TimeSpan.FromSeconds(5)); }
-            catch (OperationCanceledException) { }
+            catch (Exception ex) when (ex is OperationCanceledException or TimeoutException or IOException) { }
         }
     }
 }

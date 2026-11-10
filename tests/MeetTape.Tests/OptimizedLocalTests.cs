@@ -2,6 +2,7 @@ using NAudio.Wave;
 using System.Diagnostics;
 using System.Net;
 using System.Security.Cryptography;
+using System.Security.AccessControl;
 using System.Text;
 using System.Text.Json;
 
@@ -271,6 +272,40 @@ public sealed class OptimizedLocalTests : IDisposable
         Assert.Equal(1, results);
         Assert.Equal(bytes, File.ReadAllBytes(wav));
         Assert.Equal(new byte[2048], File.ReadAllBytes(model));
+    }
+
+    [Fact]
+    public void CyrillicWindowsTempUsesPrivateAsciiFallbackWithoutDisclosingAudio()
+    {
+        string fakeUnicodeTemp = Path.Combine(directory, "Русский пользователь");
+        string sharedRoot = Path.Combine(directory, "common-data");
+        Directory.CreateDirectory(fakeUnicodeTemp);
+        Directory.CreateDirectory(sharedRoot);
+        string fallback = LocalTranscriptionClient.CreateBatchDirectory(fakeUnicodeTemp, sharedRoot,
+            shortPath: _ => null);
+        try
+        {
+            Assert.StartsWith(sharedRoot, fallback, StringComparison.OrdinalIgnoreCase);
+            Assert.All(fallback, c => Assert.True(c <= 127));
+            var acl = new DirectoryInfo(fallback).GetAccessControl();
+            Assert.True(acl.AreAccessRulesProtected);
+            Assert.Contains(acl.GetAccessRules(true, false, typeof(System.Security.Principal.SecurityIdentifier))
+                .Cast<FileSystemAccessRule>(), rule =>
+                    rule.IdentityReference.Equals(System.Security.Principal.WindowsIdentity.GetCurrent().User));
+        }
+        finally { Directory.Delete(fallback, recursive: true); }
+    }
+
+    [Fact]
+    public void UnicodeTempPrefersAsciiShortPathOverSharedFallback()
+    {
+        string shortTemp = Path.Combine(directory, "shorttemp");
+        Directory.CreateDirectory(shortTemp);
+        string folder = LocalTranscriptionClient.CreateBatchDirectory(
+            Path.Combine(directory, "Русский пользователь"), Path.Combine(directory, "other"),
+            shortPath: _ => shortTemp);
+        try { Assert.StartsWith(shortTemp, folder, StringComparison.OrdinalIgnoreCase); }
+        finally { Directory.Delete(folder, recursive: true); }
     }
 
     private LocalTranscriptionSettings Settings()
