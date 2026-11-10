@@ -115,8 +115,6 @@ public sealed partial class SettingsWindow : Window
     }
     private async void DownloadLocalModelClick(object? sender, RoutedEventArgs e) =>
         await ((SettingsViewModel)DataContext!).DownloadParakeetAsync();
-    private void UseMeetForgeModelClick(object? sender, RoutedEventArgs e) =>
-        ((SettingsViewModel)DataContext!).UseMeetForgeModel();
     private void CancelModelDownloadClick(object? sender, RoutedEventArgs e) =>
         ((SettingsViewModel)DataContext!).CancelModelDownload();
     private void LoadSummaryPromptClick(object? sender, RoutedEventArgs e) => ((SettingsViewModel)DataContext!).LoadSummaryPrompt();
