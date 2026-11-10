@@ -411,7 +411,7 @@ public sealed class SettingsTests : IDisposable
             object changed = field.PropertyType == typeof(bool) ? !(bool)value! :
                 field.PropertyType == typeof(DeviceChoice) ? new DeviceChoice("fixture-device", "Fixture device") :
                 field.PropertyType == typeof(MicrophoneModeChoice) ? model.MicrophoneModes.Single(mode => mode.Value != ((MicrophoneModeChoice)value!).Value) :
-                field.PropertyType == typeof(TranscriptionModeChoice) ? model.TranscriptionModes.Single(mode => mode.Value != ((TranscriptionModeChoice)value!).Value) :
+                field.PropertyType == typeof(TranscriptionModeChoice) ? model.TranscriptionModes.First(mode => mode.Value != ((TranscriptionModeChoice)value!).Value) :
                 (string)value! + "fixture-edit";
             field.SetValue(model, changed);
             Assert.True(model.HasUnsavedChanges, field.Name);
@@ -461,6 +461,39 @@ public sealed class SettingsTests : IDisposable
         Assert.Equal(TranscriptionMode.CloudApi, ConfigurationLoader.Load(ConfigPath).Settings.TranscriptionMode);
         Assert.Equal("models/custom.gguf", ConfigurationLoader.Load(ConfigPath).Settings.LocalTranscription.ModelPath);
         window.Close();
+    }
+
+    [AvaloniaFact]
+    public async Task OptimizedLocalAndLegacyLocalCanBeSelectedWithoutLosingCloudSettings()
+    {
+        var model = Model();
+        Assert.Equal(TranscriptionMode.CloudApi, model.SelectedTranscriptionMode.Value);
+        Assert.Equal(3, model.TranscriptionModes.Count);
+        string endpoint = model.TranscriptionEndpoint;
+        string cloudModel = model.TranscriptionModel;
+        model.SelectedTranscriptionMode = model.TranscriptionModes.Single(x => x.Value == TranscriptionMode.LocalBatch);
+        Assert.True(model.IsLocalTranscription);
+        model.LocalModelPath = "models/parakeet.gguf";
+        await model.SaveAsync();
+        Assert.True(model.Saved, model.Message);
+        Assert.Equal(TranscriptionMode.LocalBatch, ConfigurationLoader.Load(ConfigPath).Settings.TranscriptionMode);
+        model = Model();
+        Assert.Equal(TranscriptionMode.LocalBatch, model.SelectedTranscriptionMode.Value);
+        Assert.Equal("models/parakeet.gguf", model.LocalModelPath);
+
+        model.SelectedTranscriptionMode = model.TranscriptionModes.Single(x => x.Value == TranscriptionMode.Local);
+        await model.SaveAsync();
+        Assert.True(model.Saved, model.Message);
+        Assert.Equal(TranscriptionMode.Local, ConfigurationLoader.Load(ConfigPath).Settings.TranscriptionMode);
+
+        model.SelectedTranscriptionMode = model.TranscriptionModes.Single(x => x.Value == TranscriptionMode.CloudApi);
+        await model.SaveAsync();
+        Assert.True(model.Saved, model.Message);
+        var restored = ConfigurationLoader.Load(ConfigPath).Settings;
+        Assert.Equal(TranscriptionMode.CloudApi, restored.TranscriptionMode);
+        Assert.Equal(endpoint, restored.Transcription.Endpoint);
+        Assert.Equal(cloudModel, restored.Transcription.Model);
+        Assert.Equal("models/parakeet.gguf", restored.LocalTranscription.ModelPath);
     }
 
     [AvaloniaFact]

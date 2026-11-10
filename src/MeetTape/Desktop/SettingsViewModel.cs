@@ -63,8 +63,9 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
     public string TranscriptionKeyVariable { get; set; }
     public IReadOnlyList<TranscriptionModeChoice> TranscriptionModes { get; } =
     [
-        new(TranscriptionMode.CloudApi, "Cloud API"),
-        new(TranscriptionMode.Local, "Local (offline)")
+        new(TranscriptionMode.CloudApi, "Cloud API (Gemini / OpenAI)"),
+        new(TranscriptionMode.LocalBatch, "Local optimized (batch WAV)"),
+        new(TranscriptionMode.Local, "Local legacy (MP3 chunks)")
     ];
     private TranscriptionModeChoice selectedTranscriptionMode = null!;
     private TranscriptionMode originalTranscriptionMode;
@@ -73,7 +74,7 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
         get => selectedTranscriptionMode;
         set { selectedTranscriptionMode = value; Changed(); }
     }
-    public bool IsLocalTranscription => SelectedTranscriptionMode?.Value == TranscriptionMode.Local;
+    public bool IsLocalTranscription => SelectedTranscriptionMode?.Value is TranscriptionMode.Local or TranscriptionMode.LocalBatch;
     public bool IsCloudTranscription => !IsLocalTranscription;
     public bool RequiresModeSwitchConfirmation => SelectedTranscriptionMode.Value != originalTranscriptionMode;
     public string LocalModelPath { get; set; } = "";

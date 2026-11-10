@@ -59,7 +59,8 @@ public sealed class ProcessingJobs : IDisposable
     }
 
     internal ProcessingJobs(LoadedConfiguration config, Func<bool> captureActive, LocalTranscriptionClient local,
-        HttpClient? http = null) : this(config, captureActive, http)
+        HttpClient? http = null, Func<ApiSettings, string>? readKey = null)
+        : this(config, captureActive, http, readKey: readKey)
     {
         localAsr = local;
     }
@@ -263,7 +264,28 @@ public sealed class ProcessingJobs : IDisposable
                 }
                 if (!HasPublishedTranscription(data))
                 {
-                    if (data.Audio is null)
+                    bool localBatch = data.Processing.TranscriptionMode == TranscriptionMode.LocalBatch;
+                    if (localBatch && data.LocalAudio is null)
+                    {
+                        _ = LocalTranscriptionClient.ModelPath(data.Processing.LocalTranscription, data.Processing.ConfigurationDirectory);
+                        _ = LocalTranscriptionClient.RunnerPath(data.Processing.LocalTranscription, data.Processing.ConfigurationDirectory);
+                        data = Update(data, stage, StageState.Running);
+                        SessionStore.Save(directory, data);
+                        var audio = await new LocalAudioChunker(currentConfig.Settings.Capture.FfmpegPath)
+                            .PrepareAsync(directory, data, token);
+                        try
+                        {
+                            data = Update(data with { LocalAudio = audio }, stage, StageState.Completed,
+                                audio.Chunks.Count, audio.Chunks.Count);
+                            SessionStore.Save(directory, data);
+                        }
+                        catch
+                        {
+                            AudioTrimmer.DiscardAttempt(directory, audio.RelativeDirectory);
+                            throw;
+                        }
+                    }
+                    else if (!localBatch && data.Audio is null)
                     {
                         data = Update(data, stage, StageState.Running);
                         SessionStore.Save(directory, data);
@@ -279,19 +301,33 @@ public sealed class ProcessingJobs : IDisposable
                             throw;
                         }
                     }
-                    AudioChunker.ValidateManifest(data);
+                    if (localBatch) LocalAudioChunker.ValidateManifest(data);
+                    else AudioChunker.ValidateManifest(data);
                     stage = "transcribe";
-                    var chunks = data.Audio!.Chunks;
+                    var chunks = (localBatch ? data.LocalAudio : data.Audio)!.Chunks;
                     data = Update(data, stage, StageState.Running, 0, chunks.Count);
                     SessionStore.Save(directory, data);
                     bool localMode = data.Processing.TranscriptionMode == TranscriptionMode.Local;
-                    string prompt = localMode ? "" : ReadPrompt(data.Processing.Transcription,
+                    string prompt = localMode || localBatch ? "" : ReadPrompt(data.Processing.Transcription,
                         data.Processing.ConfigurationDirectory, "transcription");
-                    string effectiveModel = localMode
+                    string effectiveModel = localMode || localBatch
                         ? await LocalTranscriptionClient.ModelIdentityAsync(data.Processing.LocalTranscription,
                             data.Processing.ConfigurationDirectory, token)
                         : data.Processing.Transcription.Model;
                     int completed = 0;
+                    if (localBatch)
+                    {
+                        completed = await ProcessLocalBatchAsync(directory, data, chunks, effectiveModel,
+                            count =>
+                            {
+                                data = Update(data, stage, StageState.Running, count, chunks.Count);
+                                SessionStore.Save(directory, data);
+                                Report($"Job {data.Id}: local chunk {count}/{chunks.Count} saved/validated.",
+                                    NoticeKind.Information, data.Id);
+                            }, token);
+                    }
+                    else
+                    {
                     foreach (var chunk in chunks)
                     {
                         token.ThrowIfCancellationRequested();
@@ -400,12 +436,13 @@ public sealed class ProcessingJobs : IDisposable
                         SessionStore.Save(directory, data);
                         Report($"Job {data.Id}: chunk {completed}/{chunks.Count} saved/validated.", NoticeKind.Information, data.Id);
                     }
+                    }
                     data = Update(data, stage, StageState.Completed, completed, chunks.Count);
                     SessionStore.Save(directory, data);
                     stage = "assemble";
                     data = Update(data, stage, StageState.Running);
                     SessionStore.Save(directory, data);
-                    string hash = await new TranscriptAssembler().BuildAsync(directory, data, token);
+                    string hash = await new TranscriptAssembler().BuildAsync(directory, data, token, localBatch);
                     data = Update(data with { TranscriptSha256 = hash }, stage, StageState.Completed);
                     SessionStore.Save(directory, data);
                     Report($"Job {data.Id}: complete transcription.md saved.", NoticeKind.Information, data.Id);
@@ -457,9 +494,10 @@ public sealed class ProcessingJobs : IDisposable
         && ProcessingStages.Any(name => data.Stages.TryGetValue(name, out var stage) && stage.Enabled
             && (stage.Status == StageState.Paused || data.JobState == JobState.Canceled && stage.Status is StageState.Pending or StageState.Running));
 
-    internal static bool HasPublishedTranscription(SessionData data) => data.RecordingState == RecordingState.Recorded && data.Audio is not null
+    internal static bool HasPublishedTranscription(SessionData data) => data.RecordingState == RecordingState.Recorded
         && data.Stages.TryGetValue("transcribe", out var transcribe) && transcribe.Status == StageState.Completed
-        && transcribe.CompletedChunks == data.Audio.Chunks.Count
+        && (data.Audio is { } cloud && transcribe.CompletedChunks == cloud.Chunks.Count
+            || data.LocalAudio is { } local && transcribe.CompletedChunks == local.Chunks.Count)
         && data.Stages.TryGetValue("assemble", out var assemble) && assemble.Status == StageState.Completed && data.TranscriptSha256 is not null;
 
     private bool RetryPending(string directory, SessionData data)
@@ -513,6 +551,55 @@ public sealed class ProcessingJobs : IDisposable
         if (!stages.TryGetValue(stage, out var progress)) throw new InvalidDataException("Required processing stage is missing.");
         stages[stage] = progress with { Status = state, CompletedChunks = completed ?? progress.CompletedChunks, TotalChunks = total ?? progress.TotalChunks };
         return data with { Stages = stages, JobState = JobState.Running };
+    }
+
+    private async Task<int> ProcessLocalBatchAsync(string directory, SessionData data, IReadOnlyList<AudioChunk> chunks,
+        string effectiveModel, Action<int> saved, CancellationToken token)
+    {
+        int completed = 0;
+        var missing = new List<LocalTranscriptionClient.BatchInput>();
+        foreach (var chunk in chunks)
+        {
+            token.ThrowIfCancellationRequested();
+            string promptHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+                effectiveModel + ":" + chunk.Source)));
+            string checkpoint = ChunkStore.PathFor(directory, chunk.Index, localBatch: true);
+            ChunkResult? stored = File.Exists(checkpoint)
+                ? await ChunkStore.ReadAsync(directory, data, chunk, token, localBatch: true) : null;
+            if (stored is not null && (stored.Model != effectiveModel || stored.PromptSha256 != promptHash))
+            {
+                File.Move(checkpoint, Path.Combine(directory, "chunks", "local",
+                    $"{chunk.Index:D4}.superseded-{Guid.NewGuid():N}.json"), overwrite: false);
+                stored = null;
+            }
+            if (stored is not null)
+            {
+                TranscriptAssembler.ValidateChunk(stored.Text, chunk);
+                saved(++completed);
+            }
+            else
+                missing.Add(new(chunk, AudioChunker.ResolveProcessed(directory, chunk.RelativePath)));
+        }
+        await localAsr.TranscribeBatchAsync(data.Processing.LocalTranscription, data.Processing.ConfigurationDirectory,
+            missing, (chunk, reply) =>
+            {
+                token.ThrowIfCancellationRequested();
+                string promptHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+                    effectiveModel + ":" + chunk.Source)));
+                var result = new ChunkResult(data.Id, chunk, reply.AudioSha256, effectiveModel, promptHash, reply.Text);
+                try { TranscriptAssembler.ValidateChunk(result.Text, chunk); }
+                catch (InvalidDataException)
+                {
+                    string rejected = Path.Combine(directory, "chunks", "local",
+                        $"{chunk.Index:D4}.rejected-{Guid.NewGuid():N}.json");
+                    ChunkStore.SaveFile(rejected, result);
+                    throw;
+                }
+                ChunkStore.Save(directory, result, localBatch: true);
+                saved(++completed);
+                return Task.CompletedTask;
+            }, token);
+        return completed;
     }
 
     private static bool SummaryRequested(SessionData data) => data.Stages.TryGetValue("summary", out var stage)

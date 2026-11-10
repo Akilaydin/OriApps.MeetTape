@@ -22,7 +22,7 @@ public sealed record Configuration
     public LocalTranscriptionSettings LocalTranscription { get; init; } = new();
 }
 
-public enum TranscriptionMode { CloudApi, Local }
+public enum TranscriptionMode { CloudApi, Local, LocalBatch }
 
 public sealed record LocalTranscriptionSettings
 {
