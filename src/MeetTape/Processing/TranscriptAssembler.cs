@@ -48,12 +48,14 @@ public sealed class TranscriptAssembler
         @"^(?:\[(?<time>" + LocalTimePattern + @")\]\s*)?(?:(?<role>Me|Them):\s*)?(?<marker>\[{1,2}\s*NO[_ -]SPEECH\s*\]{0,2}|NO_SPEECH\]{0,2})$",
         RegexOptions.CultureInvariant | RegexOptions.IgnoreCase, TimeSpan.FromSeconds(1));
 
-    public async Task<string> BuildAsync(string directory, SessionData data, CancellationToken token)
+    public async Task<string> BuildAsync(string directory, SessionData data, CancellationToken token, bool localBatch = false)
     {
-        if (data.Audio is not { Chunks.Count: > 0 } audio || !data.Stages.TryGetValue("transcribe", out var stage)
+        var audio = localBatch ? data.LocalAudio : data.Audio;
+        if (audio is not { Chunks.Count: > 0 } || !data.Stages.TryGetValue("transcribe", out var stage)
             || stage.Status != StageState.Completed || stage.CompletedChunks != audio.Chunks.Count)
             throw new InvalidDataException("Full transcript requires all completed chunk checkpoints.");
-        AudioChunker.ValidateManifest(data);
+        if (localBatch) LocalAudioChunker.ValidateManifest(data);
+        else AudioChunker.ValidateManifest(data);
         string temporary = Path.Combine(directory, ".transcription-" + Guid.NewGuid().ToString("N") + ".tmp");
         string target = Path.Combine(directory, "transcription.md");
         try
@@ -71,7 +73,7 @@ public sealed class TranscriptAssembler
                 {
                     token.ThrowIfCancellationRequested();
                     var chunk = audio.Chunks[i];
-                    var result = await ChunkStore.ReadAsync(directory, data, chunk, token);
+                    var result = await ChunkStore.ReadAsync(directory, data, chunk, token, localBatch);
                     var current = Parse(result.Text, chunk, token);
                     string track = chunk.Source ?? "Stereo";
                     bool hasPrior = previousByTrack.TryGetValue(track, out var prior);

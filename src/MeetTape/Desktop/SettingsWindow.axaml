@@ -113,7 +113,7 @@
                 <TextBlock Text="Transcription engine" />
                 <ComboBox Name="TranscriptionModeChoice" ItemsSource="{Binding TranscriptionModes}"
                           SelectedItem="{Binding SelectedTranscriptionMode}" HorizontalAlignment="Stretch" />
-                <TextBlock Text="Cloud uses the configured API and may incur charges. Local runs on this PC without uploading audio. Switching applies to new and resumed jobs; incompatible checkpoints are archived and must be processed again."
+                <TextBlock Text="Cloud API keeps the existing Gemini/OpenAI MP3 processing unchanged. Local optimized prepares longer WAV segments and keeps one model loaded per batch. Local legacy preserves older processing. Switching applies to new and resumed jobs; each mode retains compatible checkpoints, and cloud requests can incur charges."
                            TextWrapping="Wrap" Opacity="0.7" />
                 <StackPanel Name="LocalTranscriptionPanel" Spacing="8" IsVisible="{Binding IsLocalTranscription}">
                   <TextBlock Text="On-device speech model (GGUF)" />

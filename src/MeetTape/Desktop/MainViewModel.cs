@@ -640,9 +640,14 @@ public sealed record SessionRow(string Directory, Guid? Id, string Title, string
         {
             Duration = data?.DurationSeconds is { } seconds && seconds < TimeSpan.MaxValue.TotalSeconds
                 ? TimeSpan.FromSeconds(seconds).ToString(seconds >= 3600 ? @"hh\:mm\:ss" : @"mm\:ss") : "--:--",
-            TranscriptionProfile = data is null ? "" : data.Processing.TranscriptionMode == TranscriptionMode.Local
-                ? "Local · " + (Path.GetFileName(data.Processing.LocalTranscription.ModelPath) is { Length: > 0 } name ? name : "model not selected")
-                : "Cloud · " + data.Processing.Transcription.Model,
+            TranscriptionProfile = data is null ? "" : data.Processing.TranscriptionMode switch
+            {
+                TranscriptionMode.Local => "Local legacy · " + (Path.GetFileName(data.Processing.LocalTranscription.ModelPath)
+                    is { Length: > 0 } name ? name : "model not selected"),
+                TranscriptionMode.LocalBatch => "Local optimized · " + (Path.GetFileName(data.Processing.LocalTranscription.ModelPath)
+                    is { Length: > 0 } name ? name : "model not selected"),
+                _ => "Cloud · " + data.Processing.Transcription.Model
+            },
             Details = data is null ? "Metadata unavailable." : string.Join(Environment.NewLine,
                 data.Stages.Select(stage => $"{stage.Key}: {stage.Value.Status}" +
                     (stage.Value.TotalChunks is { } count ? $" ({stage.Value.CompletedChunks}/{count} chunks)" : ""))
