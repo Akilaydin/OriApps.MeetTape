@@ -89,7 +89,7 @@ public sealed partial class SettingsWindow : Window
                 {
                     new TextBlock
                     {
-                        Text = "Unfinished meetings will use the new mode when processed or resumed. Incompatible saved chunks are archived and transcribed again. Cloud API calls may incur charges. Completed transcripts are retained.",
+                        Text = "Unfinished meetings will use the selected mode when processed or resumed. Cloud API and Local optimized use separate prepared audio and checkpoints. Changing the model within a mode may require reprocessing. Cloud API calls may incur charges. Completed transcripts are retained.",
                         TextWrapping = Avalonia.Media.TextWrapping.Wrap
                     },
                     new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 12,
@@ -115,8 +115,6 @@ public sealed partial class SettingsWindow : Window
     }
     private async void DownloadLocalModelClick(object? sender, RoutedEventArgs e) =>
         await ((SettingsViewModel)DataContext!).DownloadParakeetAsync();
-    private void UseMeetForgeModelClick(object? sender, RoutedEventArgs e) =>
-        ((SettingsViewModel)DataContext!).UseMeetForgeModel();
     private void CancelModelDownloadClick(object? sender, RoutedEventArgs e) =>
         ((SettingsViewModel)DataContext!).CancelModelDownload();
     private void LoadSummaryPromptClick(object? sender, RoutedEventArgs e) => ((SettingsViewModel)DataContext!).LoadSummaryPrompt();

@@ -11,11 +11,13 @@ public static class ChunkStore
     private static readonly JsonSerializerOptions Options = new()
     { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, UnmappedMemberHandling = System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow, RespectNullableAnnotations = true, RespectRequiredConstructorParameters = true };
 
-    public static string PathFor(string directory, int index) => Path.Combine(directory, "chunks", $"{index:D4}.json");
+    public static string PathFor(string directory, int index, bool localBatch = false) => localBatch
+        ? Path.Combine(directory, "chunks", "local", $"{index:D4}.json")
+        : Path.Combine(directory, "chunks", $"{index:D4}.json");
 
-    public static void Save(string directory, ChunkResult result)
+    public static void Save(string directory, ChunkResult result, bool localBatch = false)
     {
-        string target = PathFor(directory, result.Chunk.Index);
+        string target = PathFor(directory, result.Chunk.Index, localBatch);
         SaveFile(target, result);
     }
 
@@ -32,8 +34,9 @@ public static class ChunkStore
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
 
-    public static Task<ChunkResult> ReadAsync(string directory, SessionData session, AudioChunk chunk, CancellationToken token)
-        => ReadValidatedAsync(PathFor(directory, chunk.Index), directory, session, chunk, token);
+    public static Task<ChunkResult> ReadAsync(string directory, SessionData session, AudioChunk chunk, CancellationToken token,
+        bool localBatch = false)
+        => ReadValidatedAsync(PathFor(directory, chunk.Index, localBatch), directory, session, chunk, token);
 
     internal static async Task<ChunkResult> ReadValidatedAsync(string path, string directory,
         SessionData session, AudioChunk chunk, CancellationToken token)

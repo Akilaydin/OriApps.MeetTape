@@ -51,6 +51,7 @@ public sealed record SessionData
     public required ProcessingParameters Processing { get; init; }
     public TrimParameters Trim { get; init; } = new();
     public PreparedAudio? Audio { get; init; }
+    public PreparedAudio? LocalAudio { get; init; }
     public RetryProgress? Retry { get; init; }
     public string? TranscriptSha256 { get; init; }
     public required Dictionary<string, StageProgress> Stages { get; init; }
