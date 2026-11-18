@@ -26,6 +26,18 @@ public sealed partial class MainWindow : Window
         DataContextChanged += (_, _) => this.FindControl<ListBox>("SessionList")!.ContextMenu!.DataContext = DataContext;
         Closing += (_, e) => { if (!AllowClose) { e.Cancel = true; Hide(); } };
     }
+    private void LightThemeClick(object? sender, RoutedEventArgs e) => SetMainTheme(ThemeVariant.Light);
+    private void DarkThemeClick(object? sender, RoutedEventArgs e) => SetMainTheme(ThemeVariant.Dark);
+    private void SetMainTheme(ThemeVariant theme)
+    {
+        RequestedThemeVariant = theme;
+        var light = this.FindControl<Button>("LightThemeButton")!;
+        var dark = this.FindControl<Button>("DarkThemeButton")!;
+        light.Classes.Set("Ghost", theme != ThemeVariant.Light);
+        light.Classes.Set("Primary", theme == ThemeVariant.Light);
+        dark.Classes.Set("Ghost", theme != ThemeVariant.Dark);
+        dark.Classes.Set("Primary", theme == ThemeVariant.Dark);
+    }
     private async void RecordClick(object? sender, RoutedEventArgs e) => await Model.ToggleAsync();
     private async void MuteMeClick(object? sender, RoutedEventArgs e) => await Model.ToggleMeMuteAsync();
     private async void ContinueClick(object? sender, RoutedEventArgs e) => await Model.ContinuePreparationAsync();

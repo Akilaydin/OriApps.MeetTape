@@ -1,145 +1,232 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="using:OriApps.MeetTape.Desktop"
+        xmlns:shad="clr-namespace:ShadUI;assembly=ShadUI"
         x:Class="OriApps.MeetTape.Desktop.MainWindow" x:DataType="local:MainViewModel"
-        Title="MeetTape" Width="1050" Height="820" MinWidth="700" MinHeight="560"
-        RequestedThemeVariant="Light" Background="#F8FAFD" FontFamily="Segoe UI">
+        Title="MeetTape" Width="1100" Height="810" MinWidth="700" MinHeight="560"
+        RequestedThemeVariant="Dark" Background="{DynamicResource WindowBackgroundColor}" FontFamily="Segoe UI">
   <Window.Styles>
-    <Style Selector="Border.capture">
-      <Setter Property="Background" Value="White" />
-      <Setter Property="BorderBrush" Value="#DAE2ED" />
+    <!-- Kept local so Settings and existing dialogs continue to use Avalonia Fluent. -->
+    <shad:ShadTheme />
+    <Style Selector="TextBlock">
+      <Setter Property="Foreground" Value="{DynamicResource ForegroundColor}" />
     </Style>
-    <Style Selector="Border.capture.recording">
-      <Setter Property="Background" Value="#FFF9FA" />
-      <Setter Property="BorderBrush" Value="#FFD6DE" />
+    <Style Selector="TextBlock.muted">
+      <Setter Property="Foreground" Value="{DynamicResource ForegroundLeadColor}" />
     </Style>
-    <Style Selector="Button.record">
-      <Setter Property="Background" Value="#1674E8" />
-      <Setter Property="Foreground" Value="White" />
-      <Setter Property="FontSize" Value="18" />
+    <Style Selector="TextBlock.eyebrow">
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="LetterSpacing" Value="1.2" />
+      <Setter Property="Foreground" Value="{DynamicResource ForegroundLeadColor}" />
+    </Style>
+    <Style Selector="Border.surface">
+      <Setter Property="Background" Value="{DynamicResource CardBackgroundColor}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource BorderColor}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="14" />
+    </Style>
+    <Style Selector="Border.subsurface">
+      <Setter Property="Background" Value="{DynamicResource GhostColor}" />
       <Setter Property="CornerRadius" Value="10" />
     </Style>
-    <Style Selector="Button.record.recording">
-      <Setter Property="Background" Value="#F42842" />
-    </Style>
-    <Style Selector="Button.record:pointerover">
-      <Setter Property="Background" Value="#0964D7" />
-    </Style>
-    <Style Selector="Button.record.recording:pointerover">
-      <Setter Property="Background" Value="#DE203A" />
-    </Style>
-    <Style Selector="Button.mute.muted">
-      <Setter Property="Background" Value="#B91C38" />
-      <Setter Property="Foreground" Value="White" />
+    <Style Selector="Border.capture.recording">
+      <Setter Property="BorderBrush" Value="{DynamicResource DestructiveColor}" />
     </Style>
     <Style Selector="TextBlock.capture-status.recording">
-      <Setter Property="Foreground" Value="#F42842" />
+      <Setter Property="Foreground" Value="{DynamicResource DestructiveColor}" />
+    </Style>
+    <Style Selector="Button.record">
+      <Setter Property="Height" Value="44" />
+      <Setter Property="FontSize" Value="14" />
+      <Setter Property="CornerRadius" Value="9" />
     </Style>
     <Style Selector="ListBoxItem">
       <Setter Property="Padding" Value="0" />
       <Setter Property="HorizontalContentAlignment" Value="Stretch" />
     </Style>
+    <Style Selector="ListBoxItem:selected">
+      <Setter Property="Background" Value="{DynamicResource GhostColor}" />
+    </Style>
   </Window.Styles>
-  <Grid Margin="24" RowDefinitions="Auto,*,Auto" RowSpacing="18">
-    <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="14" Margin="8,4,8,0">
-      <Image Source="avares://MeetTape/Assets/MeetTape.png" Width="42" Height="42" />
-      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
-        <TextBlock Text="MeetTape" FontSize="28" FontWeight="Bold" Foreground="#101827" />
-        <TextBlock Text="{Binding CurrentVersion, StringFormat='v{0}'}" Foreground="#7C8AA3" VerticalAlignment="Center" />
-      </StackPanel>
-      <Button Grid.Column="2" Name="SettingsButton" Content="Settings" IsEnabled="{Binding CanConfigure}"
-              Click="SettingsClick" Padding="22,10" CornerRadius="8" Background="#F5F7FB" BorderBrush="#D4DDEA" BorderThickness="1" />
-    </Grid>
-    <ScrollViewer Name="MainContent" Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
-      <StackPanel Spacing="22" Margin="0,0,4,0">
-        <Border Name="RecordingCard" Classes="capture" Classes.recording="{Binding IsRecording}"
-                Padding="20" CornerRadius="12" BorderThickness="1">
-          <StackPanel Spacing="14">
-            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="14">
-              <StackPanel Spacing="10">
-                <StackPanel Orientation="Horizontal" Spacing="8">
-                  <Ellipse Fill="#F42842" Width="12" Height="12" IsVisible="{Binding IsRecording}" />
-                  <TextBlock Name="CaptureStatus" Classes="capture-status" Classes.recording="{Binding IsRecording}"
-                             Text="{Binding CaptureHeading}" FontSize="19" FontWeight="SemiBold" />
+
+  <Grid RowDefinitions="Auto,*,Auto">
+    <!-- Global toolbar -->
+    <Border Background="{DynamicResource CardBackgroundColor}" BorderBrush="{DynamicResource BorderColor}"
+            BorderThickness="0,0,0,1" Padding="28,16">
+      <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="14">
+        <Border Width="44" Height="44" CornerRadius="12" Background="{DynamicResource GhostColor}" Padding="6">
+          <Image Source="avares://MeetTape/Assets/MeetTape.png" Stretch="Uniform" />
+        </Border>
+        <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="1">
+          <StackPanel Orientation="Horizontal" Spacing="9">
+            <TextBlock Text="MeetTape" FontSize="21" FontWeight="Bold" VerticalAlignment="Center" />
+            <shad:Badge Classes="Outline" Content="{Binding CurrentVersion, StringFormat='v{0}'}"
+                        VerticalAlignment="Center" />
+          </StackPanel>
+          <TextBlock Classes="muted" FontSize="11" Text="RECORD  /  TRANSCRIBE  /  REVISIT" />
+        </StackPanel>
+        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+          <Border Background="{DynamicResource GhostColor}" CornerRadius="9" Padding="3">
+            <StackPanel Orientation="Horizontal" Spacing="3">
+              <Button Name="LightThemeButton" Content="Light" Classes="Ghost" Click="LightThemeClick"
+                      Width="62" Height="32" Padding="8,4" AutomationProperties.Name="Light theme" />
+              <Button Name="DarkThemeButton" Content="Dark" Classes="Primary" Click="DarkThemeClick"
+                      Width="62" Height="32" Padding="8,4" AutomationProperties.Name="Dark theme" />
+            </StackPanel>
+          </Border>
+          <Button Grid.Column="2" Name="SettingsButton" Content="⚙  Settings" Classes="Outline"
+                  IsEnabled="{Binding CanConfigure}" Click="SettingsClick" Height="38" Padding="16,8" />
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <ScrollViewer Grid.Row="1" Name="MainContent" HorizontalScrollBarVisibility="Disabled"
+                  VerticalScrollBarVisibility="Auto" Background="{DynamicResource WindowBackgroundColor}">
+      <StackPanel Spacing="24" Margin="28,24,28,28">
+        <StackPanel Spacing="6">
+          <TextBlock Classes="eyebrow" Text="YOUR WORKSPACE" />
+          <TextBlock Text="Meetings, under control." FontSize="29" FontWeight="SemiBold" />
+          <TextBlock Classes="muted" FontSize="13" Text="Record both sides of the conversation. Keep every transcript in one place." TextWrapping="Wrap" />
+        </StackPanel>
+
+        <!-- Main recorder -->
+        <Border Name="RecordingCard" Classes="surface capture" Classes.recording="{Binding IsRecording}" Padding="24">
+          <StackPanel Spacing="19">
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="20">
+              <StackPanel Spacing="12">
+                <StackPanel Orientation="Horizontal" Spacing="9" VerticalAlignment="Center">
+                  <Ellipse Width="8" Height="8" Fill="#2EB67D" VerticalAlignment="Center"
+                           IsVisible="{Binding !IsRecording}" />
+                  <Ellipse Width="8" Height="8" Fill="#F04452" VerticalAlignment="Center"
+                           IsVisible="{Binding IsRecording}" />
+                  <TextBlock Classes="eyebrow" Text="CAPTURE STATUS" VerticalAlignment="Center" />
                 </StackPanel>
-                <Grid Name="AudioLevels" ColumnDefinitions="200,*,*" ColumnSpacing="18" IsVisible="{Binding IsRecording}">
-                  <TextBlock Name="RecordingTimer" Text="{Binding RecordingDuration}" FontSize="46" FontWeight="Bold" />
-                  <StackPanel Grid.Column="1" Spacing="10" VerticalAlignment="Center">
-                    <TextBlock Text="{Binding MeCaptureLabel}" TextTrimming="CharacterEllipsis" />
-                    <ProgressBar Name="MeLevel" Value="{Binding MeLevel}" Height="8" MinWidth="0" Foreground="#32BF56" />
-                  </StackPanel>
-                  <StackPanel Grid.Column="2" Spacing="10" VerticalAlignment="Center">
-                    <TextBlock Text="{Binding ThemCaptureLabel}" TextTrimming="CharacterEllipsis" />
-                    <ProgressBar Name="ThemLevel" Value="{Binding ThemLevel}" Height="8" MinWidth="0" Foreground="#1674E8" />
-                  </StackPanel>
-                </Grid>
-                <TextBlock Text="Record microphone and system playback" IsVisible="{Binding !IsRecording}" Foreground="#69778E" />
+                <TextBlock Name="CaptureStatus" Classes="capture-status" Classes.recording="{Binding IsRecording}"
+                           Text="{Binding CaptureHeading}" FontSize="26" FontWeight="SemiBold" />
+                <TextBlock Classes="muted" Text="Microphone + system audio, saved as separate tracks"
+                           IsVisible="{Binding !IsRecording}" TextWrapping="Wrap" FontSize="13" />
               </StackPanel>
-              <StackPanel Grid.Column="1" Spacing="8" VerticalAlignment="Center">
-                <Button Name="RecordButton" Classes="record" Classes.recording="{Binding IsRecording}"
+              <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="9">
+                <Button Name="RecordButton" Classes="record" Classes.Primary="{Binding !IsRecording}"
+                        Classes.Destructive="{Binding IsRecording}"
                         Content="{Binding RecordLabel}" IsEnabled="{Binding CanRecord}" IsVisible="{Binding !IsNaming}"
-                        Click="RecordClick" Width="190" Height="42" HorizontalContentAlignment="Center" />
-                <Button Name="MuteMeButton" Classes="mute" Classes.muted="{Binding IsMeMuted}"
+                        Click="RecordClick" Width="190" />
+                <Button Name="MuteMeButton" Classes.Outline="{Binding !IsMeMuted}" Classes.Destructive="{Binding IsMeMuted}"
                         Content="{Binding MuteMeLabel}" IsEnabled="{Binding CanMuteMe}" IsVisible="{Binding IsRecording}"
-                        Click="MuteMeClick" Width="190" Height="34" HorizontalContentAlignment="Center" />
-                <TextBlock Name="RecordingShortcut" Text="{Binding RecordingShortcutText}" Foreground="#7C8AA3"
+                        Click="MuteMeClick" Width="190" Height="36" />
+                <TextBlock Name="RecordingShortcut" Classes="muted" Text="{Binding RecordingShortcutText}"
                            FontSize="11" HorizontalAlignment="Center" />
               </StackPanel>
             </Grid>
+
+            <Grid Name="AudioLevels" ColumnDefinitions="145,*,*" ColumnSpacing="22" IsVisible="{Binding IsRecording}">
+              <StackPanel Spacing="4" VerticalAlignment="Center">
+                <TextBlock Classes="eyebrow" Text="ELAPSED" />
+                <TextBlock Name="RecordingTimer" Text="{Binding RecordingDuration}" FontSize="29"
+                           FontFamily="Consolas" FontWeight="SemiBold" />
+              </StackPanel>
+              <StackPanel Grid.Column="1" Spacing="10" VerticalAlignment="Center">
+                <TextBlock Text="{Binding MeCaptureLabel}" TextTrimming="CharacterEllipsis" FontSize="12" />
+                <ProgressBar Name="MeLevel" Value="{Binding MeLevel}" Height="7" MinWidth="0" Foreground="#27AA78" />
+              </StackPanel>
+              <StackPanel Grid.Column="2" Spacing="10" VerticalAlignment="Center">
+                <TextBlock Text="{Binding ThemCaptureLabel}" TextTrimming="CharacterEllipsis" FontSize="12" />
+                <ProgressBar Name="ThemLevel" Value="{Binding ThemLevel}" Height="7" MinWidth="0" Foreground="#6478DE" />
+              </StackPanel>
+            </Grid>
+
             <TextBlock Text="{Binding PreparationText}" IsVisible="{Binding IsPreparing}" TextWrapping="Wrap" />
-            <TextBlock Name="CaptureDeviceWarning" Text="{Binding CaptureWarning}" IsVisible="{Binding HasCaptureWarning}"
-                       TextWrapping="Wrap" Foreground="#A65009" />
-            <TextBlock Name="ErrorMessage" Text="{Binding ErrorText}" IsVisible="{Binding HasError}"
-                       TextWrapping="Wrap" Foreground="#B91C38" />
-            <Border IsVisible="{Binding IsNaming}" Padding="14" Background="#F3F6FB" CornerRadius="8">
-              <StackPanel Spacing="10">
-                <TextBlock Text="Recording saved. Name the meeting, then continue or start the next recording." TextWrapping="Wrap" />
-                <TextBox Name="MeetingTitle" Text="{Binding MeetingTitle}" PlaceholderText="Unnamed meeting" MaxLength="200" />
+            <Border Classes="subsurface" IsVisible="{Binding HasCaptureWarning}" Padding="12,10">
+              <TextBlock Name="CaptureDeviceWarning" Text="{Binding CaptureWarning}" IsVisible="{Binding HasCaptureWarning}" TextWrapping="Wrap"
+                         Foreground="#D99835" FontSize="12" />
+            </Border>
+            <Border Classes="subsurface" IsVisible="{Binding HasError}" Padding="12,10">
+              <TextBlock Name="ErrorMessage" Text="{Binding ErrorText}" IsVisible="{Binding HasError}" TextWrapping="Wrap"
+                         Foreground="#E85B65" FontSize="12" />
+            </Border>
+
+            <Border Classes="subsurface" IsVisible="{Binding IsNaming}" Padding="18">
+              <StackPanel Spacing="12">
+                <StackPanel Spacing="4">
+                  <TextBlock Text="Finish your recording" FontSize="16" FontWeight="SemiBold" />
+                  <TextBlock Classes="muted" Text="Give it a name, then continue processing or start another recording."
+                             FontSize="12" TextWrapping="Wrap" />
+                </StackPanel>
+                <TextBox Name="MeetingTitle" Text="{Binding MeetingTitle}" PlaceholderText="Unnamed meeting"
+                         MaxLength="200" />
                 <WrapPanel>
-                  <Button Name="ContinuePreparation" Content="Continue" IsEnabled="{Binding CanName}" Click="ContinueClick" Margin="0,0,8,8" />
-                  <Button Name="StartNextRecording" Content="Start next recording" IsEnabled="{Binding CanStartNextRecording}" Click="StartNextClick" Margin="0,0,8,8" />
-                  <Button Name="CancelNamedRecording" Content="Cancel processing" IsEnabled="{Binding CanCancelNamedRecording}" Click="CancelNamedClick" Margin="0,0,8,8" />
+                  <Button Name="ContinuePreparation" Classes="Primary" Content="Continue" IsEnabled="{Binding CanName}"
+                          Click="ContinueClick" Margin="0,0,8,8" />
+                  <Button Name="StartNextRecording" Classes="Outline" Content="Start next recording"
+                          IsEnabled="{Binding CanStartNextRecording}" Click="StartNextClick" Margin="0,0,8,8" />
+                  <Button Name="CancelNamedRecording" Classes="Ghost" Content="Cancel processing"
+                          IsEnabled="{Binding CanCancelNamedRecording}" Click="CancelNamedClick" Margin="0,0,8,8" />
                 </WrapPanel>
               </StackPanel>
             </Border>
-            <Border IsVisible="{Binding ShowTrim}" Padding="14" Background="#F3F6FB" CornerRadius="8">
-              <StackPanel Spacing="10">
+
+            <Border Classes="subsurface" IsVisible="{Binding ShowTrim}" Padding="18">
+              <StackPanel Spacing="12">
                 <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
-                  <TextBlock Name="TrimSuggestion" Text="{Binding TrimText}" TextWrapping="Wrap" VerticalAlignment="Center" />
-                  <TextBlock Grid.Column="1" Text="{Binding TrimDurationText}" Foreground="#607187" VerticalAlignment="Center" />
+                  <StackPanel Spacing="4">
+                    <TextBlock Text="Trim recording" FontSize="16" FontWeight="SemiBold" />
+                    <TextBlock Name="TrimSuggestion" Classes="muted" Text="{Binding TrimText}"
+                               FontSize="12" TextWrapping="Wrap" />
+                  </StackPanel>
+                  <shad:Badge Grid.Column="1" Classes="Outline" Content="{Binding TrimDurationText}"
+                              VerticalAlignment="Center" />
                 </Grid>
-                <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="Auto,*,Auto" RowSpacing="8" ColumnSpacing="12" IsEnabled="{Binding CanTrim}">
-                  <TextBlock Text="Start" VerticalAlignment="Center" />
-                  <Slider Grid.Column="1" Name="TrimStartSlider" Minimum="0" Maximum="{Binding TrimStartSliderMaximum}" Value="{Binding TrimStartPosition, Mode=TwoWay}" TickFrequency="1" VerticalAlignment="Center" AutomationProperties.Name="Trim start slider" />
-                  <TextBox Grid.Column="2" Name="TrimStart" Text="{Binding TrimStart, Mode=TwoWay}" Width="116" PlaceholderText="HH:MM:SS" AutomationProperties.Name="Trim start time" />
-                  <TextBlock Grid.Row="1" Text="End" VerticalAlignment="Center" />
-                  <Slider Grid.Row="1" Grid.Column="1" Name="TrimEndSlider" Minimum="{Binding TrimEndSliderMinimum}" Maximum="{Binding TrimDurationSeconds}" Value="{Binding TrimEndPosition, Mode=TwoWay}" TickFrequency="1" VerticalAlignment="Center" AutomationProperties.Name="Trim end slider" />
-                  <TextBox Grid.Row="1" Grid.Column="2" Name="TrimEnd" Text="{Binding TrimEnd, Mode=TwoWay}" Width="116" PlaceholderText="HH:MM:SS" AutomationProperties.Name="Trim end time" />
+                <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="42,*,116" RowSpacing="12" ColumnSpacing="10"
+                      IsEnabled="{Binding CanTrim}">
+                  <TextBlock Text="Start" VerticalAlignment="Center" FontSize="12" />
+                  <Slider Grid.Column="1" Name="TrimStartSlider" Minimum="0"
+                          Maximum="{Binding TrimStartSliderMaximum}" Value="{Binding TrimStartPosition, Mode=TwoWay}"
+                          TickFrequency="1" VerticalAlignment="Center" AutomationProperties.Name="Trim start slider" />
+                  <TextBox Grid.Column="2" Name="TrimStart" Text="{Binding TrimStart, Mode=TwoWay}"
+                           PlaceholderText="HH:MM:SS" AutomationProperties.Name="Trim start time" />
+                  <TextBlock Grid.Row="1" Text="End" VerticalAlignment="Center" FontSize="12" />
+                  <Slider Grid.Row="1" Grid.Column="1" Name="TrimEndSlider" Minimum="{Binding TrimEndSliderMinimum}"
+                          Maximum="{Binding TrimDurationSeconds}" Value="{Binding TrimEndPosition, Mode=TwoWay}"
+                          TickFrequency="1" VerticalAlignment="Center" AutomationProperties.Name="Trim end slider" />
+                  <TextBox Grid.Row="1" Grid.Column="2" Name="TrimEnd" Text="{Binding TrimEnd, Mode=TwoWay}"
+                           PlaceholderText="HH:MM:SS" AutomationProperties.Name="Trim end time" />
                 </Grid>
-                <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" IsEnabled="{Binding CanTrim}">
-                  <Button Name="SkipTrim" Content="Skip" Click="SkipClick" />
-                  <Button Name="AcceptTrim" Content="Accept" Click="AcceptClick" />
+                <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right"
+                            IsEnabled="{Binding CanTrim}">
+                  <Button Name="SkipTrim" Classes="Outline" Content="Skip" Click="SkipClick" />
+                  <Button Name="AcceptTrim" Classes="Primary" Content="Accept trim" Click="AcceptClick" />
                 </StackPanel>
               </StackPanel>
             </Border>
           </StackPanel>
         </Border>
+
+        <!-- Meetings collection -->
         <StackPanel Spacing="12">
-          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
-            <TextBlock Text="Meetings" FontSize="22" FontWeight="Bold" VerticalAlignment="Center" />
-            <TextBox Grid.Column="1" Name="MeetingSearch" Text="{Binding SearchText}" Width="300"
-                     PlaceholderText="Search meetings by title or date..." CornerRadius="8" />
+          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+            <StackPanel Spacing="4" VerticalAlignment="Center">
+              <StackPanel Orientation="Horizontal" Spacing="10">
+                <TextBlock Text="Meeting library" FontSize="21" FontWeight="SemiBold" VerticalAlignment="Center" />
+                <shad:Badge Classes="Secondary" Content="{Binding Sessions.Count}" VerticalAlignment="Center" />
+              </StackPanel>
+              <TextBlock Classes="muted" Text="Select a recording to open its transcript or manage processing."
+                         FontSize="12" />
+            </StackPanel>
+            <TextBox Grid.Column="1" Name="MeetingSearch" Text="{Binding SearchText}" Width="275"
+                     PlaceholderText="Search by title or date..." VerticalAlignment="Center" />
           </Grid>
-          <Border BorderBrush="#DAE2ED" BorderThickness="1" CornerRadius="9" Background="White" ClipToBounds="True">
+          <Border Classes="surface" ClipToBounds="True">
             <Grid RowDefinitions="Auto,Auto">
-              <Grid ColumnDefinitions="3*,2*,1.3*,2*,40" ColumnSpacing="8" Background="#F0F4F9" Margin="0" Height="42">
-                <TextBlock Text="Title" Margin="16,0,0,0" VerticalAlignment="Center" />
-                <TextBlock Grid.Column="1" Text="Date" VerticalAlignment="Center" />
-                <TextBlock Grid.Column="2" Text="Duration" VerticalAlignment="Center" />
-                <TextBlock Grid.Column="3" Text="Status" VerticalAlignment="Center" />
+              <Grid ColumnDefinitions="3*,1.55*,1*,1.35*,38" ColumnSpacing="10"
+                    Background="{DynamicResource GhostColor}" Height="39">
+                <TextBlock Classes="eyebrow" Text="MEETING" Margin="16,0,0,0" VerticalAlignment="Center" />
+                <TextBlock Classes="eyebrow" Grid.Column="1" Text="DATE" VerticalAlignment="Center" />
+                <TextBlock Classes="eyebrow" Grid.Column="2" Text="LENGTH" VerticalAlignment="Center" />
+                <TextBlock Classes="eyebrow" Grid.Column="3" Text="STATUS" VerticalAlignment="Center" />
               </Grid>
               <ListBox Grid.Row="1" Name="SessionList" ItemsSource="{Binding Sessions}" SelectedItem="{Binding SelectedSession}"
-                       Background="Transparent" BorderThickness="0" MinHeight="150" MaxHeight="400"
+                       Background="Transparent" BorderThickness="0" Padding="0" MinHeight="140" MaxHeight="400"
                        ContextRequested="SessionContextRequested" DoubleTapped="SessionDoubleTapped">
                 <ListBox.ContextMenu>
                   <ContextMenu Name="SessionMenu">
@@ -163,23 +250,30 @@
                 </ListBox.ContextMenu>
                 <ListBox.ItemTemplate>
                   <DataTemplate x:DataType="local:SessionRow">
-                    <Border BorderThickness="0,0,0,1" BorderBrush="#EDF1F6">
-                      <Grid ColumnDefinitions="3*,2*,1.3*,2*,40" ColumnSpacing="8" MinHeight="54">
-                        <StackPanel Margin="16,0,8,0" VerticalAlignment="Center" Spacing="2">
-                          <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
-                                     ToolTip.Tip="{Binding Title}" />
-                          <TextBlock Text="{Binding TranscriptionProfile}" FontSize="11" Opacity="0.65" TextTrimming="CharacterEllipsis"
-                                     ToolTip.Tip="{Binding TranscriptionProfile}" />
+                    <Border BorderThickness="0,0,0,1" BorderBrush="{DynamicResource BorderColor30}">
+                      <Grid ColumnDefinitions="3*,1.55*,1*,1.35*,38" ColumnSpacing="10" MinHeight="62">
+                        <StackPanel Margin="16,8,4,8" VerticalAlignment="Center" Spacing="4">
+                          <TextBlock Text="{Binding Title}" FontSize="13" FontWeight="SemiBold"
+                                     TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Title}" />
+                          <TextBlock Classes="muted" Text="{Binding TranscriptionProfile}" FontSize="11"
+                                     TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding TranscriptionProfile}" />
                         </StackPanel>
-                        <TextBlock Grid.Column="1" Text="{Binding Date}" FontSize="12" VerticalAlignment="Center" />
-                        <TextBlock Grid.Column="2" Text="{Binding Duration}" FontSize="13" VerticalAlignment="Center" />
-                        <Border Grid.Column="3" Background="{Binding StatusBackground}" CornerRadius="12" Padding="8,4"
-                                VerticalAlignment="Center" HorizontalAlignment="Left" ToolTip.Tip="{Binding Progress}">
-                          <TextBlock Text="{Binding DisplayStatus}" Foreground="{Binding StatusForeground}" FontSize="12" />
+                        <TextBlock Grid.Column="1" Classes="muted" Text="{Binding Date}" FontSize="12"
+                                   VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                        <TextBlock Grid.Column="2" Text="{Binding Duration}" FontSize="12"
+                                   VerticalAlignment="Center" FontFamily="Consolas" />
+                        <Border Grid.Column="3" BorderBrush="{DynamicResource BorderColor}" BorderThickness="1"
+                                CornerRadius="7" Padding="8,5" HorizontalAlignment="Left" VerticalAlignment="Center"
+                                ToolTip.Tip="{Binding Progress}">
+                          <StackPanel Orientation="Horizontal" Spacing="6">
+                            <Ellipse Width="6" Height="6" Fill="{Binding StatusForeground}" VerticalAlignment="Center" />
+                            <TextBlock Text="{Binding DisplayStatus}" FontSize="11" FontWeight="Medium" />
+                          </StackPanel>
                         </Border>
-                        <Button Grid.Column="4" Name="SessionActions" Content="&#x22EE;" Click="SessionActionsClick"
-                                Width="25" Height="32" Padding="0" FontSize="20" CornerRadius="6"
-                                Background="#F5F7FB" BorderBrush="#D4DDEA" BorderThickness="1" HorizontalContentAlignment="Center" VerticalContentAlignment="Center"/>
+                        <Button Grid.Column="4" Name="SessionActions" Classes="Ghost" Content="⋯"
+                                Click="SessionActionsClick" Width="32" Height="32" Padding="0" FontSize="19"
+                                HorizontalContentAlignment="Center" VerticalContentAlignment="Center"
+                                ToolTip.Tip="Meeting actions" />
                       </Grid>
                     </Border>
                   </DataTemplate>
@@ -187,11 +281,21 @@
               </ListBox>
             </Grid>
           </Border>
-          <TextBlock Name="ProcessingIssues" Text="{Binding ProcessingIssueSummary}" IsVisible="{Binding HasProcessingIssues}"
-                     TextWrapping="Wrap" Foreground="#B91C38" />
+          <Border Classes="subsurface" IsVisible="{Binding HasProcessingIssues}" Padding="12,10">
+            <TextBlock Name="ProcessingIssues" Text="{Binding ProcessingIssueSummary}" IsVisible="{Binding HasProcessingIssues}"
+                       TextWrapping="Wrap" Foreground="#E85B65" FontSize="12" />
+          </Border>
         </StackPanel>
       </StackPanel>
     </ScrollViewer>
-    <TextBlock Grid.Row="2" Text="{Binding InfoText}" TextWrapping="Wrap" Foreground="#7C8AA3" FontSize="12" />
+
+    <Border Grid.Row="2" Background="{DynamicResource CardBackgroundColor}" BorderBrush="{DynamicResource BorderColor}"
+            BorderThickness="0,1,0,0" Padding="28,11">
+      <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10">
+        <Ellipse Width="7" Height="7" Fill="#36B785" VerticalAlignment="Center" />
+        <TextBlock Grid.Column="1" Classes="muted" Text="{Binding InfoText}"
+                   TextWrapping="Wrap" FontSize="11" VerticalAlignment="Center" />
+      </Grid>
+    </Border>
   </Grid>
 </Window>
