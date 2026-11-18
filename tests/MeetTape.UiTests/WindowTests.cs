@@ -1062,6 +1062,27 @@ public sealed class WindowTests
     }
 
     [AvaloniaFact]
+    public async Task TrimRejectsSubSampleTextIntervalWithoutMovingSlidersOrPreparingAudio()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var model = new MainViewModel(fake);
+        var window = new MainWindow { DataContext = model };
+        window.Show(); await model.RefreshAsync();
+        Click(window, "RecordButton"); Click(window, "RecordButton"); Click(window, "ContinuePreparation");
+        window.FindControl<TextBox>("TrimStart")!.Text = "00:00:05.000010";
+        window.FindControl<TextBox>("TrimEnd")!.Text = "00:00:05.000012";
+        Assert.Equal(5.000010, model.TrimStartPosition, precision: 6);
+        Assert.Equal(28, model.TrimEndPosition);
+        Click(window, "AcceptTrim");
+        Assert.Null(fake.Decision);
+        Assert.Contains("one audio sample", model.ErrorText);
+        Assert.Equal(model.TrimStartPosition, window.FindControl<Slider>("TrimStartSlider")!.Value);
+        Assert.Equal(model.TrimEndPosition, window.FindControl<Slider>("TrimEndSlider")!.Value);
+        Close(window, model);
+    }
+
+    [AvaloniaFact]
     public async Task TrimUneditedFractionalEndRetainsExactDurationWhenAccepted()
     {
         using var fixture = new Fixture();

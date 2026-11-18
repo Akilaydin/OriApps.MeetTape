@@ -96,6 +96,7 @@ public sealed class TrimmingTests : IDisposable
         Assert.Throws<InvalidOperationException>(() => workflow.Choose("manual", -1, 2));
         Assert.Throws<InvalidOperationException>(() => workflow.Choose("manual", 0, 5));
         Assert.Throws<InvalidOperationException>(() => workflow.Choose("manual", 1.000001, 1.000002));
+        Assert.Throws<InvalidOperationException>(() => workflow.Choose("manual", 0.000010, 0.000012));
         Assert.Equal(before, File.ReadAllBytes(Path.Combine(directory, "session.json")));
         workflow.Choose("manual", 0.5, 3.5);
         await workflow.Completion.WaitAsync(TimeSpan.FromSeconds(10));
