@@ -111,8 +111,15 @@ public sealed class AudioTrimmer(string ffmpegPath)
         if (!double.IsFinite(start) || !double.IsFinite(end) || !double.IsFinite(duration)
             || start < 0 || start >= end || end > duration || duration <= 0 || duration > 10800)
             throw new InvalidOperationException("Invalid trim boundaries: require 0 <= start < end <= recording duration (up to 3 hours).");
-        if (end - start < 1d / SampleRate || Math.Round(end * SampleRate) <= Math.Round(start * SampleRate))
+        if (!HasAtLeastOneSample(start, end))
             throw new InvalidOperationException("Invalid trim boundaries: interval must contain at least one audio sample.");
+    }
+    internal static bool HasAtLeastOneSample(double start, double end)
+    {
+        // Allow only endpoint representation error, not a fraction of an audio sample.
+        double ulp = Math.Max(Math.BitIncrement(start) - start, Math.BitIncrement(end) - end);
+        return double.IsFinite(start) && double.IsFinite(end) && end - start + 2 * ulp >= 1d / SampleRate
+            && Math.Round(end * SampleRate) > Math.Round(start * SampleRate);
     }
 
     public static bool TryParseTime(string text, out double seconds)

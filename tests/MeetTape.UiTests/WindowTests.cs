@@ -1076,6 +1076,7 @@ public sealed class WindowTests
         Assert.Equal(28, model.TrimEndPosition);
         Click(window, "AcceptTrim");
         Assert.Null(fake.Decision);
+        Assert.Equal(0, fake.TrimChoices);
         Assert.Contains("one audio sample", model.ErrorText);
         Assert.Equal(model.TrimStartPosition, window.FindControl<Slider>("TrimStartSlider")!.Value);
         Assert.Equal(model.TrimEndPosition, window.FindControl<Slider>("TrimEndSlider")!.Value);
@@ -1797,6 +1798,7 @@ public sealed class WindowTests
         public bool FailStart;
         public string? Title;
         public TrimDecision? Decision;
+        public int TrimChoices;
         public double? StartSeconds, EndSeconds;
         public TaskCompletionSource? ShutdownCompletion;
         public TaskCompletionSource? PrepareCompletion;
@@ -1856,6 +1858,7 @@ public sealed class WindowTests
         }
         public Task ChooseTrimAsync(TrimDecision decision, double? start = null, double? end = null)
         {
+            TrimChoices++;
             if (decision != TrimDecision.Skip) AudioTrimmer.Validate(start ?? double.NaN, end ?? double.NaN,
                 Snapshot.Sessions[0].Data!.DurationSeconds!.Value);
             Decision = decision; StartSeconds = start; EndSeconds = end;

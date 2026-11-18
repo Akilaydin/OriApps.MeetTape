@@ -110,6 +110,13 @@ public sealed class TrimmingTests : IDisposable
     }
 
     [Fact]
+    public void TrimValidationAllowsAdjacentSamplesButRejectsShortIntervalsAcrossRoundingBoundary()
+    {
+        AudioTrimmer.Validate(3d / 48000, 4d / 48000, 4);
+        Assert.Throws<InvalidOperationException>(() => AudioTrimmer.Validate(0.000010, 0.000012, 4));
+    }
+
+    [Fact]
     public async Task AcceptUsesEditedIntervalInsteadOfOverridingItWithSuggestion()
     {
         string directory = await SessionAsync([(1, 3)], []);

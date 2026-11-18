@@ -257,7 +257,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             || !AudioTrimmer.TryParseTime(trimEnd, out double parsedEnd)) return;
         double start = trimStartEdited ? parsedStart : trimStartPosition;
         double end = trimEndEdited ? parsedEnd : trimEndPosition;
-        if (start < 0 || end - start < MinimumTrimInterval || end > trimDurationSeconds) return;
+        if (start < 0 || !AudioTrimmer.HasAtLeastOneSample(start, end) || end > trimDurationSeconds) return;
         synchronizingTrim = true;
         try
         {
