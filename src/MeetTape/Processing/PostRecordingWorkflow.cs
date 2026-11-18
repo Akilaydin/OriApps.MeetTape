@@ -58,7 +58,7 @@ public sealed class PostRecordingWorkflow(string ffmpegPath) : IDisposable
             token.ThrowIfCancellationRequested();
             SessionStore.Save(selected, Update(data, StageState.AwaitingUser, error: null));
             lock (gate) suggestion = found;
-            Report(new(NoticeKind.Information, "Trim suggestion ready; choose Accept, Skip or a manual interval.", data.Id));
+            Report(new(NoticeKind.Information, "Trim suggestion ready; adjust the interval, then choose Accept or Skip.", data.Id));
             if (!found.HasActivity)
                 Report(new(NoticeKind.Warning, "No activity detected; keep the full recording.", data.Id));
         });
@@ -87,10 +87,13 @@ public sealed class PostRecordingWorkflow(string ffmpegPath) : IDisposable
         }
         if (decision == "accept")
         {
-            TrimSuggestion? found;
-            lock (gate) found = suggestion;
-            if (found is null) throw new InvalidOperationException("No suggestion available; reopen trim selection, skip, or choose a manual interval.");
-            start = found.StartSeconds; end = found.EndSeconds;
+            if (!start.HasValue || !end.HasValue)
+            {
+                TrimSuggestion? found;
+                lock (gate) found = suggestion;
+                if (found is null) throw new InvalidOperationException("No suggestion available; reopen trim selection or skip.");
+                start = found.StartSeconds; end = found.EndSeconds;
+            }
         }
         else if (decision != "manual") throw new ArgumentException("Unknown trim decision.", nameof(decision));
         AudioTrimmer.Validate(start ?? double.NaN, end ?? double.NaN, duration);

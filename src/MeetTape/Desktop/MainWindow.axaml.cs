@@ -33,7 +33,6 @@ public sealed partial class MainWindow : Window
     private void PrepareClick(object? sender, RoutedEventArgs e) => Model.PrepareSelected();
     private async void AcceptClick(object? sender, RoutedEventArgs e) => await Model.ChooseAsync(TrimDecision.Accept);
     private async void SkipClick(object? sender, RoutedEventArgs e) => await Model.ChooseAsync(TrimDecision.Skip);
-    private async void ManualClick(object? sender, RoutedEventArgs e) => await Model.ChooseAsync(TrimDecision.Manual);
     private async void ResumeClick(object? sender, RoutedEventArgs e) => await Model.ResumeAsync();
     private async void RecoverClick(object? sender, RoutedEventArgs e) => await Model.RecoverAsync();
     private async void CancelProcessingClick(object? sender, RoutedEventArgs e) => await Model.CancelSelectedProcessingAsync();
