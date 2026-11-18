@@ -182,10 +182,81 @@ public sealed class MainViewModel : INotifyPropertyChanged
         && snapshot.Sessions.Any(s => s.Directory == directory && s.Data?.Stages.TryGetValue("trim", out var trim) == true
             && s.Data.JobState != JobState.Canceled && trim.Enabled && trim.Status != StageState.Completed);
     public bool CanTrim => ShowTrim && !busy && !updating && !snapshot.Preparing && !snapshot.Capture.IsActive;
-    public string TrimText => snapshot.Suggestion is { } found ?
-        FormattableString.Invariant($"Suggested interval: {found.StartSeconds:F3} – {found.EndSeconds:F3} seconds. Originals retained.") : "";
-    public string TrimStart { get; set; } = "";
-    public string TrimEnd { get; set; } = "";
+    public string TrimText => snapshot.Suggestion?.HasActivity == false
+        ? "No activity detected. Full recording selected; originals retained."
+        : "Suggested interval based on activity in both tracks. Adjust the boundaries if needed; originals retained.";
+    private string trimStart = "", trimEnd = "";
+    private double trimStartPosition, trimEndPosition, trimDurationSeconds;
+    public string TrimStart
+    {
+        get => trimStart;
+        set
+        {
+            if (trimStart == value) return;
+            trimStart = value;
+            if (AudioTrimmer.TryParseTime(value, out double seconds) && seconds >= 0 && seconds < trimEndPosition)
+            {
+                trimStartPosition = seconds;
+                PropertyChanged?.Invoke(this, new(nameof(TrimStartPosition)));
+            }
+            PropertyChanged?.Invoke(this, new(nameof(TrimStart)));
+        }
+    }
+    public string TrimEnd
+    {
+        get => trimEnd;
+        set
+        {
+            if (trimEnd == value) return;
+            trimEnd = value;
+            if (AudioTrimmer.TryParseTime(value, out double seconds) && seconds > trimStartPosition && seconds <= trimDurationSeconds)
+            {
+                trimEndPosition = seconds;
+                PropertyChanged?.Invoke(this, new(nameof(TrimEndPosition)));
+            }
+            PropertyChanged?.Invoke(this, new(nameof(TrimEnd)));
+        }
+    }
+    public double TrimDurationSeconds => trimDurationSeconds;
+    public string TrimDurationText => "Duration: " + FormatTrimTime(trimDurationSeconds);
+    public double TrimStartPosition
+    {
+        get => trimStartPosition;
+        set
+        {
+            double next = Math.Clamp(value, 0, Math.Max(0, trimEndPosition - Math.Min(1, trimDurationSeconds)));
+            if (Math.Abs(next - trimStartPosition) < 0.0001) return;
+            trimStartPosition = next;
+            TrimStart = FormatTrimTime(next);
+            PropertyChanged?.Invoke(this, new(nameof(TrimStartPosition)));
+        }
+    }
+    public double TrimEndPosition
+    {
+        get => trimEndPosition;
+        set
+        {
+            double next = Math.Clamp(value, Math.Min(trimDurationSeconds, trimStartPosition + Math.Min(1, trimDurationSeconds)), trimDurationSeconds);
+            if (Math.Abs(next - trimEndPosition) < 0.0001) return;
+            trimEndPosition = next;
+            TrimEnd = FormatTrimTime(next);
+            PropertyChanged?.Invoke(this, new(nameof(TrimEndPosition)));
+        }
+    }
+    private static string FormatTrimTime(double seconds)
+    {
+        var time = TimeSpan.FromSeconds(seconds);
+        return time.ToString(@"hh\:mm\:ss", CultureInfo.InvariantCulture) +
+            (Math.Abs(seconds - Math.Round(seconds)) < 0.0005 ? "" : time.ToString(@"\.fff", CultureInfo.InvariantCulture));
+    }
+    private void InitializeTrim(TrimSuggestion suggestion, double duration)
+    {
+        trimDurationSeconds = duration;
+        trimStartPosition = suggestion.StartSeconds;
+        trimEndPosition = suggestion.EndSeconds;
+        trimStart = FormatTrimTime(trimStartPosition);
+        trimEnd = FormatTrimTime(trimEndPosition);
+    }
     public string PreparationText => snapshot.Preparing ? "Preparing audio… Start can cancel preparation." : "";
     public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -293,10 +364,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
         try
         {
             var updated = await controller.ReadAsync();
-            if (updated.Suggestion != snapshot.Suggestion && updated.Suggestion is { } suggestion)
+            if ((updated.Suggestion != snapshot.Suggestion || updated.PreparationDirectory != snapshot.PreparationDirectory)
+                && updated.Suggestion is { } suggestion)
             {
-                TrimStart = suggestion.StartSeconds.ToString("F3", CultureInfo.InvariantCulture);
-                TrimEnd = suggestion.EndSeconds.ToString("F3", CultureInfo.InvariantCulture);
+                double duration = updated.Sessions.FirstOrDefault(s => s.Directory == updated.PreparationDirectory)?.Data?.DurationSeconds
+                    ?? suggestion.EndSeconds;
+                InitializeTrim(suggestion, duration);
             }
             snapshot = updated;
             foreach (var meeting in updated.Sessions)
@@ -427,10 +500,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public Task ChooseAsync(TrimDecision decision) => ExecuteAsync(async () =>
     {
         double? start = null, end = null;
-        if (decision == TrimDecision.Manual)
+        if (decision is TrimDecision.Accept or TrimDecision.Manual)
         {
             if (!AudioTrimmer.TryParseTime(TrimStart, out double a) || !AudioTrimmer.TryParseTime(TrimEnd, out double b))
-                throw new InvalidOperationException("Enter seconds, MM:SS or HH:MM:SS for both trim boundaries.");
+                throw new InvalidOperationException("Enter valid start and end times (HH:MM:SS). Additional milliseconds are optional.");
             start = a; end = b;
         }
         await controller!.ChooseTrimAsync(decision, start, end);

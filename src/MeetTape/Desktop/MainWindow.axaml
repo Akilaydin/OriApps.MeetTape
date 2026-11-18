@@ -104,14 +104,22 @@
             </Border>
             <Border IsVisible="{Binding ShowTrim}" Padding="14" Background="#F3F6FB" CornerRadius="8">
               <StackPanel Spacing="10">
-                <TextBlock Name="TrimSuggestion" Text="{Binding TrimText}" TextWrapping="Wrap" />
-                <WrapPanel IsEnabled="{Binding CanTrim}">
-                  <Button Name="AcceptTrim" Content="Accept" Click="AcceptClick" Margin="0,0,8,8" />
-                  <Button Name="SkipTrim" Content="Skip" Click="SkipClick" Margin="0,0,8,8" />
-                  <TextBox Name="TrimStart" Text="{Binding TrimStart}" Width="90" PlaceholderText="Start" Margin="0,0,8,8" />
-                  <TextBox Name="TrimEnd" Text="{Binding TrimEnd}" Width="90" PlaceholderText="End" Margin="0,0,8,8" />
-                  <Button Name="ManualTrim" Content="Apply interval" Click="ManualClick" Margin="0,0,8,8" />
-                </WrapPanel>
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                  <TextBlock Name="TrimSuggestion" Text="{Binding TrimText}" TextWrapping="Wrap" VerticalAlignment="Center" />
+                  <TextBlock Grid.Column="1" Text="{Binding TrimDurationText}" Foreground="#607187" VerticalAlignment="Center" />
+                </Grid>
+                <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="Auto,*,Auto" RowSpacing="8" ColumnSpacing="12" IsEnabled="{Binding CanTrim}">
+                  <TextBlock Text="Start" VerticalAlignment="Center" />
+                  <Slider Grid.Column="1" Name="TrimStartSlider" Minimum="0" Maximum="{Binding TrimDurationSeconds}" Value="{Binding TrimStartPosition, Mode=TwoWay}" TickFrequency="1" VerticalAlignment="Center" />
+                  <TextBox Grid.Column="2" Name="TrimStart" Text="{Binding TrimStart, Mode=TwoWay}" Width="116" PlaceholderText="HH:MM:SS" />
+                  <TextBlock Grid.Row="1" Text="End" VerticalAlignment="Center" />
+                  <Slider Grid.Row="1" Grid.Column="1" Name="TrimEndSlider" Minimum="0" Maximum="{Binding TrimDurationSeconds}" Value="{Binding TrimEndPosition, Mode=TwoWay}" TickFrequency="1" VerticalAlignment="Center" />
+                  <TextBox Grid.Row="1" Grid.Column="2" Name="TrimEnd" Text="{Binding TrimEnd, Mode=TwoWay}" Width="116" PlaceholderText="HH:MM:SS" />
+                </Grid>
+                <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" IsEnabled="{Binding CanTrim}">
+                  <Button Name="SkipTrim" Content="Skip" Click="SkipClick" />
+                  <Button Name="AcceptTrim" Content="Accept" Click="AcceptClick" />
+                </StackPanel>
               </StackPanel>
             </Border>
           </StackPanel>

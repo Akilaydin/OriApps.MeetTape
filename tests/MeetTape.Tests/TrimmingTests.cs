@@ -108,6 +108,23 @@ public sealed class TrimmingTests : IDisposable
     }
 
     [Fact]
+    public async Task AcceptUsesEditedIntervalInsteadOfOverridingItWithSuggestion()
+    {
+        string directory = await SessionAsync([(1, 3)], []);
+        using var workflow = new PostRecordingWorkflow("ffmpeg");
+        workflow.Begin(directory);
+        await workflow.Completion.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Throws<InvalidOperationException>(() => workflow.Choose("accept", 3, 2));
+        workflow.Choose("accept", 0.5, 3.5);
+        await workflow.Completion.WaitAsync(TimeSpan.FromSeconds(10));
+        var selected = SessionStore.Read(directory).Trim;
+        Assert.Equal("accept", selected.Decision);
+        Assert.Equal(0.5, selected.StartSeconds);
+        Assert.Equal(3.5, selected.EndSeconds);
+        Assert.True(selected.Applied);
+    }
+
+    [Fact]
     public async Task CancellationBeforeNewCaptureLeavesChoicePendingAndCanResume()
     {
         string directory = await SessionAsync([], []);

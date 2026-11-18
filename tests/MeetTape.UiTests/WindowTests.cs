@@ -980,14 +980,82 @@ public sealed class WindowTests
         Click(window, "ContinuePreparation");
         Assert.Equal("Planning meeting", fake.Title);
         Assert.True(model.ShowTrim);
-        window.FindControl<TextBox>("TrimStart")!.Text = "00:03";
-        window.FindControl<TextBox>("TrimEnd")!.Text = "00:25";
-        Click(window, "ManualTrim");
-        Assert.Equal(TrimDecision.Manual, fake.Decision);
+        Assert.Equal("00:00:02", window.FindControl<TextBox>("TrimStart")!.Text);
+        Assert.Equal("00:00:28", window.FindControl<TextBox>("TrimEnd")!.Text);
+        Assert.Equal("Duration: 00:00:30", model.TrimDurationText);
+        Assert.Null(window.FindControl<Button>("ManualTrim"));
+        window.Width = 700; window.Height = 560;
+        Dispatcher.UIThread.RunJobs();
+        using (var frame = window.CaptureRenderedFrame())
+        {
+            Assert.NotNull(frame);
+            string output = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../dist/screenshots"));
+            Directory.CreateDirectory(output);
+            frame.Save(Path.Combine(output, "trim-ux-minimum.png"), PngBitmapEncoderOptions.Default);
+        }
+        window.FindControl<Slider>("TrimStartSlider")!.Value = 3;
+        Assert.Equal("00:00:03", window.FindControl<TextBox>("TrimStart")!.Text);
+        window.FindControl<TextBox>("TrimEnd")!.Text = "00:00:25";
+        Assert.Equal(25, window.FindControl<Slider>("TrimEndSlider")!.Value);
+        await model.RefreshAsync();
+        Assert.Equal("00:00:03", window.FindControl<TextBox>("TrimStart")!.Text);
+        Click(window, "AcceptTrim");
+        Assert.Equal(TrimDecision.Accept, fake.Decision);
         Assert.Equal(3, fake.StartSeconds);
         Assert.Equal(25, fake.EndSeconds);
         Assert.False(model.ShowTrim);
         Assert.Equal(0, fake.Summaries);
+        Close(window, model);
+    }
+
+    [AvaloniaFact]
+    public async Task TrimRejectsInvalidManualTimesAndPreventsSliderCrossing()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var model = new MainViewModel(fake);
+        var window = new MainWindow { DataContext = model };
+        window.Show(); await model.RefreshAsync();
+        Click(window, "RecordButton"); Click(window, "RecordButton"); Click(window, "ContinuePreparation");
+
+        window.FindControl<TextBox>("TrimStart")!.Text = "00:00:29";
+        window.FindControl<TextBox>("TrimEnd")!.Text = "00:00:25";
+        Click(window, "AcceptTrim");
+        Assert.Null(fake.Decision);
+        Assert.Contains("Invalid trim boundaries", model.ErrorText);
+
+        window.FindControl<TextBox>("TrimStart")!.Text = "00:00:05";
+        window.FindControl<TextBox>("TrimEnd")!.Text = "00:00:25";
+        window.FindControl<Slider>("TrimStartSlider")!.Value = 29;
+        Assert.Equal("00:00:24", model.TrimStart);
+        window.FindControl<Slider>("TrimEndSlider")!.Value = 2;
+        Assert.Equal("00:00:25", model.TrimEnd);
+        Click(window, "SkipTrim");
+        Assert.Equal(TrimDecision.Skip, fake.Decision);
+        Close(window, model);
+    }
+
+    [AvaloniaFact]
+    public async Task LongTrimSessionDisplaysHoursAndPreservesFractionalSuggestion()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var session = fake.Snapshot.Sessions[0];
+        fake.Snapshot = fake.Snapshot with { Sessions = [session with { Data = session.Data! with { DurationSeconds = 5500.5 } }] };
+        var model = new MainViewModel(fake);
+        var window = new MainWindow { DataContext = model };
+        window.Show(); await model.RefreshAsync();
+        Click(window, "RecordButton"); Click(window, "RecordButton"); Click(window, "ContinuePreparation");
+        fake.Snapshot = fake.Snapshot with { Suggestion = new(3600.125, 5490.25, true) };
+        await model.RefreshAsync();
+        Assert.Equal("Duration: 01:31:40.500", model.TrimDurationText);
+        Assert.Equal(5500.5, window.FindControl<Slider>("TrimEndSlider")!.Maximum);
+        Assert.Equal("01:00:00.125", window.FindControl<TextBox>("TrimStart")!.Text);
+        Assert.Equal("01:31:30.250", window.FindControl<TextBox>("TrimEnd")!.Text);
+        window.FindControl<TextBox>("TrimStart")!.Text = "01:00:03";
+        Click(window, "AcceptTrim");
+        Assert.Equal(3603, fake.StartSeconds);
+        Assert.Equal(5490.25, fake.EndSeconds);
         Close(window, model);
     }
 
@@ -1641,6 +1709,8 @@ public sealed class WindowTests
         }
         public Task ChooseTrimAsync(TrimDecision decision, double? start = null, double? end = null)
         {
+            if (decision != TrimDecision.Skip) AudioTrimmer.Validate(start ?? double.NaN, end ?? double.NaN,
+                Snapshot.Sessions[0].Data!.DurationSeconds!.Value);
             Decision = decision; StartSeconds = start; EndSeconds = end;
             var session = Snapshot.Sessions[0]; var data = session.Data!;
             Snapshot = Snapshot with { Sessions = [session with { Data = data with { Stages = new(data.Stages) { ["trim"] = new(true, StageState.Completed) } } }] };
