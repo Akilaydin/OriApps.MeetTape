@@ -1027,10 +1027,12 @@ public sealed class WindowTests
         window.FindControl<TextBox>("TrimStart")!.Text = "00:00:05";
         window.FindControl<TextBox>("TrimEnd")!.Text = "00:00:25";
         window.FindControl<Slider>("TrimStartSlider")!.Value = 29;
-        Assert.InRange(window.FindControl<Slider>("TrimStartSlider")!.Value, 24, 25);
+        Assert.True(window.FindControl<Slider>("TrimStartSlider")!.Value < window.FindControl<Slider>("TrimEndSlider")!.Value);
+        Assert.Equal(model.TrimStartPosition, window.FindControl<Slider>("TrimStartSlider")!.Value, precision: 5);
         Assert.True(model.TrimStartPosition < model.TrimEndPosition);
         window.FindControl<Slider>("TrimEndSlider")!.Value = 2;
         Assert.True(window.FindControl<Slider>("TrimEndSlider")!.Value > model.TrimStartPosition);
+        Assert.Equal(model.TrimEndPosition, window.FindControl<Slider>("TrimEndSlider")!.Value, precision: 5);
         Assert.True(model.TrimEndPosition > model.TrimStartPosition);
         Click(window, "SkipTrim");
         Assert.Equal(TrimDecision.Skip, fake.Decision);
@@ -1073,8 +1075,32 @@ public sealed class WindowTests
         fake.Snapshot = fake.Snapshot with { Suggestion = new(0, 30.99975, false) };
         await model.RefreshAsync();
         Assert.StartsWith("00:00:30.", model.TrimEnd);
+        window.FindControl<TextBox>("TrimStart")!.Text = "00:00:05";
+        Assert.Equal(30.99975, model.TrimEndPosition);
         Click(window, "AcceptTrim");
+        Assert.Equal(5, fake.StartSeconds);
         Assert.Equal(30.99975, fake.EndSeconds);
+        Close(window, model);
+    }
+
+    [AvaloniaFact]
+    public async Task SliderCompletesPreviouslyInvalidTextBoundaryPair()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var model = new MainViewModel(fake);
+        var window = new MainWindow { DataContext = model };
+        window.Show(); await model.RefreshAsync();
+        Click(window, "RecordButton"); Click(window, "RecordButton"); Click(window, "ContinuePreparation");
+        window.FindControl<TextBox>("TrimStart")!.Text = "00:00:29";
+        Assert.Equal(2, model.TrimStartPosition);
+        window.FindControl<Slider>("TrimEndSlider")!.Value = 30;
+        Assert.Equal(29, model.TrimStartPosition);
+        Assert.Equal(30, model.TrimEndPosition);
+        Assert.Equal(29, window.FindControl<Slider>("TrimStartSlider")!.Value);
+        Click(window, "AcceptTrim");
+        Assert.Equal(29, fake.StartSeconds);
+        Assert.Equal(30, fake.EndSeconds);
         Close(window, model);
     }
 

@@ -111,6 +111,8 @@ public sealed class AudioTrimmer(string ffmpegPath)
         if (!double.IsFinite(start) || !double.IsFinite(end) || !double.IsFinite(duration)
             || start < 0 || start >= end || end > duration || duration <= 0 || duration > 10800)
             throw new InvalidOperationException("Invalid trim boundaries: require 0 <= start < end <= recording duration (up to 3 hours).");
+        if (Math.Round(end * SampleRate) <= Math.Round(start * SampleRate))
+            throw new InvalidOperationException("Invalid trim boundaries: interval must contain at least one audio sample.");
     }
 
     public static bool TryParseTime(string text, out double seconds)

@@ -231,6 +231,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             PropertyChanged?.Invoke(this, new(nameof(TrimStart)));
             PropertyChanged?.Invoke(this, new(nameof(TrimEndSliderMinimum)));
             PropertyChanged?.Invoke(this, new(nameof(TrimStartPosition)));
+            SyncPositionsFromTimes();
         }
     }
     public double TrimEndPosition
@@ -247,12 +248,16 @@ public sealed class MainViewModel : INotifyPropertyChanged
             PropertyChanged?.Invoke(this, new(nameof(TrimEnd)));
             PropertyChanged?.Invoke(this, new(nameof(TrimStartSliderMaximum)));
             PropertyChanged?.Invoke(this, new(nameof(TrimEndPosition)));
+            SyncPositionsFromTimes();
         }
     }
     private void SyncPositionsFromTimes()
     {
-        if (!AudioTrimmer.TryParseTime(trimStart, out double start) || !AudioTrimmer.TryParseTime(trimEnd, out double end)
-            || start < 0 || start >= end || end > trimDurationSeconds) return;
+        if (!AudioTrimmer.TryParseTime(trimStart, out double parsedStart)
+            || !AudioTrimmer.TryParseTime(trimEnd, out double parsedEnd)) return;
+        double start = trimStartEdited ? parsedStart : trimStartPosition;
+        double end = trimEndEdited ? parsedEnd : trimEndPosition;
+        if (start < 0 || start >= end || end > trimDurationSeconds) return;
         synchronizingTrim = true;
         try
         {
