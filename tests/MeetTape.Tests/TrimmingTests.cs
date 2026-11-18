@@ -95,6 +95,8 @@ public sealed class TrimmingTests : IDisposable
         Assert.Throws<InvalidOperationException>(() => workflow.Choose("manual", 3, 2));
         Assert.Throws<InvalidOperationException>(() => workflow.Choose("manual", -1, 2));
         Assert.Throws<InvalidOperationException>(() => workflow.Choose("manual", 0, 5));
+        Assert.Throws<InvalidOperationException>(() => workflow.Choose("manual", 1.000001, 1.000002));
+        Assert.Throws<InvalidOperationException>(() => workflow.Choose("manual", 0.000010, 0.000012));
         Assert.Equal(before, File.ReadAllBytes(Path.Combine(directory, "session.json")));
         workflow.Choose("manual", 0.5, 3.5);
         await workflow.Completion.WaitAsync(TimeSpan.FromSeconds(10));
@@ -105,6 +107,30 @@ public sealed class TrimmingTests : IDisposable
         workflow.Choose("skip");
         Assert.Equal(new TrimParameters(0, 4, false) { Decision = "skip" }, SessionStore.Read(second).Trim);
         Assert.False(Directory.Exists(Path.Combine(second, "processed")));
+    }
+
+    [Fact]
+    public void TrimValidationAllowsAdjacentSamplesButRejectsShortIntervalsAcrossRoundingBoundary()
+    {
+        AudioTrimmer.Validate(3d / 48000, 4d / 48000, 4);
+        Assert.Throws<InvalidOperationException>(() => AudioTrimmer.Validate(0.000010, 0.000012, 4));
+    }
+
+    [Fact]
+    public async Task AcceptUsesEditedIntervalInsteadOfOverridingItWithSuggestion()
+    {
+        string directory = await SessionAsync([(1, 3)], []);
+        using var workflow = new PostRecordingWorkflow("ffmpeg");
+        workflow.Begin(directory);
+        await workflow.Completion.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Throws<InvalidOperationException>(() => workflow.Choose("accept", 3, 2));
+        workflow.Choose("accept", 0.5, 3.5);
+        await workflow.Completion.WaitAsync(TimeSpan.FromSeconds(10));
+        var selected = SessionStore.Read(directory).Trim;
+        Assert.Equal("accept", selected.Decision);
+        Assert.Equal(0.5, selected.StartSeconds);
+        Assert.Equal(3.5, selected.EndSeconds);
+        Assert.True(selected.Applied);
     }
 
     [Fact]
