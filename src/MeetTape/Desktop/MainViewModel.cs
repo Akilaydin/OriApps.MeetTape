@@ -183,22 +183,21 @@ public sealed class MainViewModel : INotifyPropertyChanged
             && s.Data.JobState != JobState.Canceled && trim.Enabled && trim.Status != StageState.Completed);
     public bool CanTrim => ShowTrim && !busy && !updating && !snapshot.Preparing && !snapshot.Capture.IsActive;
     public string TrimText => snapshot.Suggestion?.HasActivity == false
-        ? "No activity detected. Full recording selected; originals retained."
+        ? "No activity detected. Full recording suggested; originals retained."
         : "Suggested interval based on activity in both tracks. Adjust the boundaries if needed; originals retained.";
     private string trimStart = "", trimEnd = "";
     private double trimStartPosition, trimEndPosition, trimDurationSeconds;
+    private bool trimStartEdited, trimEndEdited, synchronizingTrim;
+    private const double MinimumTrimInterval = 1d / 48000;
     public string TrimStart
     {
         get => trimStart;
         set
         {
             if (trimStart == value) return;
-            trimStart = value;
-            if (AudioTrimmer.TryParseTime(value, out double seconds) && seconds >= 0 && seconds < trimEndPosition)
-            {
-                trimStartPosition = seconds;
-                PropertyChanged?.Invoke(this, new(nameof(TrimStartPosition)));
-            }
+            trimStart = value ?? "";
+            trimStartEdited = true;
+            SyncPositionsFromTimes();
             PropertyChanged?.Invoke(this, new(nameof(TrimStart)));
         }
     }
@@ -208,26 +207,29 @@ public sealed class MainViewModel : INotifyPropertyChanged
         set
         {
             if (trimEnd == value) return;
-            trimEnd = value;
-            if (AudioTrimmer.TryParseTime(value, out double seconds) && seconds > trimStartPosition && seconds <= trimDurationSeconds)
-            {
-                trimEndPosition = seconds;
-                PropertyChanged?.Invoke(this, new(nameof(TrimEndPosition)));
-            }
+            trimEnd = value ?? "";
+            trimEndEdited = true;
+            SyncPositionsFromTimes();
             PropertyChanged?.Invoke(this, new(nameof(TrimEnd)));
         }
     }
     public double TrimDurationSeconds => trimDurationSeconds;
     public string TrimDurationText => "Duration: " + FormatTrimTime(trimDurationSeconds);
+    public double TrimStartSliderMaximum => Math.Max(0, trimEndPosition - MinimumTrimInterval);
+    public double TrimEndSliderMinimum => Math.Min(trimDurationSeconds, trimStartPosition + MinimumTrimInterval);
     public double TrimStartPosition
     {
         get => trimStartPosition;
         set
         {
-            double next = Math.Clamp(value, 0, Math.Max(0, trimEndPosition - Math.Min(1, trimDurationSeconds)));
+            if (synchronizingTrim) return;
+            double next = Math.Clamp(value, 0, TrimStartSliderMaximum);
             if (Math.Abs(next - trimStartPosition) < 0.0001) return;
             trimStartPosition = next;
-            TrimStart = FormatTrimTime(next);
+            trimStartEdited = false;
+            trimStart = FormatTrimTime(next);
+            PropertyChanged?.Invoke(this, new(nameof(TrimStart)));
+            PropertyChanged?.Invoke(this, new(nameof(TrimEndSliderMinimum)));
             PropertyChanged?.Invoke(this, new(nameof(TrimStartPosition)));
         }
     }
@@ -236,26 +238,74 @@ public sealed class MainViewModel : INotifyPropertyChanged
         get => trimEndPosition;
         set
         {
-            double next = Math.Clamp(value, Math.Min(trimDurationSeconds, trimStartPosition + Math.Min(1, trimDurationSeconds)), trimDurationSeconds);
+            if (synchronizingTrim) return;
+            double next = Math.Clamp(value, TrimEndSliderMinimum, trimDurationSeconds);
             if (Math.Abs(next - trimEndPosition) < 0.0001) return;
             trimEndPosition = next;
-            TrimEnd = FormatTrimTime(next);
+            trimEndEdited = false;
+            trimEnd = FormatTrimTime(next);
+            PropertyChanged?.Invoke(this, new(nameof(TrimEnd)));
+            PropertyChanged?.Invoke(this, new(nameof(TrimStartSliderMaximum)));
             PropertyChanged?.Invoke(this, new(nameof(TrimEndPosition)));
         }
+    }
+    private void SyncPositionsFromTimes()
+    {
+        if (!AudioTrimmer.TryParseTime(trimStart, out double start) || !AudioTrimmer.TryParseTime(trimEnd, out double end)
+            || start < 0 || start >= end || end > trimDurationSeconds) return;
+        synchronizingTrim = true;
+        try
+        {
+            trimStartPosition = start;
+            trimEndPosition = end;
+            NotifyTrimPositions();
+        }
+        finally { synchronizingTrim = false; }
+    }
+    private void NotifyTrimPositions()
+    {
+        PropertyChanged?.Invoke(this, new(nameof(TrimStartSliderMaximum)));
+        PropertyChanged?.Invoke(this, new(nameof(TrimEndSliderMinimum)));
+        PropertyChanged?.Invoke(this, new(nameof(TrimStartPosition)));
+        PropertyChanged?.Invoke(this, new(nameof(TrimEndPosition)));
     }
     private static string FormatTrimTime(double seconds)
     {
         var time = TimeSpan.FromSeconds(seconds);
         return time.ToString(@"hh\:mm\:ss", CultureInfo.InvariantCulture) +
-            (Math.Abs(seconds - Math.Round(seconds)) < 0.0005 ? "" : time.ToString(@"\.fff", CultureInfo.InvariantCulture));
+            (Math.Abs(seconds - Math.Floor(seconds)) < 0.0000001 ? "" : time.ToString(@"\.fff", CultureInfo.InvariantCulture));
     }
     private void InitializeTrim(TrimSuggestion suggestion, double duration)
     {
-        trimDurationSeconds = duration;
-        trimStartPosition = suggestion.StartSeconds;
-        trimEndPosition = suggestion.EndSeconds;
-        trimStart = FormatTrimTime(trimStartPosition);
-        trimEnd = FormatTrimTime(trimEndPosition);
+        synchronizingTrim = true;
+        try
+        {
+            trimDurationSeconds = duration;
+            trimStartPosition = suggestion.StartSeconds;
+            trimEndPosition = suggestion.EndSeconds;
+            trimStart = FormatTrimTime(trimStartPosition);
+            trimEnd = FormatTrimTime(trimEndPosition);
+            trimStartEdited = trimEndEdited = false;
+            PropertyChanged?.Invoke(this, new(nameof(TrimDurationSeconds)));
+            PropertyChanged?.Invoke(this, new(nameof(TrimDurationText)));
+            NotifyTrimPositions();
+            PropertyChanged?.Invoke(this, new(nameof(TrimStart)));
+            PropertyChanged?.Invoke(this, new(nameof(TrimEnd)));
+        }
+        finally { synchronizingTrim = false; }
+    }
+    private void UpdateTrimDuration(double duration)
+    {
+        if (duration == trimDurationSeconds) return;
+        synchronizingTrim = true;
+        try
+        {
+            trimDurationSeconds = duration;
+            PropertyChanged?.Invoke(this, new(nameof(TrimDurationSeconds)));
+            PropertyChanged?.Invoke(this, new(nameof(TrimDurationText)));
+            NotifyTrimPositions();
+        }
+        finally { synchronizingTrim = false; }
     }
     public string PreparationText => snapshot.Preparing ? "Preparing audio… Start can cancel preparation." : "";
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -371,6 +421,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
                     ?? suggestion.EndSeconds;
                 InitializeTrim(suggestion, duration);
             }
+            else if (updated.Suggestion is not null && updated.PreparationDirectory is not null &&
+                updated.Sessions.FirstOrDefault(s => s.Directory == updated.PreparationDirectory)?.Data?.DurationSeconds is { } duration)
+                UpdateTrimDuration(duration);
             snapshot = updated;
             foreach (var meeting in updated.Sessions)
                 if (meeting.Data is { JobState: JobState.Completed or JobState.Canceled, Error: null } completed) ClearProcessingIssues(completed.Id);
@@ -502,9 +555,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
         double? start = null, end = null;
         if (decision is TrimDecision.Accept or TrimDecision.Manual)
         {
-            if (!AudioTrimmer.TryParseTime(TrimStart, out double a) || !AudioTrimmer.TryParseTime(TrimEnd, out double b))
+            if (!AudioTrimmer.TryParseTime(TrimStart, out double parsedStart)
+                || !AudioTrimmer.TryParseTime(TrimEnd, out double parsedEnd))
                 throw new InvalidOperationException("Enter valid start and end times (HH:MM:SS). Additional milliseconds are optional.");
-            start = a; end = b;
+            start = trimStartEdited ? parsedStart : trimStartPosition;
+            end = trimEndEdited ? parsedEnd : trimEndPosition;
         }
         await controller!.ChooseTrimAsync(decision, start, end);
     });

@@ -1027,11 +1027,111 @@ public sealed class WindowTests
         window.FindControl<TextBox>("TrimStart")!.Text = "00:00:05";
         window.FindControl<TextBox>("TrimEnd")!.Text = "00:00:25";
         window.FindControl<Slider>("TrimStartSlider")!.Value = 29;
-        Assert.Equal("00:00:24", model.TrimStart);
+        Assert.InRange(window.FindControl<Slider>("TrimStartSlider")!.Value, 24, 25);
+        Assert.True(model.TrimStartPosition < model.TrimEndPosition);
         window.FindControl<Slider>("TrimEndSlider")!.Value = 2;
-        Assert.Equal("00:00:25", model.TrimEnd);
+        Assert.True(window.FindControl<Slider>("TrimEndSlider")!.Value > model.TrimStartPosition);
+        Assert.True(model.TrimEndPosition > model.TrimStartPosition);
         Click(window, "SkipTrim");
         Assert.Equal(TrimDecision.Skip, fake.Decision);
+        Close(window, model);
+    }
+
+    [AvaloniaFact]
+    public async Task TrimTextFieldsKeepBothSlidersSynchronizedWhenNewPairIsValid()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var model = new MainViewModel(fake);
+        var window = new MainWindow { DataContext = model };
+        window.Show(); await model.RefreshAsync();
+        Click(window, "RecordButton"); Click(window, "RecordButton"); Click(window, "ContinuePreparation");
+        window.FindControl<TextBox>("TrimStart")!.Text = "00:00:29";
+        Assert.Equal(2, model.TrimStartPosition);
+        window.FindControl<TextBox>("TrimEnd")!.Text = "00:00:30";
+        Assert.Equal(29, model.TrimStartPosition);
+        Assert.Equal(30, model.TrimEndPosition);
+        Assert.Equal(29, window.FindControl<Slider>("TrimStartSlider")!.Value);
+        Assert.Equal(30, window.FindControl<Slider>("TrimEndSlider")!.Value);
+        Click(window, "AcceptTrim");
+        Assert.Equal(29, fake.StartSeconds);
+        Assert.Equal(30, fake.EndSeconds);
+        Close(window, model);
+    }
+
+    [AvaloniaFact]
+    public async Task TrimUneditedFractionalEndRetainsExactDurationWhenAccepted()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var session = fake.Snapshot.Sessions[0];
+        fake.Snapshot = fake.Snapshot with { Sessions = [session with { Data = session.Data! with { DurationSeconds = 30.99975 } }] };
+        var model = new MainViewModel(fake);
+        var window = new MainWindow { DataContext = model };
+        window.Show(); await model.RefreshAsync();
+        Click(window, "RecordButton"); Click(window, "RecordButton"); Click(window, "ContinuePreparation");
+        fake.Snapshot = fake.Snapshot with { Suggestion = new(0, 30.99975, false) };
+        await model.RefreshAsync();
+        Assert.StartsWith("00:00:30.", model.TrimEnd);
+        Click(window, "AcceptTrim");
+        Assert.Equal(30.99975, fake.EndSeconds);
+        Close(window, model);
+    }
+
+    [AvaloniaFact]
+    public async Task TrimRefreshCorrectsInitiallyMissingDurationWithoutResettingEdits()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var original = fake.Snapshot.Sessions[0];
+        var model = new MainViewModel(fake);
+        var window = new MainWindow { DataContext = model };
+        window.Show(); await model.RefreshAsync();
+        string renamed = original.Directory + "-renamed";
+        fake.Snapshot = fake.Snapshot with
+        {
+            PreparationDirectory = renamed,
+            Suggestion = new(4, 20, true)
+        };
+        await model.RefreshAsync();
+        Assert.Equal("Duration: 00:00:20", model.TrimDurationText);
+        window.FindControl<TextBox>("TrimStart")!.Text = "00:00:05";
+        fake.Snapshot = fake.Snapshot with { Sessions = [original with { Directory = renamed }] };
+        await model.RefreshAsync();
+        Assert.Equal("Duration: 00:00:30", model.TrimDurationText);
+        Assert.Equal("00:00:05", model.TrimStart);
+        Assert.Equal(30, window.FindControl<Slider>("TrimEndSlider")!.Maximum);
+        Close(window, model);
+    }
+
+    [AvaloniaFact]
+    public async Task TrimNewSuggestionReplacesPreviousIntervalWithoutSliderCoercion()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var original = fake.Snapshot.Sessions[0];
+        fake.Snapshot = fake.Snapshot with { Sessions = [original with { Data = original.Data! with { DurationSeconds = 5400 } }] };
+        var model = new MainViewModel(fake);
+        var window = new MainWindow { DataContext = model };
+        window.Show(); await model.RefreshAsync();
+        Click(window, "RecordButton"); Click(window, "RecordButton"); Click(window, "ContinuePreparation");
+        fake.Snapshot = fake.Snapshot with { Suggestion = new(100, 5300, true) };
+        await model.RefreshAsync();
+        Assert.Equal(5300, window.FindControl<Slider>("TrimEndSlider")!.Value);
+
+        string nextDirectory = original.Directory + "-next";
+        fake.Snapshot = fake.Snapshot with
+        {
+            Sessions = [original with { Directory = nextDirectory }],
+            PreparationDirectory = nextDirectory,
+            Suggestion = new(3, 20, true)
+        };
+        await model.RefreshAsync();
+        Assert.Equal("00:00:03", model.TrimStart);
+        Assert.Equal("00:00:20", model.TrimEnd);
+        Assert.Equal(3, window.FindControl<Slider>("TrimStartSlider")!.Value);
+        Assert.Equal(20, window.FindControl<Slider>("TrimEndSlider")!.Value);
+        Assert.Equal(30, window.FindControl<Slider>("TrimEndSlider")!.Maximum);
         Close(window, model);
     }
 
