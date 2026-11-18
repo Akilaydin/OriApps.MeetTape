@@ -1691,7 +1691,7 @@ public sealed class WindowTests
     }
 
     [AvaloniaFact]
-    public async Task MainStaysLightForSystemVariantsAndRendersCaptureStatesAndSettings()
+    public async Task MainSwitchesBetweenLightAndDarkAndRendersCaptureStatesAndSettings()
     {
         using var fixture = new Fixture();
         var fake = new FakeController(fixture);
@@ -1701,13 +1701,14 @@ public sealed class WindowTests
         Directory.CreateDirectory(output);
         foreach (var (theme, name) in new[] { (ThemeVariant.Light, "main-light.png"), (ThemeVariant.Dark, "main-dark.png") })
         {
-            Application.Current!.RequestedThemeVariant = theme;
+            string button = theme == ThemeVariant.Light ? "LightThemeButton" : "DarkThemeButton";
+            window.FindControl<Button>(button)!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             window.Show(); await model.RefreshAsync();
-            Assert.Equal(ThemeVariant.Light, window.ActualThemeVariant);
+            Assert.Equal(theme, window.ActualThemeVariant);
             using var frame = window.CaptureRenderedFrame(); Assert.NotNull(frame);
             frame.Save(Path.Combine(output, name), PngBitmapEncoderOptions.Default); window.Hide();
         }
-        Application.Current!.RequestedThemeVariant = ThemeVariant.Light;
+        Assert.Equal(ThemeVariant.Light, Application.Current!.RequestedThemeVariant);
         var basis = fake.Snapshot.Sessions[0];
         var started = basis.Data!.StartedAtUtc;
         var completed = basis with { Directory = Path.Combine(fixture.Root, "completed"), Data = Published(basis.Data!) with
