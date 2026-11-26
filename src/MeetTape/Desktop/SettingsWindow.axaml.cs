@@ -16,7 +16,6 @@ public sealed partial class SettingsWindow : Window
     internal Func<Task<bool>>? ConfirmModeSwitch { get; set; }
     internal Func<string> LogsDirectory { get; set; } = () => AppDiagnostics.DirectoryPath;
     internal Action<string>? OpenFolder { get; set; }
-    private IAppUpdates? aboutUpdates;
     private Func<Task>? requestUpdate;
     private MainViewModel? aboutViewModel;
     private MainViewModel AboutModel => (MainViewModel)this.FindControl<StackPanel>("AboutPanel")!.DataContext!;
@@ -102,6 +101,43 @@ public sealed partial class SettingsWindow : Window
         return dialog.ShowDialog<bool>(this);
     }
     private void LoadTranscriptionPromptClick(object? sender, RoutedEventArgs e) => ((SettingsViewModel)DataContext!).LoadTranscriptionPrompt();
+    internal Func<bool, Task<string?>>? ChoosePath { get; set; }
+
+    private async void BrowseFfmpegClick(object? sender, RoutedEventArgs e) => await BrowsePathAsync(folder: false);
+    private async void BrowseMeetingsFolderClick(object? sender, RoutedEventArgs e) => await BrowsePathAsync(folder: true);
+
+    private async Task BrowsePathAsync(bool folder)
+    {
+        var error = this.FindControl<TextBlock>("PathPickerError")!;
+        error.IsVisible = false;
+        try
+        {
+            if (await (ChoosePath?.Invoke(folder) ?? PickLocalPathAsync(folder)) is { } path)
+                this.FindControl<TextBox>(folder ? "MeetingsFolder" : "FfmpegExecutable")!.SetCurrentValue(TextBox.TextProperty, path);
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.Error("settings", "Choose local path", ex);
+            error.Text = "Cannot select a local path. You can still enter it manually.";
+            error.IsVisible = true;
+        }
+    }
+
+    private async Task<string?> PickLocalPathAsync(bool folder)
+    {
+        using IStorageItem? item = folder
+            ? (await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
+            {
+                Title = "Choose meetings folder", AllowMultiple = false
+            })).FirstOrDefault()
+            : (await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+            {
+                Title = "Choose FFmpeg executable", AllowMultiple = false,
+                FileTypeFilter = [new FilePickerFileType("Executables") { Patterns = ["*.exe"] }]
+            })).FirstOrDefault();
+        return item is null ? null : item.TryGetLocalPath() ?? throw new IOException("Selection is not a local path.");
+    }
+
     private async void BrowseLocalModelClick(object? sender, RoutedEventArgs e)
     {
         var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
@@ -130,17 +166,13 @@ public sealed partial class SettingsWindow : Window
     {
         if (aboutViewModel is not null) aboutViewModel.PropertyChanged -= AboutStateChanged;
         aboutViewModel = model; aboutViewModel.PropertyChanged += AboutStateChanged;
-        aboutUpdates = updates; requestUpdate = update;
+        requestUpdate = update;
         model.CurrentVersion = updates.CurrentVersion;
         var about = this.FindControl<StackPanel>("AboutPanel")!;
         about.DataContext = model; about.IsEnabled = true;
         AboutStateChanged(null, new(null));
     }
     private void AboutStateChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e) => IsEnabled = aboutViewModel?.IsUpdating != true;
-    private async void CheckUpdatesClick(object? sender, RoutedEventArgs e)
-    {
-        if (aboutUpdates is not null) await AboutModel.CheckUpdatesAsync(aboutUpdates);
-    }
     private async void UpdateClick(object? sender, RoutedEventArgs e)
     {
         if (!AboutModel.CanApplyUpdate || requestUpdate is null) return;

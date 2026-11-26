@@ -22,7 +22,7 @@ public sealed class App : Application
     private static bool TaskbarSmoke => Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true";
     private IClassicDesktopStyleApplicationLifetime? desktop;
     private MainWindow? window;
-    private MainViewModel model = new();
+    private readonly MainViewModel model;
     private DesktopController? controller;
     private DispatcherTimer? timer;
     private TrayIcon? tray;
@@ -37,6 +37,7 @@ public sealed class App : Application
     private bool initializingController;
     private bool controllerReady;
     private IAppUpdates? updates;
+    private CancellationTokenSource? updateChecks;
     private RecordingHotkey? hotkey;
     private bool hotkeyHooked;
     internal Func<string, int, RecordingHotkey>? HotkeyFactory { get; set; }
@@ -52,6 +53,8 @@ public sealed class App : Application
     private RecordingTaskbar? taskbar;
     private uint taskbarButtonCreated;
     private bool taskbarCreated;
+
+    public App() => model = new(notifyRecording: notice => notifications?.Show(notice));
 
     public override void Initialize()
     {
@@ -135,6 +138,8 @@ public sealed class App : Application
                 notifications?.Dispose();
                 reminderNotifications?.Dispose();
                 ConfigureMicrophoneOffers(false);
+                updateChecks?.Cancel();
+                updateChecks?.Dispose();
                 timer?.Stop(); model.Detach(); tray.Dispose();
             };
         }
@@ -231,17 +236,14 @@ public sealed class App : Application
         controllerReady = false;
         try
         {
+            StartUpdateChecks();
             if (!File.Exists(ConfigPath)) await OpenSettingsAsync();
             var config = await Task.Run(() => ConfigurationLoader.LoadForCapture(ConfigPath));
             reminderScheduler = new ReminderScheduler(Path.Combine(Path.GetDirectoryName(ConfigPath)!, "reminder-progress.json"), config.Settings.Reminders);
             reminderScheduler.Alert = alert => reminderNotifications?.Show(alert) == true;
             controller = new DesktopController(config);
-            model.PropertyChanged -= ModelChanged;
-            model.Detach();
-            model = new MainViewModel(controller, notice => notifications?.Show(notice));
+            model.AttachController(controller);
             model.SetRecordingShortcut(config.Settings.RecordingHotkey);
-            model.PropertyChanged += ModelChanged;
-            window!.DataContext = model;
             await controller.InitializeAsync();
             await model.RefreshAsync();
             int captureTicks = 0;
@@ -269,8 +271,6 @@ public sealed class App : Application
                 finally { readingCapture = false; }
             };
             timer.Start();
-            updates = new AppUpdates();
-            model.ReleaseText = await StartupReleaseNotice.GetAsync(updates);
             model.SetInfo("Close hides the window. Use tray Exit to stop MeetTape.");
             controllerReady = true;
             ConfigureMicrophoneOffers(config.Settings.OfferRecordingOnMicrophoneUse);
@@ -284,6 +284,39 @@ public sealed class App : Application
         await DrainPendingReminderActionsAsync(pendingReminderActions,
             () => controllerReady && controller is not null && reminderScheduler is not null && !initializingController && !allowShutdown,
             HandleReminderActionAsync);
+    }
+
+    private void StartUpdateChecks()
+    {
+        if (updateChecks is not null) return;
+        try
+        {
+            updates ??= new AppUpdates();
+            updateChecks = new CancellationTokenSource();
+            _ = PollUpdatesAsync(model, updates, updateChecks.Token);
+        }
+        catch (Exception error)
+        {
+            AppDiagnostics.Error("updater", "Initialize update checks", error);
+            model.UpdateStatus = "Cannot start update checks. Restart MeetTape to try again.";
+        }
+    }
+
+    internal static async Task PollUpdatesAsync(MainViewModel model, IAppUpdates updates, CancellationToken stop,
+        TimeProvider? timeProvider = null)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromMinutes(5), timeProvider ?? TimeProvider.System);
+        try
+        {
+            do
+            {
+                // The first check runs immediately; a portable build sets its status once and makes no requests.
+                await model.CheckUpdatesAsync(updates, stop);
+                if (!updates.IsInstalled) return;
+            }
+            while (await timer.WaitForNextTickAsync(stop));
+        }
+        catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
     }
 
     internal static async Task DrainPendingReminderActionsAsync(
@@ -409,7 +442,10 @@ public sealed class App : Application
             var settings = new SettingsViewModel(ConfigPath, devices, applySettings: ApplySettingsAsync,
                 prepareHotkey: PrepareHotkey, nextReminder: reminderScheduler is null ? null : reminderScheduler.NextOccurrenceText,
                 actualRunAtStartup: WindowsStartup.IsEnabled());
-            var dialog = new SettingsWindow { DataContext = settings, Icon = window.Icon };
+            var dialog = new SettingsWindow
+            {
+                DataContext = settings, Icon = window.Icon, RequestedThemeVariant = window.ActualThemeVariant
+            };
             updates ??= new AppUpdates();
             dialog.ConfigureAbout(model, updates, () => UpdateAsync(dialog));
             ShowWindow();

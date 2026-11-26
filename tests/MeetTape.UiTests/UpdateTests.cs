@@ -14,7 +14,7 @@ public sealed class UpdateTests
     [InlineData(true, false, null)]
     [InlineData(false, true, null)]
     [InlineData(true, true, "check")]
-    public async Task AboutCheckOnlyReportsAvailabilityAndNeverDownloadsOrShutsDown(bool installed, bool available, string? failure)
+    public async Task StartupCheckReportsAvailabilityInAboutWithoutDownloadingOrShuttingDown(bool installed, bool available, string? failure)
     {
         var controller = new Controller();
         var model = new MainViewModel(controller); await model.RefreshAsync();
@@ -24,8 +24,13 @@ public sealed class UpdateTests
         try
         {
             Assert.False(settings.FindControl<Button>("UpdateButton")!.IsEnabled);
-            Click(settings, "CheckUpdates");
-            await Task.Yield(); Dispatcher.UIThread.RunJobs();
+            Assert.DoesNotContain(settings.GetLogicalDescendants().OfType<Button>(), button => button.Name == "CheckUpdates");
+            var clock = new ManualUpdateClock();
+            using var stop = new CancellationTokenSource();
+            var poll = App.PollUpdatesAsync(model, updates, stop.Token, clock);
+            stop.Cancel();
+            await poll;
+            Dispatcher.UIThread.RunJobs();
             Assert.Equal(installed ? 1 : 0, updates.Checks);
             Assert.Equal(0, updates.Downloads); Assert.Equal(0, updates.Applies); Assert.Equal(0, controller.Shutdowns);
             Assert.Equal(0, applications);
@@ -35,6 +40,56 @@ public sealed class UpdateTests
             Assert.True(model.CanRecord);
         }
         finally { settings.Close(); model.Detach(); Directory.Delete(root, true); }
+    }
+
+    [AvaloniaFact]
+    public async Task PollingUsesFiveMinuteTicksNeverOverlapsAndStopsOnCancellation()
+    {
+        var model = new MainViewModel(new Controller());
+        var pending = new TaskCompletionSource<UpdateInfo?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var updates = new Updates { PendingCheck = pending };
+        var clock = new ManualUpdateClock();
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var polling = App.PollUpdatesAsync(model, updates, stop.Token, clock);
+        Assert.Equal(1, updates.Checks);
+        clock.Tick();
+        await model.CheckUpdatesAsync(updates);
+        Assert.Equal(1, updates.Checks);
+        updates.PendingCheck = null;
+        pending.SetResult(null);
+        while (updates.Checks < 2 && !stop.IsCancellationRequested) await Task.Delay(10);
+        Assert.Equal(2, updates.Checks);
+        clock.Tick();
+        while (updates.Checks < 3 && !stop.IsCancellationRequested) await Task.Delay(10);
+        Assert.Equal(3, updates.Checks);
+        Assert.Equal("1.0.1", model.AvailableVersion);
+        Assert.Equal(0, updates.Downloads);
+        stop.Cancel(); await polling;
+        Assert.True(clock.Disposed);
+        model.Detach();
+    }
+
+    private sealed class ManualUpdateClock : TimeProvider
+    {
+        private TimerCallback? callback;
+        private object? state;
+        public bool Disposed { get; private set; }
+        public void Tick() => callback?.Invoke(state);
+        public override ITimer CreateTimer(TimerCallback timerCallback, object? timerState, TimeSpan dueTime, TimeSpan period)
+        {
+            Assert.Equal(TimeSpan.FromMinutes(5), dueTime);
+            Assert.Equal(dueTime, period);
+            callback = timerCallback;
+            state = timerState;
+            return new TestTimer(this);
+        }
+
+        private sealed class TestTimer(ManualUpdateClock clock) : ITimer
+        {
+            public bool Change(TimeSpan dueTime, TimeSpan period) => throw new NotSupportedException();
+            public void Dispose() { clock.Disposed = true; clock.callback = null; }
+            public ValueTask DisposeAsync() { Dispose(); return ValueTask.CompletedTask; }
+        }
     }
 
     [AvaloniaFact]
@@ -210,8 +265,9 @@ public sealed class UpdateTests
                 var updates = new Updates { Failure = "check" };
                 Assert.False(await model.UpdateAsync(updates, (_, _) => Task.FromResult(true)));
                 Assert.Contains("connection", model.ErrorText);
-                string notice = await StartupReleaseNotice.GetAsync(updates);
-                Assert.Contains("connection", notice);
+                await model.CheckUpdatesAsync(updates);
+                Assert.Contains("connection", model.UpdateStatus);
+                Assert.DoesNotContain("private-secret", model.UpdateStatus);
                 await model.ExecuteAsync(() => throw new UnauthorizedAccessException("private-secret"));
                 Assert.Contains("Access denied", model.ErrorText);
                 Assert.DoesNotContain("private-secret", model.ErrorText);
@@ -233,7 +289,7 @@ public sealed class UpdateTests
         ConfigurationBootstrap.Initialize(path, Path.Combine(root, "meetings"));
         var window = new SettingsWindow { DataContext = new SettingsViewModel(path, [], (_, _, _) => { }) };
         window.ConfigureAbout(model, updates, apply);
-        window.Show(); window.FindControl<TabControl>("SettingsSections")!.SelectedIndex = 3;
+        window.Show(); window.FindControl<TabControl>("SettingsSections")!.SelectedItem = window.FindControl<TabItem>("AboutTab");
         return window;
     }
     private static void Close(MainWindow window, MainViewModel model) { model.Detach(); window.AllowClose = true; window.Close(); }

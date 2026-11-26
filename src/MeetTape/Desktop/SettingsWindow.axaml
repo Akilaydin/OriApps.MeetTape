@@ -1,50 +1,101 @@
 <Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:shad="clr-namespace:ShadUI;assembly=ShadUI"
         xmlns:local="using:OriApps.MeetTape.Desktop" x:Class="OriApps.MeetTape.Desktop.SettingsWindow" x:DataType="local:SettingsViewModel"
-        Title="MeetTape — Settings" Width="660" Height="730" MinWidth="520" MinHeight="480">
-  <Grid RowDefinitions="Auto,*,Auto" Margin="24">
-    <StackPanel Spacing="8" Margin="0,0,0,12">
-      <TextBlock Text="Settings" FontSize="24" />
-      <TextBlock Text="{Binding ConfigurationPath}" TextWrapping="Wrap" Opacity="0.7" />
-    </StackPanel>
-    <TabControl Name="SettingsSections" Grid.Row="1" IsEnabled="{Binding CanSave}">
-      <TabItem Header="Recording">
+        Title="MeetTape — Settings" Width="660" Height="730" MinWidth="520" MinHeight="480"
+        Background="{DynamicResource WindowBackgroundColor}" FontFamily="Segoe UI">
+  <Window.Styles>
+    <shad:ShadTheme />
+    <Style Selector="TextBlock">
+      <Setter Property="Foreground" Value="{DynamicResource ForegroundColor}" />
+    </Style>
+    <Style Selector="TextBlock.muted">
+      <Setter Property="Foreground" Value="{DynamicResource ForegroundLeadColor}" />
+    </Style>
+    <Style Selector="TabControl#SettingsSections > TabItem">
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="Padding" Value="8,4" />
+    </Style>
+    <Style Selector="Border.surface">
+      <Setter Property="Background" Value="{DynamicResource CardBackgroundColor}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource BorderColor}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="14" />
+    </Style>
+  </Window.Styles>
+  <Grid RowDefinitions="Auto,*,Auto">
+    <Border Background="{DynamicResource CardBackgroundColor}" BorderBrush="{DynamicResource BorderColor}"
+            BorderThickness="0,0,0,1" Padding="24,16">
+      <StackPanel Spacing="4">
+        <TextBlock Text="Settings" FontSize="24" FontWeight="SemiBold" />
+        <TextBlock Classes="muted" Text="{Binding ConfigurationPath}" TextTrimming="CharacterEllipsis"
+                   ToolTip.Tip="{Binding ConfigurationPath}" />
+      </StackPanel>
+    </Border>
+    <Border Grid.Row="1" Classes="surface" Margin="20,16,20,0" />
+    <TabControl Name="SettingsSections" Grid.Row="1" Margin="32,28,32,12" Background="Transparent" IsEnabled="{Binding CanSave}">
+      <TabControl.ItemsPanel>
+        <ItemsPanelTemplate>
+          <WrapPanel />
+        </ItemsPanelTemplate>
+      </TabControl.ItemsPanel>
+      <TabItem Name="GeneralTab" Header="General">
+        <ScrollViewer HorizontalScrollBarVisibility="Disabled">
+          <StackPanel Spacing="8" Margin="4,8,8,8">
+            <CheckBox Name="RunAtStartup" Content="Run MeetTape when Windows starts (in the tray)"
+                      IsChecked="{Binding ReminderEditor.RunAtWindowsStartup}" />
+            <CheckBox Name="MicrophoneOffer" Content="Offer recording when an app uses the microphone"
+                      IsChecked="{Binding OfferRecordingOnMicrophoneUse}" />
+            <TextBlock Classes="muted" Text="MeetTape will ask before starting a recording."
+                       TextWrapping="Wrap" />
+            <TextBlock Text="FFmpeg executable" />
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+              <TextBox Name="FfmpegExecutable" Text="{Binding FfmpegPath}" />
+              <Button Grid.Column="1" Name="BrowseFfmpeg" Classes="Outline" Content="Browse…"
+                      AutomationProperties.Name="Choose FFmpeg executable" Click="BrowseFfmpegClick" />
+            </Grid>
+            <TextBlock Text="Meetings folder" />
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+              <TextBox Name="MeetingsFolder" Text="{Binding MeetingsRoot}" />
+              <Button Grid.Column="1" Name="BrowseMeetingsFolder" Classes="Outline" Content="Browse…"
+                      AutomationProperties.Name="Choose meetings folder" Click="BrowseMeetingsFolderClick" />
+            </Grid>
+            <TextBlock Name="PathPickerError" Foreground="{DynamicResource DestructiveColor}" IsVisible="False" TextWrapping="Wrap" />
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+      <TabItem Name="RecordingTab" Header="Recording">
         <ScrollViewer>
           <StackPanel Spacing="8" Margin="4,12,8,8">
             <TextBlock Text="Microphone (Me)" />
             <ComboBox Name="MicrophoneChoice" ItemsSource="{Binding Microphones}" SelectedItem="{Binding Microphone}" HorizontalAlignment="Stretch" />
             <TextBlock Text="Microphone processing (Me only)" />
             <ComboBox Name="MicrophoneModeChoice" ItemsSource="{Binding MicrophoneModes}" SelectedItem="{Binding MicrophoneMode}" HorizontalAlignment="Stretch" />
-            <TextBlock Text="Windows Default keeps the current capture behavior. Windows Communications requests device-dependent Windows effects (such as noise suppression and echo cancellation); they are not guaranteed. Windows may lower other playback audio (ducking), so check Them and quiet speech after switching. Applies to the next recording only." TextWrapping="Wrap" Opacity="0.7" />
+            <TextBlock Text="Windows Default keeps the current capture behavior. Windows Communications requests device-dependent Windows effects (such as noise suppression and echo cancellation); they are not guaranteed. Windows may lower other playback audio (ducking), so check Them and quiet speech after switching. Applies to the next recording only." Classes="muted" TextWrapping="Wrap" />
             <TextBlock Text="System playback (Them)" />
             <ComboBox ItemsSource="{Binding PlaybackDevices}" SelectedItem="{Binding Playback}" HorizontalAlignment="Stretch" />
-            <TextBlock Text="Meetings folder" /><TextBox Name="MeetingsFolder" Text="{Binding MeetingsRoot}" />
-            <TextBlock Text="FFmpeg executable" /><TextBox Text="{Binding FfmpegPath}" />
             <TextBlock Text="Recording hotkey (Start / Stop)" />
             <TextBox Name="RecordingHotkey" Text="{Binding RecordingHotkey}" PlaceholderText="Ctrl+Shift+F9" />
-            <TextBlock Text="Enter a combination, e.g. Ctrl+Alt+F10. Save applies it immediately." TextWrapping="Wrap" Opacity="0.7" />
-            <CheckBox Name="MicrophoneOffer" Content="Offer recording when another app uses a microphone"
-                      IsChecked="{Binding OfferRecordingOnMicrophoneUse}" />
-            <TextBlock Text="When MeetTape is running, offer Start recording if another app begins using a microphone. This does not identify meetings or start recording automatically. Applies on Save." TextWrapping="Wrap" Opacity="0.7" />
+            <TextBlock Text="Enter a combination, e.g. Ctrl+Alt+F10. Save applies it immediately." Classes="muted" TextWrapping="Wrap" />
           </StackPanel>
         </ScrollViewer>
       </TabItem>
-      <TabItem Header="Processing">
+      <TabItem Name="ProcessingTab" Header="Processing">
         <ScrollViewer>
           <StackPanel Spacing="8" Margin="4,12,8,8">
             <CheckBox Content="Trim" IsChecked="{Binding Trim}" />
             <CheckBox Content="Transcribe" IsChecked="{Binding Transcribe}" />
             <CheckBox Content="Automatic Summary" IsChecked="{Binding Summary}" />
-            <TextBlock Text="Automatic Summary applies to new recordings after transcription. Request Summary also works when automatic mode is off. Summary uploads only the complete transcript." TextWrapping="Wrap" Opacity="0.7" />
+            <TextBlock Text="Automatic Summary applies to new recordings after transcription. Request Summary also works when automatic mode is off. Summary uploads only the complete transcript." Classes="muted" TextWrapping="Wrap" />
             <TextBlock Text="Chunk duration (1–340 seconds)" /><TextBox Name="ChunkDuration" Text="{Binding ChunkSeconds}" />
             <TextBlock Text="Your name in transcripts (Me)" /><TextBox Name="MeDisplayName" Text="{Binding MeDisplayName}" />
-            <TextBlock Text="Changes how Me appears in new transcripts; API speaker labels remain Me/Them/Unknown." TextWrapping="Wrap" Opacity="0.7" />
+            <TextBlock Text="Changes how Me appears in new transcripts; API speaker labels remain Me/Them/Unknown." Classes="muted" TextWrapping="Wrap" />
           </StackPanel>
         </ScrollViewer>
       </TabItem>
-      <TabItem Header="Reminders">
+      <TabItem Name="RemindersTab" Header="Reminders">
         <ScrollViewer>
           <StackPanel Spacing="12" Margin="4,12,8,8">
-            <TextBlock Text="Remind me one minute before a meeting to start recording." TextWrapping="Wrap" Opacity="0.7" />
+            <TextBlock Text="Remind me one minute before a meeting to start recording." Classes="muted" TextWrapping="Wrap" />
             <ListBox Name="RemindersList" Height="176" ItemsSource="{Binding ReminderEditor.Items}"
                      SelectedItem="{Binding ReminderEditor.Selected}">
               <ListBox.ItemTemplate>
@@ -63,7 +114,7 @@
               <Button Content="Enable / disable" Click="ToggleReminderClick" Margin="0,0,8,8" />
               <Button Content="Delete" Click="DeleteReminderClick" Margin="0,0,8,8" />
             </WrapPanel>
-            <Border IsVisible="{Binding ReminderEditor.IsEditing}" BorderBrush="#D5DCE5"
+            <Border IsVisible="{Binding ReminderEditor.IsEditing}" BorderBrush="{DynamicResource BorderColor}"
                     BorderThickness="1" CornerRadius="6" Padding="12">
               <StackPanel Spacing="8">
                 <TextBlock Text="Meeting name (optional)" />
@@ -97,15 +148,13 @@
                 </WrapPanel>
               </StackPanel>
             </Border>
-            <CheckBox Content="Run MeetTape when Windows starts (in the tray)"
-                      IsChecked="{Binding ReminderEditor.RunAtWindowsStartup}" />
             <TextBlock Text="MeetTape must be running for reminders to appear. Exit from the tray stops reminders."
-                       TextWrapping="Wrap" Opacity="0.7" />
-            <TextBlock Text="Use Save settings to apply reminders and startup changes." TextWrapping="Wrap" Opacity="0.7" />
+                       Classes="muted" TextWrapping="Wrap" />
+            <TextBlock Text="Use Save settings to apply reminder changes." Classes="muted" TextWrapping="Wrap" />
           </StackPanel>
         </ScrollViewer>
       </TabItem>
-      <TabItem Header="API &amp; prompts">
+      <TabItem Name="ApiTab" Header="API &amp; prompts">
         <TabControl Name="PromptSections">
           <TabItem Header="Transcription">
             <ScrollViewer>
@@ -114,7 +163,7 @@
                 <ComboBox Name="TranscriptionModeChoice" ItemsSource="{Binding TranscriptionModes}"
                           SelectedItem="{Binding SelectedTranscriptionMode}" HorizontalAlignment="Stretch" />
                 <TextBlock Text="Cloud API keeps the existing Gemini/OpenAI MP3 processing unchanged. Local optimized prepares longer WAV segments and keeps one model loaded per batch. Local legacy preserves older processing. Switching applies to new and resumed jobs; each mode retains compatible checkpoints, and cloud requests can incur charges."
-                           TextWrapping="Wrap" Opacity="0.7" />
+                           Classes="muted" TextWrapping="Wrap" />
                 <StackPanel Name="LocalTranscriptionPanel" Spacing="8" IsVisible="{Binding IsLocalTranscription}">
                   <TextBlock Text="On-device speech model (GGUF)" />
                   <Grid ColumnDefinitions="*,Auto">
@@ -125,7 +174,7 @@
                     <Button Content="Download Parakeet Ultra (525 MiB)" Click="DownloadLocalModelClick" IsEnabled="{Binding !IsDownloadingModel}" />
                     <Button Content="Cancel download" Click="CancelModelDownloadClick" IsVisible="{Binding IsDownloadingModel}" />
                   </StackPanel>
-                  <TextBlock Text="{Binding ModelDownloadStatus}" TextWrapping="Wrap" Opacity="0.7" />
+                  <TextBlock Text="{Binding ModelDownloadStatus}" Classes="muted" TextWrapping="Wrap" />
                   <TextBlock Text="Recognition language" />
                   <TextBox Text="{Binding LocalLanguage}" PlaceholderText="ru" />
                   <Expander Header="Advanced local engine" HorizontalAlignment="Stretch">
@@ -134,7 +183,7 @@
                       <TextBox Text="{Binding LocalRunnerPath}" />
                       <TextBlock Text="CPU threads (1–64)" />
                       <TextBox Text="{Binding LocalThreads}" />
-                      <TextBlock Text="Uses CPU by default. Downloaded models are stored outside the application folder and survive updates." TextWrapping="Wrap" Opacity="0.7" />
+                      <TextBlock Text="Uses CPU by default. Downloaded models are stored outside the application folder and survive updates." Classes="muted" TextWrapping="Wrap" />
                     </StackPanel>
                   </Expander>
                 </StackPanel>
@@ -144,11 +193,11 @@
                     <TextBlock Text="HTTPS endpoint (HTTP allowed for loopback)" />
                     <TextBox Text="{Binding TranscriptionEndpoint}" />
                     <TextBlock Text="Model" /><TextBox Text="{Binding TranscriptionModel}" />
-                    <TextBlock Text="For whisper-1, gpt-transcribe or gpt-4o-transcribe-diarize, use https://api.openai.com/v1/audio/transcriptions. Whisper and diarize provide segment timestamps; gpt-transcribe only provides chunk-level timestamps. The timed-text prompt is not sent to these models." TextWrapping="Wrap" Opacity="0.7" />
+                    <TextBlock Text="For whisper-1, gpt-transcribe or gpt-4o-transcribe-diarize, use https://api.openai.com/v1/audio/transcriptions. Whisper and diarize provide segment timestamps; gpt-transcribe only provides chunk-level timestamps. The timed-text prompt is not sent to these models." Classes="muted" TextWrapping="Wrap" />
                     <TextBlock Text="API key environment variable" /><TextBox Text="{Binding TranscriptionKeyVariable}" />
                     <TextBlock Text="New key (empty keeps existing)" />
                     <TextBox Name="TranscriptionKey" Text="{Binding NewTranscriptionKey}" PasswordChar="●" />
-                    <TextBlock Text="Keys stay in your Windows user environment, never config.json. Existing keys are never displayed." TextWrapping="Wrap" Opacity="0.7" />
+                    <TextBlock Text="Keys stay in your Windows user environment, never config.json. Existing keys are never displayed." Classes="muted" TextWrapping="Wrap" />
                   </StackPanel>
                 </Expander>
                 <TextBlock Text="Prompt file path" />
@@ -175,7 +224,7 @@
                     <TextBlock Text="API key environment variable" /><TextBox Text="{Binding SummaryKeyVariable}" />
                     <TextBlock Text="New key (empty keeps existing)" />
                     <TextBox Name="SummaryKey" Text="{Binding NewSummaryKey}" PasswordChar="●" />
-                    <TextBlock Text="Keys stay in your Windows user environment, never config.json. Existing keys are never displayed." TextWrapping="Wrap" Opacity="0.7" />
+                    <TextBlock Text="Keys stay in your Windows user environment, never config.json. Existing keys are never displayed." Classes="muted" TextWrapping="Wrap" />
                   </StackPanel>
                 </Expander>
                 <TextBlock Text="Prompt file path" />
@@ -192,20 +241,18 @@
           </TabItem>
         </TabControl>
       </TabItem>
-      <TabItem Header="About">
+      <TabItem Name="AboutTab" Header="About">
         <ScrollViewer>
           <StackPanel Name="AboutPanel" x:DataType="local:MainViewModel" Spacing="12" Margin="4,12,8,8">
             <TextBlock Text="MeetTape" FontSize="22" FontWeight="SemiBold" />
             <TextBlock Name="CurrentVersion" Text="{Binding CurrentVersion, StringFormat='Current version: {0}'}" />
             <TextBlock Name="AvailableVersion" Text="{Binding AvailableVersion, StringFormat='Available version: {0}'}" />
-            <TextBlock Text="{Binding ReleaseText}" TextWrapping="Wrap" Opacity="0.7" />
             <TextBlock Name="UpdateStatus" Text="{Binding UpdateStatus}" TextWrapping="Wrap" />
             <WrapPanel>
-              <Button Name="CheckUpdates" Content="Check for updates" IsEnabled="{Binding CanCheckUpdates}" Click="CheckUpdatesClick" Margin="0,0,12,8" />
-              <Button Name="UpdateButton" Content="Update" IsEnabled="{Binding CanApplyUpdate}" Click="UpdateClick" Margin="0,0,12,8" />
+              <Button Name="UpdateButton" Classes="Primary" Content="Update" IsEnabled="{Binding CanApplyUpdate}" Click="UpdateClick" Margin="0,0,12,8" />
             </WrapPanel>
-            <TextBlock Text="Checking never downloads or installs. Update requires confirmation, stopped recording and saved settings."
-                       TextWrapping="Wrap" Opacity="0.7" />
+            <TextBlock Text="MeetTape checks automatically at launch and every 5 minutes. Installing an update requires confirmation, stopped recording and saved settings."
+                       Classes="muted" TextWrapping="Wrap" />
             <TextBlock Text="{Binding InfoText}" IsVisible="{Binding IsUpdating}" TextWrapping="Wrap" />
             <ProgressBar Name="UpdateProgress" Value="{Binding UpdateProgress}" IsVisible="{Binding IsUpdating}" Height="6" />
             <TextBlock Text="{Binding ErrorSummary}" IsVisible="{Binding HasError}" TextWrapping="Wrap" />
@@ -213,13 +260,13 @@
         </ScrollViewer>
       </TabItem>
     </TabControl>
-    <StackPanel Grid.Row="2" Spacing="12" Margin="0,16,0,0">
+    <StackPanel Grid.Row="2" Spacing="12" Margin="24,16,24,18">
       <TextBlock Name="SettingsMessage" Text="{Binding Message}" TextWrapping="Wrap" />
       <TextBlock Name="LogsFolderError" IsVisible="False" TextWrapping="Wrap" />
       <StackPanel Orientation="Horizontal" Spacing="12" HorizontalAlignment="Right">
         <Button Name="OpenLogsFolder" Content="Open logs folder" Click="OpenLogsFolderClick" />
-        <Button Name="CloseSettings" Content="Close" Click="CloseClick" />
-        <Button Name="SaveSettings" Content="Save settings" IsEnabled="{Binding CanSave}" Click="SaveClick" />
+        <Button Name="CloseSettings" Classes="Outline" Content="Close" Click="CloseClick" />
+        <Button Name="SaveSettings" Classes="Primary" Content="Save settings" IsEnabled="{Binding CanSave}" Click="SaveClick" />
       </StackPanel>
     </StackPanel>
   </Grid>
