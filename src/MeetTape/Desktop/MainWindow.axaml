@@ -149,8 +149,8 @@
             <Border Classes="subsurface" IsVisible="{Binding IsNaming}" Padding="18">
               <StackPanel Spacing="12">
                 <StackPanel Spacing="4">
-                  <TextBlock Text="Finish your recording" FontSize="16" FontWeight="SemiBold" />
-                  <TextBlock Classes="muted" Text="Give it a name, then continue processing or start another recording."
+                  <TextBlock Text="{Binding NamingHeading}" FontSize="16" FontWeight="SemiBold" />
+                  <TextBlock Classes="muted" Text="{Binding NamingInstructions}"
                              FontSize="12" TextWrapping="Wrap" />
                 </StackPanel>
                 <TextBox Name="MeetingTitle" Text="{Binding MeetingTitle}" PlaceholderText="Unnamed meeting"
@@ -159,7 +159,7 @@
                   <Button Name="ContinuePreparation" Classes="Primary" Content="Continue" IsEnabled="{Binding CanName}"
                           Click="ContinueClick" Margin="0,0,8,8" />
                   <Button Name="StartNextRecording" Classes="Outline" Content="Start next recording"
-                          IsEnabled="{Binding CanStartNextRecording}" Click="StartNextClick" Margin="0,0,8,8" />
+                          IsEnabled="{Binding CanStartNextRecording}" IsVisible="{Binding !IsNamingImport}" Click="StartNextClick" Margin="0,0,8,8" />
                   <Button Name="CancelNamedRecording" Classes="Ghost" Content="Cancel processing"
                           IsEnabled="{Binding CanCancelNamedRecording}" Click="CancelNamedClick" Margin="0,0,8,8" />
                 </WrapPanel>

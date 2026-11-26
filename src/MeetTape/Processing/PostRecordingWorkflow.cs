@@ -37,10 +37,13 @@ public sealed class PostRecordingWorkflow(string ffmpegPath) : IDisposable
         directory = sessionDirectory;
         lock (gate) suggestion = null;
         var session = SessionStore.Read(directory);
-        if (session.JobState == JobState.Canceled)
+        bool unconfirmedImport = session is { ImportedMedia: true, JobState: JobState.Paused, Error: null };
+        if (session.JobState == JobState.Canceled || unconfirmedImport)
         {
             using var lease = SessionStore.AcquireLease(directory);
             session = SessionStore.Read(directory);
+            if (unconfirmedImport && session.Stages.TryGetValue("prepare", out var prepare) && prepare.Status == StageState.Paused)
+                session.Stages["prepare"] = prepare with { Status = StageState.Pending };
             SessionStore.Save(directory, session = session with { JobState = JobState.NotStarted, Error = null, Retry = null });
         }
         if (!session.Stages.TryGetValue("trim", out var trim) || !trim.Enabled)

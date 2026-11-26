@@ -55,7 +55,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string CaptureText => snapshot.Capture.IsActive ? "Recording — " + snapshot.Capture.Duration.ToString(@"hh\:mm\:ss") :
         snapshot.Capture.Error is not null ? "Recording stopped with errors" : controller is null ? "Open Settings to configure MeetTape" : "Ready";
     public string RecordLabel => snapshot.Capture.IsActive ? "Stop recording" : "Start recording";
-    public string CaptureHeading => IsRecording ? "Recording" : IsNaming ? "Recording saved" : IsPreparing ? "Preparing audio" :
+    public string CaptureHeading => IsRecording ? "Recording" : IsNaming ? (IsNamingImport ? "Media imported" : "Recording saved") : IsPreparing ? "Preparing audio" :
         snapshot.Capture.Error is not null ? "Recording stopped with errors" : controller is null ? "Setup required" : "Ready";
     public string RecordingDuration => snapshot.Capture.Duration.ToString(@"hh\:mm\:ss");
     public string MeCaptureLabel => IsMeMuted ? "Me: microphone muted" :
@@ -178,14 +178,19 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public bool IsNaming => NamingDirectory is not null;
     public string MeetingTitle { get; set; } = "";
     public bool CanName => IsNaming && !busy && !updating;
-    public bool CanStartNextRecording => CanName && controller is not null && !shutdownStarted && !snapshot.Capture.IsActive;
+    public bool IsNamingImport => NamingDirectory is { } directory &&
+        snapshot.Sessions.Any(s => s.Directory == directory && s.Data?.ImportedMedia == true);
+    public string NamingHeading => IsNamingImport ? "Name imported media" : "Finish your recording";
+    public string NamingInstructions => IsNamingImport ? "Give it a name, then continue processing." :
+        "Give it a name, then continue processing or start another recording.";
+    public bool CanStartNextRecording => CanName && !IsNamingImport && controller is not null && !shutdownStarted && !snapshot.Capture.IsActive;
     public bool ShowTrim => snapshot.Suggestion is not null && snapshot.PreparationDirectory is { } directory
         && snapshot.Sessions.Any(s => s.Directory == directory && s.Data?.Stages.TryGetValue("trim", out var trim) == true
             && s.Data.JobState != JobState.Canceled && trim.Enabled && trim.Status != StageState.Completed);
     public bool CanTrim => ShowTrim && !busy && !updating && !snapshot.Preparing && !snapshot.Capture.IsActive;
     public string TrimText => snapshot.Suggestion?.HasActivity == false
         ? "No activity detected. Full recording suggested; originals retained."
-        : "Suggested interval based on activity in both tracks. Adjust the boundaries if needed; originals retained.";
+        : "Suggested interval based on audio activity. Adjust the boundaries if needed; originals retained.";
     private string trimStart = "", trimEnd = "";
     private double trimStartPosition, trimEndPosition, trimDurationSeconds;
     private bool trimStartEdited, trimEndEdited, synchronizingTrim;
@@ -441,7 +446,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
             }).ToArray();
             UpdateSessionList();
             if (snapshot.AwaitingTitleDirectory is { } awaiting && NamingDirectory is null)
-                BeginNaming(awaiting, null);
+            {
+                var data = snapshot.Sessions.FirstOrDefault(s => s.Directory == awaiting)?.Data;
+                BeginNaming(awaiting, data is { ImportedMedia: true } ? data.Title : null);
+            }
             if (snapshot.Capture.Error is { } error) ErrorText = error;
             Changed();
         }

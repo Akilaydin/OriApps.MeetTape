@@ -121,10 +121,10 @@ public sealed class DesktopController : IDesktopController
             if (importShutdown.IsCancellationRequested) return;
             throw new InvalidOperationException("Import timed out. The original file was not changed.");
         }
-        var data = SessionStore.Read(directory);
-        string next = config.Settings.Stages.Trim ? " Use Name / Trim to choose the audio interval."
-            : config.Settings.Stages.Transcribe ? " Use Resume processing to transcribe." : "";
-        Publish(new(NoticeKind.Information, "Media imported." + next, data.Id));
+        // Like a stopped recording, an import must go through the shared naming prompt.
+        // It is already persisted in a non-eligible state, even if the app closes before naming.
+        awaitingTitle = directory;
+        Publish(new(NoticeKind.Information, "Media imported. Confirm its name to continue.", SessionStore.Read(directory).Id));
     });
 
     public Task SetMeMutedAsync(bool muted) => RunAsync(() => capture.SetMeMuted(muted));
@@ -299,7 +299,8 @@ public sealed class DesktopController : IDesktopController
                     {
                         bool recording = capture.Status.IsActive;
                         capture.Dispose();
-                        if (capture.Status.Error is null && (recording || awaitingTitle is not null))
+                        if (capture.Status.Error is null && (recording ||
+                            (awaitingTitle is not null && awaitingTitle == capture.RecordingDirectory)))
                         {
                             awaitingTitle = capture.RecordingDirectory;
                             try { _ = FinalizeFolderName(); awaitingTitle = null; }

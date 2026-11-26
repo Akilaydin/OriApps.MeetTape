@@ -50,6 +50,75 @@ public sealed class MediaImportTests : IDisposable
         LocalAudioChunker.ValidateManifest(data with { LocalAudio = local });
     }
 
+    [Theory]
+    [InlineData(false, TrimDecision.Skip)]
+    [InlineData(true, TrimDecision.Skip)]
+    [InlineData(true, TrimDecision.Manual)]
+    public async Task NamingAndOptionalTrimStartImportedProcessingWithoutResume(bool trim, TrimDecision decision)
+    {
+        var config = Config(trim);
+        File.WriteAllText(Path.Combine(root, "test-prompt.md"), "Fixture prompt");
+        string input = Path.Combine(root, "original.wav");
+        await AudioTrimmer.RunAsync("ffmpeg", ["-nostdin", "-v", "error", "-f", "lavfi", "-i",
+            "sine=frequency=440:duration=2", input], null, default);
+        using var handler = new ImportProvider();
+        using var http = new HttpClient(handler);
+        var controller = new DesktopController(config, http: http, readKey: _ => "fixture");
+        try
+        {
+            await controller.InitializeAsync();
+            await controller.ImportMediaAsync(input);
+            var snapshot = await controller.ReadAsync();
+            var imported = Assert.Single(snapshot.Sessions);
+            Assert.Equal(imported.Directory, snapshot.AwaitingTitleDirectory);
+            Assert.False(ProcessingJobs.Eligible(imported.Data!));
+            Assert.Equal(0, handler.Calls);
+
+            await controller.PrepareAsync(imported.Directory, "Named interview");
+            var named = Assert.Single((await controller.ReadAsync()).Sessions);
+            Assert.Equal(imported.Data!.Id, named.Data!.Id);
+            Assert.Equal("Named interview", named.Data.Title);
+            if (trim)
+            {
+                await WaitUntilAsync(async () => await controller.ReadAsync() is { Preparing: false, Suggestion: not null });
+                Assert.False(ProcessingJobs.Eligible(SessionStore.Read(named.Directory)));
+                Assert.Equal(0, handler.Calls);
+                if (decision == TrimDecision.Manual) await controller.ChooseTrimAsync(decision, 0.25, 1.25);
+                else await controller.ChooseTrimAsync(decision);
+            }
+
+            await WaitUntilAsync(() => Task.FromResult(SessionStore.Read(named.Directory).JobState == JobState.Completed));
+            Assert.Equal(1, handler.Calls);
+            Assert.Contains("Imported transcript.", File.ReadAllText(Path.Combine(named.Directory, "transcription.md")));
+        }
+        finally { await controller.ShutdownAsync(); }
+    }
+
+    private static async Task WaitUntilAsync(Func<Task<bool>> condition)
+    {
+        var deadline = System.Diagnostics.Stopwatch.StartNew();
+        while (!await condition())
+        {
+            Assert.True(deadline.Elapsed < TimeSpan.FromSeconds(15), "Expected the shared workflow to advance.");
+            await Task.Delay(25);
+        }
+    }
+
+    private sealed class ImportProvider : HttpMessageHandler
+    {
+        private int calls;
+        public int Calls => Volatile.Read(ref calls);
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
+        {
+            Interlocked.Increment(ref calls);
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent("""{"choices":[{"finish_reason":"stop","message":{"content":"[00:00] Them: Imported transcript."}}]}""",
+                    System.Text.Encoding.UTF8, "application/json")
+            });
+        }
+    }
+
     [Fact]
     public async Task ImportedAudioCanBeTrimmedWithoutAMicrophoneTrack()
     {
