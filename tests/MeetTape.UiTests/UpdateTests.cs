@@ -275,6 +275,7 @@ public sealed class UpdateTests
         public event Action<OperationNotice>? Notice { add { } remove { } }
         public event Action<CaptureStatus>? RecordingChanged { add { } remove { } }
         public Task<DesktopSnapshot> ReadAsync() => Task.FromResult(new DesktopSnapshot(new(Recording, TimeSpan.Zero, 0, 0, null), [], null, null, false, null));
+        public Task ImportMediaAsync(string path) => Task.CompletedTask;
         public Task StartAsync() { Starts++; Recording = true; return Task.CompletedTask; }
         public Task SetMeMutedAsync(bool muted) => throw new NotSupportedException();
         public Task<string?> StopAsync() => Task.FromResult<string?>(null);

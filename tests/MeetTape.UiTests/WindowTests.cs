@@ -24,6 +24,43 @@ public static class TestApp
 
 public sealed class WindowTests
 {
+    [AvaloniaFact]
+    public async Task ImportMediaIsAvailableOnlyWhileIdle()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var model = new MainViewModel(fake);
+        var window = new MainWindow { DataContext = model };
+        window.Show();
+        await model.RefreshAsync();
+        Dispatcher.UIThread.RunJobs();
+        var button = window.FindControl<Button>("ImportMediaButton")!;
+        Assert.True(button.IsEnabled);
+        await model.ImportMediaAsync("selected.mp4");
+        Assert.Equal("selected.mp4", fake.ImportedPath);
+        Assert.True(model.IsNamingImport);
+        Assert.Equal("Design review", window.FindControl<TextBox>("MeetingTitle")!.Text);
+        Assert.False(button.IsEnabled);
+        Assert.False(model.CanStartNextRecording);
+
+        model.MeetingTitle = "Imported interview";
+        await model.ContinuePreparationAsync();
+        Assert.Equal("Imported interview", fake.Title);
+        Assert.False(model.IsNaming);
+        Assert.True(model.ShowTrim);
+        await model.ChooseAsync(TrimDecision.Skip);
+        Assert.False(model.ShowTrim);
+        Assert.Equal(0, fake.Resumes);
+
+        await fake.StartAsync();
+        await model.RefreshAsync();
+        Dispatcher.UIThread.RunJobs();
+        Assert.False(button.IsEnabled);
+        await model.ImportMediaAsync("another.mp4");
+        Assert.Equal("selected.mp4", fake.ImportedPath);
+        Close(window, model);
+    }
+
     [AvaloniaTheory]
     [InlineData(RecordingState.Failed)]
     [InlineData(RecordingState.Interrupted)]
@@ -1832,6 +1869,15 @@ public sealed class WindowTests
                 [new(fixture.SessionDirectory, data, true, true, null)], null, null, false, null) { SummaryEnabled = true };
         }
         public Task<DesktopSnapshot> ReadAsync() => Task.FromResult(Snapshot);
+        public string? ImportedPath;
+        public Task ImportMediaAsync(string path)
+        {
+            ImportedPath = path;
+            var session = Snapshot.Sessions[0];
+            Snapshot = Snapshot with { AwaitingTitleDirectory = session.Directory,
+                Sessions = [session with { Data = session.Data! with { ImportedMedia = true } }] };
+            return Task.CompletedTask;
+        }
         public async Task StartAsync()
         {
             if (FailStart) throw new IOException("private-secret diagnostic");

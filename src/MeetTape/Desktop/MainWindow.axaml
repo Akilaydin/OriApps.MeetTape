@@ -153,8 +153,8 @@
             <Border Classes="subsurface" IsVisible="{Binding IsNaming}" Padding="18">
               <StackPanel Spacing="12">
                 <StackPanel Spacing="4">
-                  <TextBlock Text="Finish your recording" FontSize="16" FontWeight="SemiBold" />
-                  <TextBlock Classes="muted" Text="Give it a name, then continue processing or start another recording."
+                  <TextBlock Text="{Binding NamingHeading}" FontSize="16" FontWeight="SemiBold" />
+                  <TextBlock Classes="muted" Text="{Binding NamingInstructions}"
                              FontSize="12" TextWrapping="Wrap" />
                 </StackPanel>
                 <TextBox Name="MeetingTitle" Text="{Binding MeetingTitle}" PlaceholderText="Unnamed meeting"
@@ -163,7 +163,7 @@
                   <Button Name="ContinuePreparation" Classes="Primary" Content="Continue" IsEnabled="{Binding CanName}"
                           Click="ContinueClick" Margin="0,0,8,8" />
                   <Button Name="StartNextRecording" Classes="Outline" Content="Start next recording"
-                          IsEnabled="{Binding CanStartNextRecording}" Click="StartNextClick" Margin="0,0,8,8" />
+                          IsEnabled="{Binding CanStartNextRecording}" IsVisible="{Binding !IsNamingImport}" Click="StartNextClick" Margin="0,0,8,8" />
                   <Button Name="CancelNamedRecording" Classes="Ghost" Content="Cancel processing"
                           IsEnabled="{Binding CanCancelNamedRecording}" Click="CancelNamedClick" Margin="0,0,8,8" />
                 </WrapPanel>
@@ -217,8 +217,12 @@
               <TextBlock Classes="muted" Text="Select a recording to open its transcript or manage processing."
                          FontSize="12" />
             </StackPanel>
-            <TextBox Grid.Column="1" Name="MeetingSearch" Text="{Binding SearchText}" Width="275"
-                     PlaceholderText="Search by title or date..." VerticalAlignment="Center" />
+            <StackPanel Grid.Column="1" Spacing="8" VerticalAlignment="Center">
+              <TextBox Name="MeetingSearch" Text="{Binding SearchText}" Width="275"
+                       PlaceholderText="Search by title or date..." />
+              <Button Name="ImportMediaButton" Content="Import audio or video" Click="ImportMediaClick"
+                      Classes="Outline" HorizontalAlignment="Right" IsEnabled="{Binding CanImportMedia}" />
+            </StackPanel>
           </Grid>
           <Border Classes="surface" ClipToBounds="True">
             <Grid RowDefinitions="Auto,Auto">
