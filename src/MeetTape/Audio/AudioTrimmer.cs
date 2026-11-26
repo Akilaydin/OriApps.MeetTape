@@ -12,8 +12,15 @@ public sealed class AudioTrimmer(string ffmpegPath)
 {
     private const int SampleRate = 48000;
 
-    public async Task<TrimSuggestion> SuggestAsync(string directory, double duration, CancellationToken cancellationToken)
+    public async Task<TrimSuggestion> SuggestAsync(string directory, double duration, CancellationToken cancellationToken,
+        bool importedMedia = false)
     {
+        if (importedMedia)
+        {
+            var audio = await DetectAsync(Path.Combine(directory, "them.mp3"), duration, cancellationToken);
+            return audio.HasActivity ? new(Math.Max(0, audio.StartSeconds - 0.1), Math.Min(duration, audio.EndSeconds + 0.1), true)
+                : new(0, duration, false);
+        }
         var me = await DetectAsync(Path.Combine(directory, "me.mp3"), duration, cancellationToken);
         var them = await DetectAsync(Path.Combine(directory, "them.mp3"), duration, cancellationToken);
         bool activity = me.HasActivity || them.HasActivity;
@@ -54,7 +61,7 @@ public sealed class AudioTrimmer(string ffmpegPath)
     }
 
     public async Task<TrimParameters> ApplyAsync(string directory, double start, double end, double duration,
-        string decision, CancellationToken cancellationToken)
+        string decision, CancellationToken cancellationToken, bool importedMedia = false)
     {
         Validate(start, end, duration);
         long first = (long)Math.Round(start * SampleRate), limit = (long)Math.Round(end * SampleRate);
@@ -65,7 +72,7 @@ public sealed class AudioTrimmer(string ffmpegPath)
         Directory.CreateDirectory(destination);
         try
         {
-            foreach (string name in new[] { "me.mp3", "them.mp3" })
+            foreach (string name in AudioChunker.AudioTracks(importedMedia))
             {
                 string target = Path.Combine(destination, name);
                 string filter = FormattableString.Invariant($"atrim=start_sample={first}:end_sample={limit},asetpts=PTS-STARTPTS");

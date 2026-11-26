@@ -55,7 +55,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string CaptureText => snapshot.Capture.IsActive ? "Recording — " + snapshot.Capture.Duration.ToString(@"hh\:mm\:ss") :
         snapshot.Capture.Error is not null ? "Recording stopped with errors" : controller is null ? "Open Settings to configure MeetTape" : "Ready";
     public string RecordLabel => snapshot.Capture.IsActive ? "Stop recording" : "Start recording";
-    public string CaptureHeading => IsRecording ? "Recording" : IsNaming ? "Recording saved" : IsPreparing ? "Preparing audio" :
+    public string CaptureHeading => IsRecording ? "Recording" : IsNaming ? (IsNamingImport ? "Media imported" : "Recording saved") : IsPreparing ? "Preparing audio" :
         snapshot.Capture.Error is not null ? "Recording stopped with errors" : controller is null ? "Setup required" : "Ready";
     public string RecordingDuration => snapshot.Capture.Duration.ToString(@"hh\:mm\:ss");
     public string MeCaptureLabel => IsMeMuted ? "Me: microphone muted" :
@@ -114,6 +114,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string TrayText => $"MeetTape — {CaptureText} · {ProcessingText}" +
         (HasError || HasProcessingErrors ? " · Error: open MeetTape" : "");
     public bool CanRecord => controller is not null && !busy && !updating && !shutdownStarted && NamingDirectory is null && snapshot.AwaitingTitleDirectory is null;
+    public bool CanImportMedia => CanRecord && !IsRecording && !IsPreparing;
     public bool CanMuteMe => IsRecording && !busy && !updating && !shutdownStarted && controller is not null;
     public bool CanProcess => controller is not null && !busy && !updating && !shutdownStarted && !snapshot.Capture.IsActive && selected is not null && NamingDirectory is null;
     public bool CanPrepare => CanProcess && selected!.NeedsPreparation;
@@ -177,14 +178,19 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public bool IsNaming => NamingDirectory is not null;
     public string MeetingTitle { get; set; } = "";
     public bool CanName => IsNaming && !busy && !updating;
-    public bool CanStartNextRecording => CanName && controller is not null && !shutdownStarted && !snapshot.Capture.IsActive;
+    public bool IsNamingImport => NamingDirectory is { } directory &&
+        snapshot.Sessions.Any(s => s.Directory == directory && s.Data?.ImportedMedia == true);
+    public string NamingHeading => IsNamingImport ? "Name imported media" : "Finish your recording";
+    public string NamingInstructions => IsNamingImport ? "Give it a name, then continue processing." :
+        "Give it a name, then continue processing or start another recording.";
+    public bool CanStartNextRecording => CanName && !IsNamingImport && controller is not null && !shutdownStarted && !snapshot.Capture.IsActive;
     public bool ShowTrim => snapshot.Suggestion is not null && snapshot.PreparationDirectory is { } directory
         && snapshot.Sessions.Any(s => s.Directory == directory && s.Data?.Stages.TryGetValue("trim", out var trim) == true
             && s.Data.JobState != JobState.Canceled && trim.Enabled && trim.Status != StageState.Completed);
     public bool CanTrim => ShowTrim && !busy && !updating && !snapshot.Preparing && !snapshot.Capture.IsActive;
     public string TrimText => snapshot.Suggestion?.HasActivity == false
         ? "No activity detected. Full recording suggested; originals retained."
-        : "Suggested interval based on activity in both tracks. Adjust the boundaries if needed; originals retained.";
+        : "Suggested interval based on audio activity. Adjust the boundaries if needed; originals retained.";
     private string trimStart = "", trimEnd = "";
     private double trimStartPosition, trimEndPosition, trimDurationSeconds;
     private bool trimStartEdited, trimEndEdited, synchronizingTrim;
@@ -440,7 +446,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
             }).ToArray();
             UpdateSessionList();
             if (snapshot.AwaitingTitleDirectory is { } awaiting && NamingDirectory is null)
-                BeginNaming(awaiting, null);
+            {
+                var data = snapshot.Sessions.FirstOrDefault(s => s.Directory == awaiting)?.Data;
+                BeginNaming(awaiting, data is { ImportedMedia: true } ? data.Title : null);
+            }
             if (snapshot.Capture.Error is { } error) ErrorText = error;
             Changed();
         }
@@ -605,6 +614,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         });
     }
 
+    public Task ImportMediaAsync(string path) => CanImportMedia ? ExecuteAsync(() => controller!.ImportMediaAsync(path)) : Task.CompletedTask;
+
     public async Task ExecuteAsync(Func<Task> action)
     {
         if (busy || updating || shutdownStarted || controller is null) return;
@@ -753,9 +764,10 @@ public sealed record SessionRow(string Directory, Guid? Id, string Title, string
         data?.Stages.TryGetValue("trim", out trim);
         data?.Stages.TryGetValue("transcribe", out transcription);
         bool needsPreparation = data?.RecordingState == RecordingState.Recorded && trim?.Enabled == true && trim.Status != StageState.Completed;
+        bool awaitingImportProcessing = data is { ImportedMedia: true, JobState: JobState.Paused, Error: null };
         string status = data is null ? "Invalid metadata" : data.RecordingState != RecordingState.Recorded ? data.RecordingState.ToString() :
             data.JobState == JobState.Canceled ? "Canceled" :
-            needsPreparation ? "Awaiting trim choice" : data.Retry is { } retry ? $"Retry {retry.Attempts}: {retry.NextAttemptUtc.ToLocalTime():HH:mm:ss}" :
+            needsPreparation ? "Awaiting trim choice" : awaitingImportProcessing ? "Ready to transcribe" : data.Retry is { } retry ? $"Retry {retry.Attempts}: {retry.NextAttemptUtc.ToLocalTime():HH:mm:ss}" :
             data.JobState == JobState.Paused ? "Paused" : data.Stages.Values.All(s => !s.Enabled || s.Status is StageState.Completed or StageState.AwaitingRequest) ?
             "Completed" : data.JobState.ToString();
         string progress = transcription?.TotalChunks is { } total ? $"Chunks: {transcription.CompletedChunks}/{total}" :
@@ -787,7 +799,7 @@ public sealed record SessionRow(string Directory, Guid? Id, string Title, string
                     (stage.Value.TotalChunks is { } count ? $" ({stage.Value.CompletedChunks}/{count} chunks)" : ""))
                     .Concat(deviceWarnings)),
             HasAudioInterruption = deviceWarnings.Length > 0,
-            PausedJob = data is { RecordingState: RecordingState.Recorded, JobState: JobState.Paused },
+            PausedJob = !awaitingImportProcessing && data is { RecordingState: RecordingState.Recorded, JobState: JobState.Paused },
             CanRecover = data is not null && SessionRecovery.CanRecover(data),
             CanResume = data is not null && ProcessingJobs.CanResume(data),
             CanCancel = data is not null && ProcessingJobs.CanCancel(data),

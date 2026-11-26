@@ -52,6 +52,8 @@ All shipped UI messages and prompt instructions are in English. The default tran
 
 ## Trimming and transcription
 
+The library can import one local audio/video file at a time (up to three hours of audio). MeetTape converts the first audio stream to one MP3 as a new meeting, leaves the selected file untouched, and rejects files without supported audio. Imports use the same naming and trim flow as recordings. Once the user confirms the name and, when enabled, accepts or skips trim, the configured processing starts automatically.
+
 Failed or canceled trim/chunk attempts discard only their unselected derivative directory after FFmpeg has stopped. Original recordings, selected successful derivatives and checkpoints remain. Failed selection persistence also discards the unselected attempt. If FFmpeg cannot be confirmed stopped, metadata cannot safely identify the selected set, or cleanup storage/links are unsafe, files remain and technical diagnostics are logged.
 
 Edge-silence detection considers activity in both tracks. The window pre-fills a shared interval, shown as `HH:MM:SS` (with fractional seconds where needed). The boundaries can be edited in time fields or with start/end sliders. Accept applies the currently displayed interval, and Skip retains the full recording; invalid boundaries are rejected (`0 <= start < end <= duration`). Both tracks use one shared interval; interior silence remains. No detected activity keeps the full recording. Name / Trim reopens unfinished preparation. Originals remain unchanged; selected derivatives are saved only after successful preparation.
