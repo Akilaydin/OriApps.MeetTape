@@ -36,6 +36,7 @@ public sealed class MediaImportTests : IDisposable
         Assert.Equal(RecordingState.Recorded, data.RecordingState);
         Assert.False(ProcessingJobs.Eligible(data));
         Assert.True(ProcessingJobs.CanResume(data));
+        Assert.Equal("Ready to transcribe", SessionRow.From(saved).DisplayStatus);
         Assert.True(data.DurationSeconds is > 0.99 and < 1.06);
         Assert.False(saved.MePresent);
         Assert.True(saved.ThemPresent);
