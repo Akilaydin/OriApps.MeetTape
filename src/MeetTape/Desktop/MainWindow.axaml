@@ -48,6 +48,10 @@
     <Style Selector="ListBoxItem:selected">
       <Setter Property="Background" Value="{DynamicResource GhostColor}" />
     </Style>
+    <!-- The library highlights the active row without the theme's picker checkmark. -->
+    <Style Selector="ListBox#SessionList ListBoxItem:selected /template/ PathIcon#CheckSelected">
+      <Setter Property="IsVisible" Value="False" />
+    </Style>
   </Window.Styles>
 
   <Grid RowDefinitions="Auto,*,Auto">

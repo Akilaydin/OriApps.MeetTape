@@ -166,8 +166,13 @@ public sealed class WindowTests
         var list = window.FindControl<ListBox>("SessionList")!;
         var row = list.ContainerFromIndex(1)!;
         var overflow = row.GetVisualDescendants().OfType<Button>().Single(button => button.Name == "SessionActions");
-        overflow.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        var buttonPoint = overflow.TranslatePoint(new Point(overflow.Bounds.Width / 2, overflow.Bounds.Height / 2), window)!.Value;
+        window.MouseDown(buttonPoint, MouseButton.Left); window.MouseUp(buttonPoint, MouseButton.Left);
+        Dispatcher.UIThread.RunJobs();
         Assert.Equal(second.Data!.Id, model.SelectedSession!.Id);
+        Assert.True(((ListBoxItem)row).IsSelected);
+        var check = row.GetVisualDescendants().OfType<PathIcon>().Single(icon => icon.Name == "CheckSelected");
+        Assert.False(check.IsVisible, "The selected meeting should be highlighted without ShadUI's checkmark.");
         var menu = list.ContextMenu!; Assert.True(menu.IsOpen);
         window.FindControl<MenuItem>("OpenSessionFolder")!.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
         Assert.Equal(second.Directory, Assert.Single(opened)); menu.Close();
