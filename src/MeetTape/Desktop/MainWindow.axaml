@@ -6,7 +6,7 @@
         Title="MeetTape" Width="1100" Height="810" MinWidth="700" MinHeight="560"
         RequestedThemeVariant="Dark" Background="{DynamicResource WindowBackgroundColor}" FontFamily="Segoe UI">
   <Window.Styles>
-    <!-- Kept local so Settings and existing dialogs continue to use Avalonia Fluent. -->
+    <!-- Scoped to the main window; Settings also opts in separately. -->
     <shad:ShadTheme />
     <Style Selector="TextBlock">
       <Setter Property="Foreground" Value="{DynamicResource ForegroundColor}" />

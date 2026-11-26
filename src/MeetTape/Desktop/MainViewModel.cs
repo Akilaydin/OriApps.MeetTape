@@ -14,7 +14,7 @@ namespace OriApps.MeetTape.Desktop;
 
 public sealed class MainViewModel : INotifyPropertyChanged
 {
-    private readonly IDesktopController? controller;
+    private IDesktopController? controller;
     private readonly Action<OperationNotice>? notifyRecording;
     private string recordingShortcut = RecordingHotkey.DefaultShortcut;
     public string RecordingShortcut => recordingShortcut;
@@ -34,6 +34,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private bool busy;
     private bool updating;
     private bool checkingUpdates;
+    private Task<Velopack.UpdateInfo?>? pendingFeedCheck;
     private bool updateAvailable;
     private bool shutdownStarted;
     private SessionRow? selected;
@@ -134,13 +135,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public bool CanOpenSummary => selected?.HasSummary == true;
     public bool CanCopyDocument => CanOpenTranscript || CanOpenSummary;
     public bool CanConfigure => !busy && !updating && !shutdownStarted;
-    public bool CanUpdate => CanConfigure && !checkingUpdates && !snapshot.Capture.IsActive && NamingDirectory is null && snapshot.AwaitingTitleDirectory is null;
-    public bool CanCheckUpdates => CanConfigure && !checkingUpdates;
+    public bool CanUpdate => CanConfigure && !checkingUpdates && !FeedCheckInProgress && !snapshot.Capture.IsActive && NamingDirectory is null && snapshot.AwaitingTitleDirectory is null;
+    private bool FeedCheckInProgress => pendingFeedCheck is { IsCompleted: false };
+    public bool CanCheckUpdates => !updating && !shutdownStarted && !checkingUpdates && !FeedCheckInProgress;
     public bool CanApplyUpdate => CanUpdate && updateAvailable;
     private string currentVersion = typeof(App).Assembly.GetName().Version?.ToString(3) ?? "unknown";
     public string CurrentVersion { get => currentVersion; internal set { currentVersion = value; Changed(); } }
     public string AvailableVersion { get; private set; } = "Not checked";
-    private string updateStatus = "Check for updates to see availability.";
+    private string updateStatus = "Updates are checked automatically.";
     public string UpdateStatus { get => updateStatus; internal set { updateStatus = value; Changed(); } }
     public bool IsUpdating => updating;
     public int UpdateProgress { get; private set; }
@@ -160,8 +162,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public bool IsPreparing => snapshot.Preparing;
     public string ErrorText { get; private set; } = "";
     public string InfoText { get; private set; } = "Close hides the window. Use tray Exit to stop MeetTape.";
-    private string releaseText = "";
-    public string ReleaseText { get => releaseText; set { releaseText = value; Changed(); } }
     public string SelectedDiagnostic => selected?.Diagnostic ?? "";
     public string SelectedDiagnosticSummary => Brief(SelectedDiagnostic);
     public string SelectedMeetingDetails => selected is null ? "The selected meeting is no longer available." :
@@ -323,13 +323,16 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public MainViewModel(IDesktopController? controller = null, Action<OperationNotice>? notifyRecording = null)
     {
-        this.controller = controller;
         this.notifyRecording = notifyRecording;
-        if (controller is not null)
-        {
-            controller.Notice += OnNotice;
-            controller.RecordingChanged += OnRecordingChanged;
-        }
+        if (controller is not null) AttachController(controller);
+    }
+
+    internal void AttachController(IDesktopController controller)
+    {
+        this.controller = controller;
+        controller.Notice += OnNotice;
+        controller.RecordingChanged += OnRecordingChanged;
+        Changed();
     }
 
     private void OnRecordingChanged(CaptureStatus status) => Dispatcher.UIThread.Post(() =>
@@ -636,9 +639,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
     }
 
-    public async Task CheckUpdatesAsync(IAppUpdates updates)
+    internal async Task CheckUpdatesAsync(IAppUpdates updates, CancellationToken stop = default)
     {
-        if (!CanCheckUpdates) return;
+        if (!CanCheckUpdates || stop.IsCancellationRequested) return;
         checkingUpdates = true; updateAvailable = false; UpdateStatus = "Checking for updates..."; Changed();
         try
         {
@@ -649,18 +652,28 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 UpdateStatus = "Updates require an installed MeetTape build. Download Setup from GitHub Releases.";
                 return;
             }
-            var update = await updates.CheckAsync().WaitAsync(TimeSpan.FromSeconds(30));
+            var update = await CheckFeedAsync(updates, stop);
             updateAvailable = update is not null;
             AvailableVersion = update?.TargetFullRelease.Version.ToString() ?? "None";
             UpdateStatus = updateAvailable ? "Update available. Stop recording, then choose Update to review and confirm." : "No update available.";
         }
+        catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
         catch (Exception error)
         {
             AppDiagnostics.Error("updater", "Check only", error);
             AvailableVersion = "Unknown";
-            UpdateStatus = AppDiagnostics.UserMessage(error, "Cannot check for updates. Check GitHub connectivity, then retry.");
+            UpdateStatus = AppDiagnostics.UserMessage(error, "Cannot check for updates. MeetTape will try again automatically.");
         }
         finally { checkingUpdates = false; Changed(); }
+    }
+
+    // Velopack's check has no cancellation token. A UI timeout must not start a second request
+    // while the original is still running, whether the next attempt is automatic or from Update.
+    private async Task<Velopack.UpdateInfo?> CheckFeedAsync(IAppUpdates updates, CancellationToken stop = default)
+    {
+        if (pendingFeedCheck is { IsFaulted: true } previous) _ = previous.Exception;
+        pendingFeedCheck = updates.CheckAsync();
+        return await pendingFeedCheck.WaitAsync(TimeSpan.FromSeconds(30), stop);
     }
 
     public async Task<bool> UpdateAsync(IAppUpdates updates, Func<string, string, Task<bool>> confirm)
@@ -672,7 +685,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             if (!updates.IsInstalled) { SetInfo("Updates require an installed MeetTape build. Download Setup from GitHub Releases."); return false; }
             SetInfo("Checking for updates…");
             AppDiagnostics.Info("updater", "Checking for updates");
-            var update = await updates.CheckAsync().WaitAsync(TimeSpan.FromSeconds(30));
+            var update = await CheckFeedAsync(updates);
             if (update is null) { SetInfo("No update available."); return false; }
             if (!await confirm(updates.CurrentVersion, update.TargetFullRelease.Version.ToString()))
             { SetInfo("Update declined. Current version retained."); return false; }

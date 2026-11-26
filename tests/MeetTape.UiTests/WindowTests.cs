@@ -1603,16 +1603,16 @@ public sealed class WindowTests
         var window = new SettingsWindow { DataContext = model };
         window.Show();
         var sections = window.FindControl<TabControl>("SettingsSections")!;
-        sections.SelectedIndex = 1;
+        sections.SelectedItem = window.FindControl<TabItem>("ProcessingTab");
         window.FindControl<TextBox>("ChunkDuration")!.Text = "9999";
         Click(window, "SaveSettings"); await WaitFor(() => model.CanSave);
         Assert.False(model.Saved); Assert.Empty(writes);
         Assert.Equal(original, File.ReadAllText(fixture.ConfigPath));
         Assert.Contains("chunkSeconds", window.FindControl<TextBlock>("SettingsMessage")!.Text);
         window.FindControl<TextBox>("ChunkDuration")!.Text = "90";
-        sections.SelectedIndex = 0;
+        sections.SelectedItem = window.FindControl<TabItem>("RecordingTab");
         window.FindControl<ComboBox>("MicrophoneChoice")!.SelectedIndex = 1;
-        sections.SelectedIndex = 2;
+        sections.SelectedItem = window.FindControl<TabItem>("ApiTab");
         var key = window.FindControl<TextBox>("TranscriptionKey")!;
         Assert.Equal('●', key.PasswordChar);
         key.Text = "fixture-secret-4821";
@@ -1795,13 +1795,30 @@ public sealed class WindowTests
         overflow.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Dispatcher.UIThread.RunJobs();
         using (var frame = window.CaptureRenderedFrame()) { Assert.NotNull(frame); frame.Save(Path.Combine(output, "main-processing-menu.png"), PngBitmapEncoderOptions.Default); }
         window.FindControl<ListBox>("SessionList")!.ContextMenu!.Close();
-        var settings = new SettingsWindow { DataContext = new SettingsViewModel(fixture.ConfigPath, [], (_, _, _) => { }) };
+        var settings = new SettingsWindow
+        {
+            DataContext = new SettingsViewModel(fixture.ConfigPath, [], (_, _, _) => { }),
+            RequestedThemeVariant = window.ActualThemeVariant
+        };
         settings.ConfigureAbout(model, new SnapshotUpdates(), () => Task.CompletedTask);
         settings.Show();
         using (var frame = settings.CaptureRenderedFrame()) { Assert.NotNull(frame); frame.Save(Path.Combine(output, "settings.png"), PngBitmapEncoderOptions.Default); }
-        settings.FindControl<TabControl>("SettingsSections")!.SelectedIndex = 2;
+        settings.Width = 520; settings.Height = 480;
+        settings.RequestedThemeVariant = ThemeVariant.Light;
+        Dispatcher.UIThread.RunJobs();
+        var settingsTabs = settings.FindControl<TabControl>("SettingsSections")!;
+        foreach (var tab in settingsTabs.Items.OfType<TabItem>())
+        {
+            var position = tab.TranslatePoint(default, settingsTabs);
+            Assert.NotNull(position);
+            Assert.InRange(position.Value.X + tab.Bounds.Width, 1, settingsTabs.Bounds.Width + 1);
+            Assert.InRange(position.Value.Y + tab.Bounds.Height, 1, settingsTabs.Bounds.Height + 1);
+        }
+        using (var frame = settings.CaptureRenderedFrame()) { Assert.NotNull(frame); frame.Save(Path.Combine(output, "settings-light-minimum.png"), PngBitmapEncoderOptions.Default); }
+        settings.Width = 660; settings.Height = 730;
+        settings.FindControl<TabControl>("SettingsSections")!.SelectedItem = settings.FindControl<TabItem>("ApiTab");
         using (var frame = settings.CaptureRenderedFrame()) { Assert.NotNull(frame); frame.Save(Path.Combine(output, "settings-prompts.png"), PngBitmapEncoderOptions.Default); }
-        settings.FindControl<TabControl>("SettingsSections")!.SelectedIndex = 3;
+        settings.FindControl<TabControl>("SettingsSections")!.SelectedItem = settings.FindControl<TabItem>("AboutTab");
         await model.CheckUpdatesAsync(new SnapshotUpdates()); Dispatcher.UIThread.RunJobs();
         using (var frame = settings.CaptureRenderedFrame()) { Assert.NotNull(frame); frame.Save(Path.Combine(output, "settings-about.png"), PngBitmapEncoderOptions.Default); }
         settings.Close(); Close(window, model);

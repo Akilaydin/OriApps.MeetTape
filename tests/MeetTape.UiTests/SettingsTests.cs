@@ -18,6 +18,61 @@ public sealed class SettingsTests : IDisposable
     public SettingsTests() => ConfigurationBootstrap.Initialize(ConfigPath, Path.Combine(root, "Meetings"));
     private SettingsViewModel Model(Func<LoadedConfiguration, Task>? apply = null) => new(ConfigPath, [], (_, _, _) => { }, apply);
 
+    [AvaloniaFact]
+    public async Task GeneralPickersStageBothPathsWithoutChangingCanceledSelectionsOrExistingSettings()
+    {
+        var config = JsonNode.Parse(File.ReadAllText(ConfigPath))!;
+        string originalMeetings = Path.Combine(root, "existing meetings");
+        config["meetingsRoot"] = originalMeetings;
+        config["capture"]!["ffmpegPath"] = "custom-ffmpeg";
+        File.WriteAllText(ConfigPath, config.ToJsonString());
+
+        var model = Model();
+        var window = new SettingsWindow { DataContext = model, Width = 520, Height = 480 };
+        window.Show();
+        var section = window.FindControl<TabControl>("SettingsSections")!;
+        Assert.Same(window.FindControl<TabItem>("GeneralTab"), section.SelectedItem);
+        var meetings = window.FindControl<TextBox>("MeetingsFolder")!;
+        var ffmpeg = window.FindControl<TextBox>("FfmpegExecutable")!;
+        Assert.Equal(originalMeetings, meetings.Text);
+        Assert.Equal("custom-ffmpeg", ffmpeg.Text);
+        Assert.False(model.HasUnsavedChanges);
+
+        var pickerCalls = new List<bool>();
+        string? chosen = null;
+        window.ChoosePath = folder => { pickerCalls.Add(folder); return Task.FromResult(chosen); };
+        void Click(string name) => window.FindControl<Button>(name)!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        string original = File.ReadAllText(ConfigPath);
+        Click("BrowseFfmpeg");
+        Click("BrowseMeetingsFolder");
+        Assert.False(model.HasUnsavedChanges);
+
+        string newFfmpeg = Path.Combine(root, "bin", "ffmpeg.exe");
+        string newMeetings = Path.Combine(root, "new meetings");
+        chosen = newFfmpeg;
+        Click("BrowseFfmpeg");
+        chosen = newMeetings;
+        Click("BrowseMeetingsFolder");
+        Assert.Equal(newFfmpeg, ffmpeg.Text);
+        Assert.Equal(newMeetings, meetings.Text);
+        Assert.Equal(newFfmpeg, model.FfmpegPath);
+        Assert.Equal(newMeetings, model.MeetingsRoot);
+        Assert.Equal(new[] { false, true, false, true }, pickerCalls);
+
+        window.FindControl<CheckBox>("RunAtStartup")!.IsChecked = true;
+        window.FindControl<CheckBox>("MicrophoneOffer")!.IsChecked = true;
+        Assert.True(model.HasUnsavedChanges);
+        Assert.Equal(original, File.ReadAllText(ConfigPath));
+        await model.SaveAsync();
+        Assert.True(model.Saved, model.Message);
+        var reopened = Model();
+        Assert.Equal(newMeetings, reopened.MeetingsRoot);
+        Assert.Equal(newFfmpeg, reopened.FfmpegPath);
+        Assert.True(reopened.ReminderEditor.RunAtWindowsStartup);
+        Assert.True(reopened.OfferRecordingOnMicrophoneUse);
+        window.Close();
+    }
+
     [AvaloniaTheory]
     [InlineData(false)]
     [InlineData(true)]
@@ -429,7 +484,7 @@ public sealed class SettingsTests : IDisposable
         string cloudPrompt = model.TranscriptionPromptText;
         var window = new SettingsWindow { DataContext = model };
         window.Show();
-        window.FindControl<TabControl>("SettingsSections")!.SelectedIndex = 3;
+        window.FindControl<TabControl>("SettingsSections")!.SelectedItem = window.FindControl<TabItem>("ApiTab");
         var modes = window.FindControl<ComboBox>("TranscriptionModeChoice")!;
         modes.SelectedItem = model.TranscriptionModes.Single(x => x.Value == TranscriptionMode.Local);
         Assert.True(model.IsLocalTranscription);
@@ -503,7 +558,7 @@ public sealed class SettingsTests : IDisposable
         var window = new SettingsWindow { DataContext = model };
         string originalPrompt = File.ReadAllText(TranscriptionPath);
         window.Show();
-        window.FindControl<TabControl>("SettingsSections")!.SelectedIndex = 1;
+        window.FindControl<TabControl>("SettingsSections")!.SelectedItem = window.FindControl<TabItem>("ProcessingTab");
         var name = window.FindControl<TextBox>("MeDisplayName")!;
         Assert.Equal("Me", name.Text);
         name.Text = "Артём О";
@@ -609,13 +664,14 @@ public sealed class SettingsTests : IDisposable
         window.ConfirmDiscard = () => { confirmations++; return Task.FromResult(false); };
         window.Show();
         var tabs = window.FindControl<TabControl>("SettingsSections")!;
-        Assert.Equal(5, tabs.ItemCount);
+        Assert.Equal(6, tabs.ItemCount);
+        Assert.Same(window.FindControl<TabItem>("GeneralTab"), tabs.SelectedItem);
         window.FindControl<TextBox>("MeetingsFolder")!.Text = "Unsaved folder";
         window.Close();
         Assert.True(window.IsVisible);
         Assert.Equal(1, confirmations);
         Assert.Equal(original, File.ReadAllText(ConfigPath));
-        tabs.SelectedIndex = 3;
+        tabs.SelectedItem = window.FindControl<TabItem>("ApiTab");
         var editor = window.FindControl<TextBox>("TranscriptionPromptEditor")!;
         Assert.Equal(prompt, editor.Text);
         Assert.True(editor.AcceptsReturn);
