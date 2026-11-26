@@ -21,6 +21,7 @@ public interface IDesktopController
     event Action<CaptureStatus>? RecordingChanged;
     Task<DesktopSnapshot> ReadAsync();
     Task StartAsync();
+    Task ImportMediaAsync(string path);
     Task<string?> StopAsync();
     Task SetMeMutedAsync(bool muted);
     Task PrepareAsync(string directory, string? title);
@@ -46,6 +47,8 @@ public sealed class DesktopController : IDesktopController
     private volatile bool closing;
     private string? awaitingTitle;
     private Task? shutdown;
+    private readonly CancellationTokenSource importShutdown = new();
+    private AudioPreparationShutdownException? failedImportJoin;
 
     public event Action<OperationNotice>? Notice;
     public event Action<CaptureStatus>? RecordingChanged;
@@ -87,6 +90,7 @@ public sealed class DesktopController : IDesktopController
 
     public Task StartAsync() => RunAsync(() =>
     {
+        if (failedImportJoin is not null) throw failedImportJoin;
         if (awaitingTitle is not null) throw new InvalidOperationException("Finish naming the stopped recording first.");
         try
         {
@@ -95,6 +99,32 @@ public sealed class DesktopController : IDesktopController
             capture.Start();
         }
         finally { if (!capture.Status.IsActive) jobs.Start(); }
+    });
+
+    public Task ImportMediaAsync(string path) => RunAsync(() =>
+    {
+        RequireIdle();
+        if (failedImportJoin is not null) throw failedImportJoin;
+        if (awaitingTitle is not null || !preparation.Completion.IsCompleted)
+            throw new InvalidOperationException("Finish the current recording or trim operation before importing a file.");
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(importShutdown.Token);
+        timeout.CancelAfter(TimeSpan.FromMinutes(10));
+        string directory;
+        try { directory = MediaImport.ImportAsync(config, path, timeout.Token).GetAwaiter().GetResult(); }
+        catch (AudioPreparationShutdownException error)
+        {
+            failedImportJoin = error;
+            throw;
+        }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+        {
+            if (importShutdown.IsCancellationRequested) return;
+            throw new InvalidOperationException("Import timed out. The original file was not changed.");
+        }
+        // Like a stopped recording, an import must go through the shared naming prompt.
+        // It is already persisted in a non-eligible state, even if the app closes before naming.
+        awaitingTitle = directory;
+        Publish(new(NoticeKind.Information, "Media imported. Confirm its name to continue.", SessionStore.Read(directory).Id));
     });
 
     public Task SetMeMutedAsync(bool muted) => RunAsync(() => capture.SetMeMuted(muted));
@@ -254,6 +284,7 @@ public sealed class DesktopController : IDesktopController
     private async Task ShutdownCoreAsync()
     {
         closing = true;
+        importShutdown.Cancel();
         await gate.WaitAsync().ConfigureAwait(false);
         try
         {
@@ -268,7 +299,8 @@ public sealed class DesktopController : IDesktopController
                     {
                         bool recording = capture.Status.IsActive;
                         capture.Dispose();
-                        if (capture.Status.Error is null && (recording || awaitingTitle is not null))
+                        if (capture.Status.Error is null && (recording ||
+                            (awaitingTitle is not null && awaitingTitle == capture.RecordingDirectory)))
                         {
                             awaitingTitle = capture.RecordingDirectory;
                             try { _ = FinalizeFolderName(); awaitingTitle = null; }

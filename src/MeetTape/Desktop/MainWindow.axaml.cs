@@ -4,6 +4,8 @@ using Avalonia.Interactivity;
 using Avalonia.Input;
 using Avalonia.Input.Platform;
 using Avalonia.Markup.Xaml;
+using Avalonia.Platform.Storage;
+using OriApps.MeetTape.Sessions;
 using Avalonia.Styling;
 using Avalonia.VisualTree;
 using Avalonia.Data;
@@ -38,6 +40,26 @@ public sealed partial class MainWindow : Window
         dark.Classes.Set("Ghost", theme != ThemeVariant.Dark);
         dark.Classes.Set("Primary", theme == ThemeVariant.Dark);
     }
+    private async void ImportMediaClick(object? sender, RoutedEventArgs e)
+    {
+        if (!Model.CanImportMedia) return;
+        try
+        {
+            var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+            {
+                Title = "Import audio or video", AllowMultiple = false,
+                FileTypeFilter = [new FilePickerFileType("Audio and video") { Patterns = MediaImport.FilePatterns }]
+            });
+            if (files.Count == 0) return;
+            if (files[0].TryGetLocalPath() is { } path) await Model.ImportMediaAsync(path);
+            else Model.SetError("Choose a local audio or video file.");
+        }
+        catch (Exception)
+        {
+            Model.SetError("Cannot open the file picker. Try again from the MeetTape window.");
+        }
+    }
+
     private async void RecordClick(object? sender, RoutedEventArgs e) => await Model.ToggleAsync();
     private async void MuteMeClick(object? sender, RoutedEventArgs e) => await Model.ToggleMeMuteAsync();
     private async void ContinueClick(object? sender, RoutedEventArgs e) => await Model.ContinuePreparationAsync();
