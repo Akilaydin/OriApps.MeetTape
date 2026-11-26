@@ -133,6 +133,7 @@ public sealed class MicrophoneOfferTests
         public event Action<OperationNotice>? Notice { add { } remove { } }
         public event Action<CaptureStatus>? RecordingChanged { add { } remove { } }
         public Task<DesktopSnapshot> ReadAsync() => Task.FromResult(Snapshot);
+        public Task ImportMediaAsync(string path) => Task.CompletedTask;
         public Task StartAsync()
         {
             StartCount++;

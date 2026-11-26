@@ -8,8 +8,8 @@ public sealed class LocalAudioChunker(string ffmpegPath)
 {
     public const int WindowSeconds = 180;
 
-    public static List<AudioChunk> Plan(long sourceStartFrame, long frameCount, string relativeDirectory) =>
-        AudioChunker.PlanMono(sourceStartFrame, frameCount, WindowSeconds, relativeDirectory)
+    public static List<AudioChunk> Plan(long sourceStartFrame, long frameCount, string relativeDirectory, bool importedMedia = false) =>
+        AudioChunker.PlanMono(sourceStartFrame, frameCount, WindowSeconds, relativeDirectory, importedMedia)
             .Select(chunk => chunk with { RelativePath = Path.ChangeExtension(chunk.RelativePath, ".wav")! }).ToList();
 
     public async Task<PreparedAudio> PrepareAsync(string directory, SessionData data, CancellationToken token)
@@ -28,14 +28,14 @@ public sealed class LocalAudioChunker(string ffmpegPath)
             ? AudioChunker.ResolveProcessed(directory, data.Trim.RelativeDirectory
                 ?? throw new InvalidDataException("Trimmed recording is missing."))
             : directory;
-        foreach (string name in new[] { "me.mp3", "them.mp3" })
+        foreach (string name in AudioChunker.AudioTracks(data.ImportedMedia))
             if (!File.Exists(Path.Combine(input, name)) || new FileInfo(Path.Combine(input, name)).Length == 0)
                 throw new InvalidDataException("Selected recording track is missing or empty. Original files retained.");
 
         long first = (long)Math.Round(startSeconds * AudioChunker.SampleRate);
         long last = (long)Math.Round(endSeconds * AudioChunker.SampleRate);
         string relativeDirectory = "processed/local_" + Guid.NewGuid().ToString("N");
-        var chunks = Plan(first, last - first, relativeDirectory);
+        var chunks = Plan(first, last - first, relativeDirectory, data.ImportedMedia);
         Directory.CreateDirectory(Path.Combine(directory, relativeDirectory));
         try
         {
@@ -84,7 +84,7 @@ public sealed class LocalAudioChunker(string ffmpegPath)
             throw new InvalidDataException("Local WAV manifest has invalid time boundaries.");
         long first = (long)Math.Round(start * AudioChunker.SampleRate);
         long total = (long)Math.Round(end * AudioChunker.SampleRate) - first;
-        var expected = Plan(first, total, audio.RelativeDirectory);
+        var expected = Plan(first, total, audio.RelativeDirectory, data.ImportedMedia);
         if (!audio.Chunks.SequenceEqual(expected))
             throw new InvalidDataException("Local WAV manifest is incompatible with the saved recording.");
     }

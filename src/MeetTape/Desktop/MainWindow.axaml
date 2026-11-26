@@ -213,8 +213,12 @@
               <TextBlock Classes="muted" Text="Select a recording to open its transcript or manage processing."
                          FontSize="12" />
             </StackPanel>
-            <TextBox Grid.Column="1" Name="MeetingSearch" Text="{Binding SearchText}" Width="275"
-                     PlaceholderText="Search by title or date..." VerticalAlignment="Center" />
+            <StackPanel Grid.Column="1" Spacing="8" VerticalAlignment="Center">
+              <TextBox Name="MeetingSearch" Text="{Binding SearchText}" Width="275"
+                       PlaceholderText="Search by title or date..." />
+              <Button Name="ImportMediaButton" Content="Import audio or video" Click="ImportMediaClick"
+                      Classes="Outline" HorizontalAlignment="Right" IsEnabled="{Binding CanImportMedia}" />
+            </StackPanel>
           </Grid>
           <Border Classes="surface" ClipToBounds="True">
             <Grid RowDefinitions="Auto,Auto">

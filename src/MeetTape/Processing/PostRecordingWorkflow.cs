@@ -54,7 +54,7 @@ public sealed class PostRecordingWorkflow(string ffmpegPath) : IDisposable
         {
             using var lease = SessionStore.AcquireLease(selected);
             var data = SessionStore.Read(selected);
-            var found = await currentTrimmer.SuggestAsync(selected, data.DurationSeconds!.Value, token);
+            var found = await currentTrimmer.SuggestAsync(selected, data.DurationSeconds!.Value, token, data.ImportedMedia);
             token.ThrowIfCancellationRequested();
             SessionStore.Save(selected, Update(data, StageState.AwaitingUser, error: null));
             lock (gate) suggestion = found;
@@ -62,7 +62,7 @@ public sealed class PostRecordingWorkflow(string ffmpegPath) : IDisposable
             if (!found.HasActivity)
                 Report(new(NoticeKind.Warning, "No activity detected; keep the full recording.", data.Id));
         });
-        Report(new(NoticeKind.Information, "Detecting leading/trailing silence in both tracks.", session.Id));
+        Report(new(NoticeKind.Information, "Detecting leading/trailing silence in the audio.", session.Id));
     }
 
     public void Choose(string decision, double? start = null, double? end = null)
@@ -106,7 +106,7 @@ public sealed class PostRecordingWorkflow(string ffmpegPath) : IDisposable
             EnsurePending(current);
             SessionStore.Save(selected, Update(current, StageState.Running, error: null));
             TrimParameters choice = a == 0 && b == duration ? new(0, duration, false) { Decision = decision } :
-                await currentTrimmer.ApplyAsync(selected, a, b, duration, decision, token);
+                await currentTrimmer.ApplyAsync(selected, a, b, duration, decision, token, current.ImportedMedia);
             try
             {
                 token.ThrowIfCancellationRequested();
@@ -187,7 +187,9 @@ public sealed class PostRecordingWorkflow(string ffmpegPath) : IDisposable
     }
 
 
-    public static string SetTitle(string directory, string title)
+    public static string SetTitle(string directory, string title) => SetTitle(directory, title, null);
+
+    internal static string SetTitle(string directory, string title, string? destinationRoot)
     {
         using var lease = SessionStore.AcquireLease(directory);
         var data = SessionStore.Read(directory);
@@ -207,7 +209,7 @@ public sealed class PostRecordingWorkflow(string ffmpegPath) : IDisposable
         string name = safe.ToString().Trim(' ', '.');
         var duration = TimeSpan.FromSeconds(data.DurationSeconds.Value);
         string source = Path.GetFullPath(directory);
-        string baseDestination = Path.Combine(Path.GetDirectoryName(source)!,
+        string baseDestination = Path.Combine(destinationRoot ?? Path.GetDirectoryName(source)!,
             string.Create(CultureInfo.InvariantCulture,
                 $"{(name.Length == 0 ? "Unnamed meeting" : name)}_{data.StartedAtUtc.ToLocalTime():dd.MM.yyyy HH-mm} {(long)duration.TotalHours:00}h{duration.Minutes:00}m"));
         string destination = baseDestination;

@@ -24,6 +24,30 @@ public static class TestApp
 
 public sealed class WindowTests
 {
+    [AvaloniaFact]
+    public async Task ImportMediaIsAvailableOnlyWhileIdle()
+    {
+        using var fixture = new Fixture();
+        var fake = new FakeController(fixture);
+        var model = new MainViewModel(fake);
+        var window = new MainWindow { DataContext = model };
+        window.Show();
+        await model.RefreshAsync();
+        Dispatcher.UIThread.RunJobs();
+        var button = window.FindControl<Button>("ImportMediaButton")!;
+        Assert.True(button.IsEnabled);
+        await model.ImportMediaAsync("selected.mp4");
+        Assert.Equal("selected.mp4", fake.ImportedPath);
+
+        await fake.StartAsync();
+        await model.RefreshAsync();
+        Dispatcher.UIThread.RunJobs();
+        Assert.False(button.IsEnabled);
+        await model.ImportMediaAsync("another.mp4");
+        Assert.Equal("selected.mp4", fake.ImportedPath);
+        Close(window, model);
+    }
+
     [AvaloniaTheory]
     [InlineData(RecordingState.Failed)]
     [InlineData(RecordingState.Interrupted)]
@@ -1827,6 +1851,8 @@ public sealed class WindowTests
                 [new(fixture.SessionDirectory, data, true, true, null)], null, null, false, null) { SummaryEnabled = true };
         }
         public Task<DesktopSnapshot> ReadAsync() => Task.FromResult(Snapshot);
+        public string? ImportedPath;
+        public Task ImportMediaAsync(string path) { ImportedPath = path; return Task.CompletedTask; }
         public async Task StartAsync()
         {
             if (FailStart) throw new IOException("private-secret diagnostic");

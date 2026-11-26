@@ -42,6 +42,8 @@ public sealed record SessionData
     public int SchemaVersion { get; init; } = 1;
     public required Guid Id { get; init; }
     public string? Title { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool ImportedMedia { get; init; }
     public required DateTimeOffset StartedAtUtc { get; init; }
     public DateTimeOffset? EndedAtUtc { get; init; }
     public double? DurationSeconds { get; init; }

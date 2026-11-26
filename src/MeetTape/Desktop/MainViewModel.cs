@@ -114,6 +114,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string TrayText => $"MeetTape — {CaptureText} · {ProcessingText}" +
         (HasError || HasProcessingErrors ? " · Error: open MeetTape" : "");
     public bool CanRecord => controller is not null && !busy && !updating && !shutdownStarted && NamingDirectory is null && snapshot.AwaitingTitleDirectory is null;
+    public bool CanImportMedia => CanRecord && !IsRecording && !IsPreparing && snapshot.AwaitingTitleDirectory is null;
     public bool CanMuteMe => IsRecording && !busy && !updating && !shutdownStarted && controller is not null;
     public bool CanProcess => controller is not null && !busy && !updating && !shutdownStarted && !snapshot.Capture.IsActive && selected is not null && NamingDirectory is null;
     public bool CanPrepare => CanProcess && selected!.NeedsPreparation;
@@ -605,6 +606,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         });
     }
 
+    public Task ImportMediaAsync(string path) => CanImportMedia ? ExecuteAsync(() => controller!.ImportMediaAsync(path)) : Task.CompletedTask;
+
     public async Task ExecuteAsync(Func<Task> action)
     {
         if (busy || updating || shutdownStarted || controller is null) return;
@@ -755,7 +758,7 @@ public sealed record SessionRow(string Directory, Guid? Id, string Title, string
         bool needsPreparation = data?.RecordingState == RecordingState.Recorded && trim?.Enabled == true && trim.Status != StageState.Completed;
         string status = data is null ? "Invalid metadata" : data.RecordingState != RecordingState.Recorded ? data.RecordingState.ToString() :
             data.JobState == JobState.Canceled ? "Canceled" :
-            needsPreparation ? "Awaiting trim choice" : data.Retry is { } retry ? $"Retry {retry.Attempts}: {retry.NextAttemptUtc.ToLocalTime():HH:mm:ss}" :
+            needsPreparation ? "Awaiting trim choice" : data.ImportedMedia && data.JobState == JobState.Paused && data.Error is null ? "Ready to transcribe" : data.Retry is { } retry ? $"Retry {retry.Attempts}: {retry.NextAttemptUtc.ToLocalTime():HH:mm:ss}" :
             data.JobState == JobState.Paused ? "Paused" : data.Stages.Values.All(s => !s.Enabled || s.Status is StageState.Completed or StageState.AwaitingRequest) ?
             "Completed" : data.JobState.ToString();
         string progress = transcription?.TotalChunks is { } total ? $"Chunks: {transcription.CompletedChunks}/{total}" :

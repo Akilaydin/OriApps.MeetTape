@@ -29,14 +29,16 @@ public sealed class AudioChunker(string ffmpegPath)
         return chunks;
     }
 
-    public static List<AudioChunk> PlanMono(long sourceStartFrame, long frameCount, int chunkSeconds, string relativeDirectory)
+    public static List<AudioChunk> PlanMono(long sourceStartFrame, long frameCount, int chunkSeconds, string relativeDirectory,
+        bool importedMedia = false)
     {
         var intervals = Plan(sourceStartFrame, frameCount, chunkSeconds, relativeDirectory);
         var chunks = new List<AudioChunk>(intervals.Count * 2);
         foreach (var interval in intervals)
         {
-            chunks.Add(interval with { Index = chunks.Count + 1,
-                RelativePath = $"{relativeDirectory}/{interval.Index:D4}-me.mp3", Source = "Me" });
+            if (!importedMedia)
+                chunks.Add(interval with { Index = chunks.Count + 1,
+                    RelativePath = $"{relativeDirectory}/{interval.Index:D4}-me.mp3", Source = "Me" });
             chunks.Add(interval with { Index = chunks.Count + 1,
                 RelativePath = $"{relativeDirectory}/{interval.Index:D4}-them.mp3", Source = "Them" });
         }
@@ -63,12 +65,12 @@ public sealed class AudioChunker(string ffmpegPath)
                 throw new InvalidDataException("Selected trim directory is missing; originals retained.");
             input = ResolveProcessed(directory, data.Trim.RelativeDirectory);
         }
-        foreach (string name in new[] { "me.mp3", "them.mp3" })
+        foreach (string name in AudioTracks(data.ImportedMedia))
             if (new FileInfo(Path.Combine(input, name)).Length == 0)
                 throw new InvalidDataException("Selected audio is empty; originals retained.");
         long first = (long)Math.Round(startSeconds * SampleRate), limit = (long)Math.Round(endSeconds * SampleRate);
         string relative = "processed/audio_" + Guid.NewGuid().ToString("N");
-        var chunks = PlanMono(first, limit - first, data.Processing.ChunkSeconds, relative);
+        var chunks = PlanMono(first, limit - first, data.Processing.ChunkSeconds, relative, data.ImportedMedia);
         token.ThrowIfCancellationRequested();
         Directory.CreateDirectory(Path.Combine(directory, relative));
         try
@@ -106,7 +108,15 @@ public sealed class AudioChunker(string ffmpegPath)
             throw new InvalidDataException("Prepared audio chunk exceeds the 8 MiB API limit; chunk set not selected.");
     }
 
+    internal static string[] AudioTracks(bool importedMedia) => importedMedia ? ["them.mp3"] : ["me.mp3", "them.mp3"];
+
     private async Task ValidateAsync(string path, long expected, CancellationToken token)
+    {
+        var (samples, wrongFormat) = await MeasureDecodedAsync(ffmpegPath, path, token);
+        ValidateDecodedSamples(expected, samples, wrongFormat);
+    }
+
+    internal static async Task<(long Samples, bool WrongFormat)> MeasureDecodedAsync(string ffmpegPath, string path, CancellationToken token)
     {
         long samples = 0;
         bool wrongFormat = false;
@@ -124,7 +134,7 @@ public sealed class AudioChunker(string ffmpegPath)
             if (space >= 0) number = number[..space];
             if (int.TryParse(number, NumberStyles.None, CultureInfo.InvariantCulture, out int count)) samples += count;
         }, token);
-        ValidateDecodedSamples(expected, samples, wrongFormat);
+        return (samples, wrongFormat);
     }
 
     internal static void ValidateDecodedSamples(long expected, long actual, bool wrongFormat)
@@ -144,8 +154,8 @@ public sealed class AudioChunker(string ffmpegPath)
             throw new InvalidDataException("Invalid selected audio manifest.");
         long total = (long)Math.Round(end * 48000) - first;
         // Older sessions already contain paid stereo checkpoints; retain that manifest and its results.
-        var expected = audio.Chunks.Any(chunk => chunk.Source is not null)
-            ? PlanMono(first, total, data.Processing.ChunkSeconds, audio.RelativeDirectory)
+        var expected = data.ImportedMedia || audio.Chunks.Any(chunk => chunk.Source is not null)
+            ? PlanMono(first, total, data.Processing.ChunkSeconds, audio.RelativeDirectory, data.ImportedMedia)
             : Plan(first, total, data.Processing.ChunkSeconds, audio.RelativeDirectory);
         if (!audio.Chunks.SequenceEqual(expected)) throw new InvalidDataException("Selected chunk intervals do not cover the recording correctly.");
     }

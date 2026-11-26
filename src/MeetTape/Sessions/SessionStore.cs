@@ -159,6 +159,7 @@ public static class SessionStore
                     && !(eligible?.Invoke(data) ?? false))
                     completed[directory] = fingerprint;
                 result.Add(new(directory, data, me, them, data.RecordingState == RecordingState.Interrupted ? data.Error :
+                    data.ImportedMedia ? (!them ? "Imported audio file is missing." : data.Error) :
                     !me || !them ? "One or both original audio files are missing." : data.Error));
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidDataException)
