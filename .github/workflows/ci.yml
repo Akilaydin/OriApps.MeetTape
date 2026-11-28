@@ -86,14 +86,6 @@ jobs:
           dotnet test tests/MeetTape.UiTests/MeetTape.UiTests.csproj --configuration Release --logger 'trx;LogFileName=headless.trx' --results-directory dist/test-results
           if ($LASTEXITCODE -ne 0) { throw 'UI tests failed.' }
 
-      - uses: actions/upload-artifact@v4
-        if: steps.scope.outputs.software == 'true' && !cancelled()
-        with:
-          name: software-diagnostics-${{ inputs.stability-run || 'pr' }}
-          retention-days: 7
-          path: |
-            dist/test-results/**/*.trx
-            dist/screenshots/*.png
 
       - name: Publish and check isolated Windows GUI startup
         if: steps.scope.outputs.package == 'true'
@@ -106,14 +98,6 @@ jobs:
           & powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/Tests/Test-Desktop.ps1 -ExecutablePath dist/publish/MeetTape.exe -SkipNativeWindow
           if ($LASTEXITCODE -ne 0) { throw 'Published executable tests failed.' }
 
-      - uses: actions/upload-artifact@v4
-        if: steps.scope.outputs.package == 'true' && !cancelled()
-        with:
-          name: taskbar-snapshots-${{ inputs.stability-run || 'pr' }}
-          retention-days: 7
-          path: |
-            dist/desktop-tests/**/taskbar-*.png
-            dist/desktop-tests/**/startup-stderr.txt
 
   package-smoke:
     runs-on: windows-latest
@@ -168,16 +152,3 @@ jobs:
         run: |
           try { ./tools/Packaging/Test-Package.ps1 -InstallOnCi *> dist/package-smoke.log }
           finally { Get-Content -LiteralPath dist/package-smoke.log }
-      - uses: actions/upload-artifact@v4
-        if: steps.scope.outputs.package == 'true' && !cancelled()
-        with:
-          name: velopack-smoke-${{ inputs.stability-run || 'pr' }}
-          retention-days: 7
-          compression-level: 0
-          path: |
-            dist/releases/OriApps.MeetTape-win-Setup.exe
-            dist/releases/*-full.nupkg
-            dist/releases/releases.win.json
-            dist/package-smoke.log
-            dist/desktop-tests/**/*.txt
-            dist/desktop-tests/**/*.png

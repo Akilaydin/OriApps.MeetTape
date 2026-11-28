@@ -44,3 +44,9 @@ If no qualifying issues exist, report no findings.
 - Poll CI and review together, no more often than once per minute while unchanged. Act immediately on actionable feedback; avoid separate repeated status queries.
 - After the same failure repeats, inspect its logs and diagnose locally before another full CI run. Scheduler diagnosis is limited to two repeats; never turn a confirmed application defect into an optional test.
 - Use the risk-based CI and review rules in CONTRIBUTING.md. Do not introduce a watcher or self-hosted runner for this workflow.
+
+## CI/CD storage policy
+
+- Do not use GitHub Actions workflow artifacts (`actions/upload-artifact`, `actions/download-artifact`, or equivalent uploads) for routine builds, tests, diagnostics, or releases. Keep temporary files on the runner; use job logs and step summaries for diagnostics.
+- Build, test, sign and publish the actual distribution files directly to the intended release destination from the same job when possible. Preserve all existing tests, signing and release verification. Do not store redundant copies in Actions.
+- If cross-job file transfer is genuinely required and cannot be safely eliminated, explain the need and obtain the owner's approval before introducing an artifact upload. Do not add it as a default. Dependency caches are separate; preserve useful caches and avoid unnecessary storage.
